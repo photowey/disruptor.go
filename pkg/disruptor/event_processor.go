@@ -40,6 +40,7 @@ type BatchEventProcessor[T any] struct {
 	node             NodeContext
 	producerGating   bool
 	haltAdvances     bool
+	onHalt           func()
 
 	sequence *Sequence
 
@@ -56,6 +57,7 @@ type batchEventProcessorConfig[T any] struct {
 	producerGating   bool
 	haltAdvances     bool
 	node             NodeContext
+	onHalt           func()
 }
 
 // NewBatchEventProcessor creates a processor for one event handler.
@@ -120,6 +122,7 @@ func newBatchEventProcessor[T any](
 		node:             config.node,
 		producerGating:   config.producerGating,
 		haltAdvances:     config.haltAdvances,
+		onHalt:           config.onHalt,
 		sequence:         NewSequence(InitialSequenceValue),
 	}
 	if processor.producerGating {
@@ -249,6 +252,7 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 						p.storeSequence(nextSequence)
 					}
 					p.storeTerminalErr(err)
+					p.notifyHalt()
 					return
 				}
 			}
@@ -445,6 +449,14 @@ func (p *BatchEventProcessor[T]) processorStateMetric(state string, err error) {
 		Err:   err,
 		Node:  p.node,
 	})
+}
+
+func (p *BatchEventProcessor[T]) notifyHalt() {
+	if p.onHalt == nil {
+		return
+	}
+
+	p.onHalt()
 }
 
 func (p *BatchEventProcessor[T]) resetRetryState(sequence int64) {

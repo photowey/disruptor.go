@@ -28,8 +28,17 @@ type Disruptor[T any] struct {
 
 	ringBuffer *RingBuffer[T]
 	processors []EventProcessor
+	mode       consumerMode
 	started    atomic.Bool
 }
+
+type consumerMode uint8
+
+const (
+	consumerModeUnset consumerMode = iota
+	consumerModeFanOut
+	consumerModeGraph
+)
 
 // New creates a high-level Disruptor facade backed by a ring buffer.
 func New[T any](
@@ -74,6 +83,13 @@ func (d *Disruptor[T]) HandleEventsWithOptions(
 	if d.started.Load() {
 		return nil, ErrClosed
 	}
+	if d.mode == consumerModeGraph {
+		return nil, fmt.Errorf(
+			"%w: HandleEventsWith cannot be used after HandleGraph",
+			ErrConsumerModeConflict,
+		)
+	}
+	d.mode = consumerModeFanOut
 
 	processors := make([]EventProcessor, 0, len(handlers))
 	for _, handler := range handlers {

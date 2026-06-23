@@ -255,3 +255,27 @@ func escapeMermaidLabel(label string) string {
 
 	return label
 }
+
+func copyGraphSnapshot(snapshot GraphSnapshot) GraphSnapshot {
+	nodes := make([]GraphNodeSnapshot, len(snapshot.Nodes))
+	for i, node := range snapshot.Nodes {
+		nodes[i] = GraphNodeSnapshot{
+			Name:     node.Name,
+			Label:    node.Label,
+			Metadata: copyStringMap(node.Metadata),
+		}
+	}
+
+	edges := append([]GraphEdgeSnapshot(nil), snapshot.Edges...)
+	sources := append([]string(nil), snapshot.Sources...)
+	leaves := append([]string(nil), snapshot.Leaves...)
+
+	return GraphSnapshot{
+		Name:    snapshot.Name,
+		Frozen:  snapshot.Frozen,
+		Nodes:   nodes,
+		Edges:   edges,
+		Sources: sources,
+		Leaves:  leaves,
+	}
+}

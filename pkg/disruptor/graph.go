@@ -239,6 +239,10 @@ func (g *Graph[T]) Validate() error {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
+	return g.validateLocked()
+}
+
+func (g *Graph[T]) validateLocked() error {
 	if len(g.nodes) == 0 {
 		return fmt.Errorf("%w: graph %s: no nodes", ErrInvalidGraph, g.name)
 	}
@@ -272,6 +276,11 @@ func (g *Graph[T]) Validate() error {
 	}
 
 	return nil
+}
+
+func (g *Graph[T]) freezeHandledLocked() {
+	g.frozen = true
+	g.handled = true
 }
 
 // WithNodeExceptionHandler sets the exception handler for one graph node.
