@@ -1,36 +1,49 @@
 # API Guide
 
-This guide documents the public V1 surface of `github.com/photowey/disruptor.go/pkg/disruptor`.
+This guide documents the public V1 surface of
+`github.com/photowey/disruptor.go/pkg/disruptor`.
 
 ## Event Storage
 
 `RingBuffer[T]` preallocates value slots in `[]T` and returns pointers to those
-slots:
+slots. Producers and consumers mutate or read the ring slot directly instead of
+copying generic values.
 
 ```go
 type LongEvent struct {
     Value int64
 }
 
-factory := disruptor.EventFactoryFunc[LongEvent](func() LongEvent {
+type LongEventFactory struct{}
+
+func (LongEventFactory) NewEvent() LongEvent {
     return LongEvent{}
-})
-rb, err := disruptor.NewRingBuffer(factory, 1024)
+}
+
+rb, err := disruptor.NewRingBuffer(LongEventFactory{}, 1024)
+if err != nil {
+    return err
+}
+
+event := rb.Get(0)
+event.Value = 42
 ```
 
-`rb.Get(sequence)` returns `*LongEvent`, so producers and consumers mutate or
-read the ring slot directly instead of copying generic values.
+For quick adapters, the package also exposes `EventFactoryFunc[T]`,
+`EventTranslatorFunc[T]`, and `EventHandlerFunc[T]`. Public examples use named
+types so production code can keep dependencies explicit and replaceable.
 
 ## Low-Level Ring Buffer
 
-Use `RingBuffer[T]` when you want direct control over claim, translate, and
-publish steps.
+Use `RingBuffer[T]` when you want direct control over claim, mutate, and publish
+steps.
 
 ```go
 sequence, err := rb.Next(ctx)
 if err != nil {
     return err
 }
+
 event := rb.Get(sequence)
 event.Value = 42
 rb.Publish(sequence)
@@ -43,6 +56,7 @@ hi, err := rb.NextN(ctx, 16)
 if err != nil {
     return err
 }
+
 lo := hi - 16 + 1
 for sequence := lo; sequence <= hi; sequence++ {
     rb.Get(sequence).Value = sequence
@@ -50,8 +64,51 @@ for sequence := lo; sequence <= hi; sequence++ {
 rb.PublishRange(lo, hi)
 ```
 
+Non-blocking claims return `ErrInsufficientCapacity` when gating sequences would
+be overrun:
+
+```go
+sequence, err := rb.TryNext()
+if errors.Is(err, disruptor.ErrInsufficientCapacity) {
+    return nil
+}
+if err != nil {
+    return err
+}
+
+rb.Get(sequence).Value = 42
+rb.Publish(sequence)
+```
+
+`TryNextN(n)` is the batched non-blocking form.
+
 `PublishEvent` is the safe convenience path. After a successful claim, it always
 publishes the claimed sequence, even if the translator panics.
+
+```go
+type LongEventTranslator struct {
+    Value int64
+}
+
+func (t LongEventTranslator) Translate(
+    request disruptor.TranslateRequest[LongEvent],
+) {
+    request.Event.Value = t.Value
+}
+
+err := rb.PublishEvent(ctx, LongEventTranslator{Value: 42})
+```
+
+Backpressure is controlled by gating sequences:
+
+```go
+consumerSequence := disruptor.NewSequence(disruptor.InitialSequenceValue)
+rb.AddGatingSequences(consumerSequence)
+defer rb.RemoveGatingSequence(consumerSequence)
+```
+
+The high-level `Disruptor[T]` and `BatchEventProcessor[T]` manage their own
+gating sequences.
 
 ## High-Level Disruptor
 
@@ -59,23 +116,80 @@ Use `Disruptor[T]` for the common V1 topology: one ring buffer with parallel
 consumers. Every handler receives every event.
 
 ```go
-d, err := disruptor.New(factory, 1024)
+type LongEventHandler struct {
+    Done chan<- int64
+}
+
+func (h LongEventHandler) OnEvent(
+    request disruptor.EventRequest[LongEvent],
+) error {
+    h.Done <- request.Event.Value
+    return nil
+}
+
+d, err := disruptor.New(LongEventFactory{}, 1024)
 if err != nil {
     return err
 }
 
-_, err = d.HandleEventsWith(handlerA, handlerB)
+_, err = d.HandleEventsWith(LongEventHandler{Done: done})
 if err != nil {
     return err
 }
+
 if err := d.Start(ctx); err != nil {
     return err
 }
 defer d.Stop()
 ```
 
+`HandleEventsWithOptions` attaches processor-specific options, currently
+`WithExceptionHandler[T](handler)`.
+
+```go
+retryHandler, err := disruptor.NewRetryExceptionHandler[LongEvent](
+    2,
+    disruptor.ExceptionActionHalt,
+)
+if err != nil {
+    return err
+}
+
+_, err = d.HandleEventsWithOptions(
+    []disruptor.EventHandler[LongEvent]{LongEventHandler{Done: done}},
+    disruptor.WithExceptionHandler[LongEvent](retryHandler),
+)
+```
+
 `Wait` waits for all processors. If any processor fails, the facade stops peer
 processors so `Wait` can return the collected terminal error instead of hanging.
+
+```go
+d.Stop()
+if err := d.Wait(); err != nil {
+    return err
+}
+```
+
+## Event Processors
+
+`NewBatchEventProcessor` is the lower-level processor API. It is useful when you
+need to wire barriers and dependencies yourself.
+
+```go
+barrier := rb.NewBarrier()
+processor, err := disruptor.NewBatchEventProcessor(
+    rb,
+    barrier,
+    LongEventHandler{Done: done},
+)
+if err != nil {
+    return err
+}
+```
+
+The processor adds its sequence as a ring-buffer gating sequence and removes it
+when the processor exits.
 
 ## Options
 
@@ -101,6 +215,9 @@ the single producer publishes claimed sequences in order, including batch ranges
 Use `ProducerTypeMulti` when multiple producers publish concurrently or when
 publication can happen out of claim order.
 
+`ProducerTypeUnknown` and out-of-range producer values are rejected. A nil wait
+strategy is rejected. A nil metrics sink disables metrics.
+
 ## Wait Strategies
 
 Built-ins:
@@ -118,8 +235,10 @@ type WaitStrategy interface {
 }
 ```
 
-The request payloads leave room for future fields without growing long parameter
-lists.
+`WaitRequest` carries the request context, requested sequence, cursor sequence,
+dependent sequence, and barrier. `CapacityWaitRequest` is the public alias for
+the sequencer capacity-wait payload. The payload style keeps the interface
+stable when future fields are added.
 
 ## Event Handlers
 
@@ -169,6 +288,9 @@ Actions:
 - `ExceptionActionContinue`: advance the failed sequence and continue.
 - `ExceptionActionRetry`: retry the same sequence without advancing.
 
+`NewRetryExceptionHandler` rejects negative retry counts. Its exhausted action
+must be either `ExceptionActionHalt` or `ExceptionActionContinue`.
+
 ## Metrics
 
 `MetricsSink` is backend-neutral:
@@ -183,8 +305,23 @@ type MetricsSink interface {
 }
 ```
 
-Use `MetricsSinkFunc` when you only need a subset of callbacks. Use
-`NoopMetricsSink` when a non-nil sink is useful in tests or adapters.
+Use a named sink when wiring production telemetry:
+
+```go
+type CountingMetricsSink struct{}
+
+func (CountingMetricsSink) OnPublish(metric disruptor.PublishMetric) {}
+func (CountingMetricsSink) OnBatchStart(metric disruptor.BatchMetric) {}
+func (CountingMetricsSink) OnEventHandled(metric disruptor.EventMetric) {}
+func (CountingMetricsSink) OnWait(metric disruptor.WaitMetric) {}
+func (CountingMetricsSink) OnProcessorState(metric disruptor.ProcessorMetric) {}
+```
+
+`MetricsSinkFunc` and typed callback aliases (`PublishMetricFunc`,
+`BatchMetricFunc`, `EventMetricFunc`, `WaitMetricFunc`, and
+`ProcessorMetricFunc`) are available for lightweight adapters. Use
+`NoopMetricsSink` when a non-nil sink is useful in tests or integration
+adapters.
 
 ## Testing And Benchmarking
 
@@ -193,8 +330,10 @@ Recommended local checks:
 ```bash
 go test ./...
 go test -race ./...
-go test -bench=. -benchmem -count=10 ./...
+go test -run '^$' -bench=. -benchmem -benchtime=100ms -count=10 -cpu=1,2,4,8 ./...
+benchstat benchmarks/baseline/baseline.txt /tmp/disruptor-new.txt
 ```
 
-Use the package-level micro benchmarks for hot-path operations and the
-`benchmarks` package for end-to-end and channel comparison groups.
+Use the package-level microbenchmarks for hot-path operations and the
+`benchmarks` package for end-to-end, M/N producer-consumer, channel comparison,
+baseline, and tail-latency groups.
