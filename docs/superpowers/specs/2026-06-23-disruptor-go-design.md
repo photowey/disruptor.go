@@ -46,6 +46,8 @@ disruptor.go/
       scalar.go
     padding/
       cacheline.go
+      cacheline_default_*.go
+      cacheline_override_*.go
     sequencer/
       sequence.go
       sequencer.go
@@ -343,6 +345,8 @@ type Sequencer interface {
 The public API lets users select `ProducerTypeSingle` or `ProducerTypeMulti`, but not inject arbitrary sequencing algorithms.
 
 `internal/sequencer` must not import `pkg/disruptor`; the public package owns barrier construction and re-exports the sequence primitive instead of the reverse.
+
+`internal/padding` owns cache-line padding constants. It must not hard-code a single universal cache-line size. The default is selected at compile time by `GOARCH`, following Go's own approximation: 32 bytes for arm/mips families, 64 bytes for most common targets, 128 bytes for arm64/ppc64, and 256 bytes for s390x. Explicit build tags `disruptor_cacheline_32`, `disruptor_cacheline_64`, `disruptor_cacheline_128`, and `disruptor_cacheline_256` are supported for benchmarking and unusual deployment targets.
 
 Sequencer implementation rules:
 

@@ -100,7 +100,7 @@ The public package is `pkg/disruptor`. Internal algorithm boundaries live under
 ```text
 internal/
   availability/   contiguous publication scanning
-  padding/        cache-line padding primitives
+  padding/        cache-line padding primitives with GOARCH defaults
   sequencer/      sequence primitive plus single/multi producer sequencers
 
 pkg/disruptor/    public API, ring buffer facade, barriers, processors, metrics
@@ -112,6 +112,12 @@ docs/             API and design documentation
 `pkg/disruptor.Sequence` is re-exported from `internal/sequencer`, so external
 users get a stable public type while internal sequencing algorithms remain
 replaceable.
+
+Cache-line padding follows Go's per-architecture approximation by default:
+32-byte, 64-byte, 128-byte, and 256-byte layouts are selected at compile time.
+Override tags are available for benchmarking or unusual targets:
+`disruptor_cacheline_32`, `disruptor_cacheline_64`, `disruptor_cacheline_128`,
+and `disruptor_cacheline_256`.
 
 ## Recovery
 
