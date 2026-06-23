@@ -1,0 +1,45 @@
+# Local scratch
+.tmp/
+tmp/
+/tmp/
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test binaries and coverage
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Profiles and benchmark artifacts
+*.prof
+*.pprof
+*.trace
+*.bench
+bench.txt
+
+# Dependency directories
+vendor/
+
+# Go workspace files
+go.work.sum
+
+# IDE and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment files
+.env
+.env.local
+.env.*.local
