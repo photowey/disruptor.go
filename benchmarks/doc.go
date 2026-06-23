@@ -12,17 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
-
-import sequencer "github.com/photowey/disruptor.go/internal/sequencer"
-
-// InitialSequenceValue is the value used before any event has been published.
-const InitialSequenceValue = sequencer.InitialSequenceValue
-
-// Sequence is the public alias for the padded atomic sequence primitive.
-type Sequence = sequencer.Sequence
-
-// NewSequence creates a sequence initialized to the provided value.
-func NewSequence(initial int64) *Sequence {
-	return sequencer.NewSequence(initial)
-}
+// Package benchmarks contains release-gate benchmarks for disruptor.go.
+//
+// The benchmark matrix covers ring sizes, payload shapes, producer/consumer
+// topologies, wait strategies, batch sizes, channel comparisons, and latency
+// quantiles. The package is intentionally separate from pkg/disruptor so users
+// can inspect performance scenarios without mixing benchmark-only helpers into
+// the public API package.
+package benchmarks

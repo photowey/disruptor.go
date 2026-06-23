@@ -12,17 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
-
-import sequencer "github.com/photowey/disruptor.go/internal/sequencer"
-
-// InitialSequenceValue is the value used before any event has been published.
-const InitialSequenceValue = sequencer.InitialSequenceValue
-
-// Sequence is the public alias for the padded atomic sequence primitive.
-type Sequence = sequencer.Sequence
-
-// NewSequence creates a sequence initialized to the provided value.
-func NewSequence(initial int64) *Sequence {
-	return sequencer.NewSequence(initial)
-}
+// Package examples groups runnable examples for the public disruptor package.
+//
+// Each child directory is a small main package focused on one usage path:
+// basic publication, multi-consumer fan-out, metrics, recovery, batch publish,
+// or single-producer sequencing.
+package examples

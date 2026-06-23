@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 )
 
+// Disruptor coordinates a ring buffer and a set of event processors.
 type Disruptor[T any] struct {
 	mu sync.Mutex
 
@@ -30,6 +31,7 @@ type Disruptor[T any] struct {
 	started    atomic.Bool
 }
 
+// New creates a high-level Disruptor facade backed by a ring buffer.
 func New[T any](
 	factory EventFactory[T],
 	size int,
@@ -46,16 +48,19 @@ func New[T any](
 	}, nil
 }
 
+// RingBuffer returns the underlying ring buffer.
 func (d *Disruptor[T]) RingBuffer() *RingBuffer[T] {
 	return d.ringBuffer
 }
 
+// HandleEventsWith registers handlers that each receive every event.
 func (d *Disruptor[T]) HandleEventsWith(
 	handlers ...EventHandler[T],
 ) ([]EventProcessor, error) {
 	return d.HandleEventsWithOptions(handlers)
 }
 
+// HandleEventsWithOptions registers handlers with processor-level options.
 func (d *Disruptor[T]) HandleEventsWithOptions(
 	handlers []EventHandler[T],
 	opts ...ProcessorOption[T],
@@ -63,12 +68,12 @@ func (d *Disruptor[T]) HandleEventsWithOptions(
 	if len(handlers) == 0 {
 		return nil, fmt.Errorf("disruptor: no event handlers")
 	}
-	if d.started.Load() {
-		return nil, ErrClosed
-	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.started.Load() {
+		return nil, ErrClosed
+	}
 
 	processors := make([]EventProcessor, 0, len(handlers))
 	for _, handler := range handlers {
@@ -93,6 +98,7 @@ func (d *Disruptor[T]) HandleEventsWithOptions(
 	return processors, nil
 }
 
+// Start starts all registered event processors.
 func (d *Disruptor[T]) Start(ctx context.Context) error {
 	if !d.started.CompareAndSwap(false, true) {
 		return ErrClosed
@@ -112,6 +118,7 @@ func (d *Disruptor[T]) Start(ctx context.Context) error {
 	return nil
 }
 
+// Stop requests all registered processors to stop.
 func (d *Disruptor[T]) Stop() {
 	d.mu.Lock()
 	processors := append([]EventProcessor(nil), d.processors...)
@@ -122,6 +129,7 @@ func (d *Disruptor[T]) Stop() {
 	}
 }
 
+// Wait waits for all processors and joins their terminal errors.
 func (d *Disruptor[T]) Wait() error {
 	d.mu.Lock()
 	processors := append([]EventProcessor(nil), d.processors...)

@@ -16,14 +16,17 @@ package sequencer
 
 import "context"
 
+// SequenceReader exposes the current sequence value.
 type SequenceReader interface {
 	Value() int64
 }
 
+// CapacityWaitStrategy waits until producer capacity may be available.
 type CapacityWaitStrategy interface {
 	WaitForCapacity(request CapacityWaitRequest) error
 }
 
+// CapacityWaitRequest describes a blocked producer capacity request.
 type CapacityWaitRequest struct {
 	Context            context.Context
 	RequestedSequences int64

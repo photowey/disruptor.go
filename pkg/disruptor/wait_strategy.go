@@ -22,14 +22,17 @@ import (
 	sequencer "github.com/photowey/disruptor.go/internal/sequencer"
 )
 
+// SequenceReader exposes a readable sequence value.
 type SequenceReader = sequencer.SequenceReader
 
+// WaitStrategy waits for sequence availability and producer capacity.
 type WaitStrategy interface {
 	WaitFor(request WaitRequest) (int64, error)
 	WaitForCapacity(request CapacityWaitRequest) error
 	SignalAll()
 }
 
+// WaitRequest carries all state needed to wait for a consumer sequence.
 type WaitRequest struct {
 	Context           context.Context
 	RequestedSequence int64
@@ -38,8 +41,10 @@ type WaitRequest struct {
 	Barrier           Barrier
 }
 
+// CapacityWaitRequest carries all state needed to wait for producer capacity.
 type CapacityWaitRequest = sequencer.CapacityWaitRequest
 
+// BlockingWaitStrategy uses a condition variable to block waiters.
 type BlockingWaitStrategy struct {
 	once       sync.Once
 	mu         sync.Mutex
@@ -47,6 +52,7 @@ type BlockingWaitStrategy struct {
 	generation uint64
 }
 
+// NewBlockingWaitStrategy constructs a blocking wait strategy.
 func NewBlockingWaitStrategy() WaitStrategy {
 	strategy := &BlockingWaitStrategy{}
 	strategy.init()
@@ -54,6 +60,7 @@ func NewBlockingWaitStrategy() WaitStrategy {
 	return strategy
 }
 
+// WaitFor waits until the requested sequence is available.
 func (s *BlockingWaitStrategy) WaitFor(request WaitRequest) (int64, error) {
 	s.init()
 	if request.Context.Done() != nil {
@@ -81,6 +88,7 @@ func (s *BlockingWaitStrategy) WaitFor(request WaitRequest) (int64, error) {
 	}
 }
 
+// WaitForCapacity waits until a producer can safely claim capacity.
 func (s *BlockingWaitStrategy) WaitForCapacity(request CapacityWaitRequest) error {
 	s.init()
 	if request.Context.Done() != nil {
@@ -101,6 +109,7 @@ func (s *BlockingWaitStrategy) WaitForCapacity(request CapacityWaitRequest) erro
 	return request.Context.Err()
 }
 
+// SignalAll wakes blocked waiters.
 func (s *BlockingWaitStrategy) SignalAll() {
 	s.init()
 
@@ -111,12 +120,15 @@ func (s *BlockingWaitStrategy) SignalAll() {
 	s.cond.Broadcast()
 }
 
+// BusySpinWaitStrategy polls for progress and yields the processor.
 type BusySpinWaitStrategy struct{}
 
+// NewBusySpinWaitStrategy constructs a busy-spin wait strategy.
 func NewBusySpinWaitStrategy() WaitStrategy {
 	return BusySpinWaitStrategy{}
 }
 
+// WaitFor polls once for sequence availability.
 func (s BusySpinWaitStrategy) WaitFor(request WaitRequest) (int64, error) {
 	if err := request.Context.Err(); err != nil {
 		return InitialSequenceValue, err
@@ -131,6 +143,7 @@ func (s BusySpinWaitStrategy) WaitFor(request WaitRequest) (int64, error) {
 	return readAvailableSequence(request), nil
 }
 
+// WaitForCapacity polls once for producer capacity.
 func (s BusySpinWaitStrategy) WaitForCapacity(request CapacityWaitRequest) error {
 	if err := request.Context.Err(); err != nil {
 		return err
@@ -140,6 +153,7 @@ func (s BusySpinWaitStrategy) WaitForCapacity(request CapacityWaitRequest) error
 	return nil
 }
 
+// SignalAll is a no-op for busy-spin waiting.
 func (s BusySpinWaitStrategy) SignalAll() {}
 
 func readAvailableSequence(request WaitRequest) int64 {

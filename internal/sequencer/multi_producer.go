@@ -21,6 +21,7 @@ import (
 	"github.com/photowey/disruptor.go/internal/availability"
 )
 
+// multiProducerSequencer coordinates concurrent producers with availability flags.
 type multiProducerSequencer struct {
 	*baseSequencer
 
@@ -30,6 +31,7 @@ type multiProducerSequencer struct {
 	scanner            availability.Scanner
 }
 
+// NewMultiProducer creates a sequencer for concurrent producers.
 func NewMultiProducer(size int64, waitStrategy CapacityWaitStrategy) Sequencer {
 	availabilityBuffer := make([]int64, size)
 	for i := range availabilityBuffer {

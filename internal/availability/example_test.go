@@ -12,17 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package availability_test
 
-import sequencer "github.com/photowey/disruptor.go/internal/sequencer"
+import (
+	"fmt"
 
-// InitialSequenceValue is the value used before any event has been published.
-const InitialSequenceValue = sequencer.InitialSequenceValue
+	"github.com/photowey/disruptor.go/internal/availability"
+)
 
-// Sequence is the public alias for the padded atomic sequence primitive.
-type Sequence = sequencer.Sequence
+type exampleAvailability map[int64]bool
 
-// NewSequence creates a sequence initialized to the provided value.
-func NewSequence(initial int64) *Sequence {
-	return sequencer.NewSequence(initial)
+func (a exampleAvailability) Available(sequence int64) bool {
+	return a[sequence]
+}
+
+func ExampleScalarScanner() {
+	scanner := availability.NewScalarScanner()
+	highest := scanner.HighestPublished(availability.ScanRequest{
+		LowerBound:        0,
+		AvailableSequence: 3,
+		Availability: exampleAvailability{
+			0: true,
+			1: true,
+			2: true,
+			3: false,
+		},
+	})
+	fmt.Println(highest)
+
+	// Output:
+	// 2
 }

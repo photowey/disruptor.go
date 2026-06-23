@@ -12,17 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package disruptor provides a Go implementation of the Disruptor pattern for
+// high-throughput in-process event exchange.
+//
+// The package exposes a generic preallocated ring buffer, cancellable producer
+// sequencing, batch event processors, wait strategies, recovery policies, and
+// backend-neutral metrics hooks. Public extension points are modeled as small
+// interfaces with named function adapters where callbacks are useful.
 package disruptor
-
-import sequencer "github.com/photowey/disruptor.go/internal/sequencer"
-
-// InitialSequenceValue is the value used before any event has been published.
-const InitialSequenceValue = sequencer.InitialSequenceValue
-
-// Sequence is the public alias for the padded atomic sequence primitive.
-type Sequence = sequencer.Sequence
-
-// NewSequence creates a sequence initialized to the provided value.
-func NewSequence(initial int64) *Sequence {
-	return sequencer.NewSequence(initial)
-}

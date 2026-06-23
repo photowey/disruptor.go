@@ -23,6 +23,7 @@ import (
 	"time"
 )
 
+// EventProcessor controls a processor lifecycle and exposes its sequence.
 type EventProcessor interface {
 	Start(ctx context.Context) error
 	Stop()
@@ -30,6 +31,7 @@ type EventProcessor interface {
 	Sequence() *Sequence
 }
 
+// BatchEventProcessor waits for published events and dispatches batches.
 type BatchEventProcessor[T any] struct {
 	ringBuffer       *RingBuffer[T]
 	barrier          Barrier
@@ -46,6 +48,7 @@ type BatchEventProcessor[T any] struct {
 	terminalErr atomic.Value
 }
 
+// NewBatchEventProcessor creates a processor for one event handler.
 func NewBatchEventProcessor[T any](
 	ringBuffer *RingBuffer[T],
 	barrier Barrier,
@@ -84,6 +87,7 @@ func NewBatchEventProcessor[T any](
 	return processor, nil
 }
 
+// Start launches the processor goroutine.
 func (p *BatchEventProcessor[T]) Start(ctx context.Context) error {
 	if !p.started.CompareAndSwap(false, true) {
 		return ErrClosed
@@ -99,6 +103,7 @@ func (p *BatchEventProcessor[T]) Start(ctx context.Context) error {
 	return nil
 }
 
+// Stop requests the processor to halt and wakes any blocked waits.
 func (p *BatchEventProcessor[T]) Stop() {
 	if p.stopped.Swap(true) {
 		return
@@ -115,6 +120,7 @@ func (p *BatchEventProcessor[T]) Stop() {
 	}
 }
 
+// Wait waits for the processor goroutine and returns its terminal error.
 func (p *BatchEventProcessor[T]) Wait() error {
 	p.wg.Wait()
 
@@ -127,6 +133,7 @@ func (p *BatchEventProcessor[T]) Wait() error {
 	return nil
 }
 
+// Sequence returns the processor's current consumer sequence.
 func (p *BatchEventProcessor[T]) Sequence() *Sequence {
 	return p.sequence
 }

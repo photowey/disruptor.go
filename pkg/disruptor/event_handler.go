@@ -20,16 +20,20 @@ import (
 	"sync"
 )
 
+// EventHandler consumes events produced by the ring buffer.
 type EventHandler[T any] interface {
 	OnEvent(request EventRequest[T]) error
 }
 
+// EventHandlerFunc adapts a function to the EventHandler interface.
 type EventHandlerFunc[T any] func(request EventRequest[T]) error
 
+// OnEvent calls the wrapped handler function.
 func (fn EventHandlerFunc[T]) OnEvent(request EventRequest[T]) error {
 	return fn(request)
 }
 
+// EventRequest provides the current event, sequence, and batch context.
 type EventRequest[T any] struct {
 	Context    context.Context
 	Event      *T
@@ -37,36 +41,46 @@ type EventRequest[T any] struct {
 	EndOfBatch bool
 }
 
+// BatchStartHandler is notified before a batch of events is processed.
 type BatchStartHandler interface {
 	OnBatchStart(request BatchStartRequest) error
 }
 
+// BatchStartRequest describes the batch that is about to be processed.
 type BatchStartRequest struct {
 	Context    context.Context
 	BatchSize  int64
 	QueueDepth int64
 }
 
+// LifecycleHandler observes processor start and shutdown transitions.
 type LifecycleHandler interface {
 	OnStart(ctx context.Context) error
 	OnShutdown(ctx context.Context) error
 }
 
+// ExceptionAction defines how a processor should react to a failure.
 type ExceptionAction uint8
 
 const (
+	// ExceptionActionUnknown is the zero value and should not be returned.
 	ExceptionActionUnknown ExceptionAction = iota
+	// ExceptionActionHalt stops the processor and reports the error.
 	ExceptionActionHalt
+	// ExceptionActionContinue advances past the failed sequence.
 	ExceptionActionContinue
+	// ExceptionActionRetry retries the same sequence without advancing.
 	ExceptionActionRetry
 )
 
+// ExceptionHandler decides how event and lifecycle failures are handled.
 type ExceptionHandler[T any] interface {
 	HandleEventException(request EventException[T]) ExceptionAction
 	HandleStartException(request LifecycleException) ExceptionAction
 	HandleShutdownException(request LifecycleException) ExceptionAction
 }
 
+// EventException reports an event handling failure.
 type EventException[T any] struct {
 	Context  context.Context
 	Event    *T
@@ -74,6 +88,7 @@ type EventException[T any] struct {
 	Err      error
 }
 
+// LifecycleException reports a start or shutdown failure.
 type LifecycleException struct {
 	Context context.Context
 	Err     error
@@ -109,6 +124,7 @@ func (f exceptionHandlerFunc[T]) HandleShutdownException(request LifecycleExcept
 	return f.handleShutdown(request)
 }
 
+// ProcessorOption configures a batch event processor.
 type ProcessorOption[T any] interface {
 	applyProcessor(config *processorConfig[T]) error
 }
@@ -121,10 +137,12 @@ type processorOptionFunc[T any] struct {
 	applyFunc func(*processorConfig[T]) error
 }
 
+//nolint:unused // The method satisfies ProcessorOption[T] and is called through the interface.
 func (fn processorOptionFunc[T]) applyProcessor(config *processorConfig[T]) error {
 	return fn.applyFunc(config)
 }
 
+// WithExceptionHandler sets the processor exception handler.
 func WithExceptionHandler[T any](handler ExceptionHandler[T]) ProcessorOption[T] {
 	return processorOptionFunc[T]{
 		applyFunc: func(config *processorConfig[T]) error {
@@ -144,6 +162,7 @@ func defaultProcessorConfig[T any]() processorConfig[T] {
 	}
 }
 
+// NewFatalExceptionHandler returns a handler that halts on every failure.
 func NewFatalExceptionHandler[T any]() ExceptionHandler[T] {
 	return exceptionHandlerFunc[T]{
 		handleEvent: func(EventException[T]) ExceptionAction {
@@ -158,6 +177,7 @@ func NewFatalExceptionHandler[T any]() ExceptionHandler[T] {
 	}
 }
 
+// NewIgnoreExceptionHandler returns a handler that continues after failures.
 func NewIgnoreExceptionHandler[T any]() ExceptionHandler[T] {
 	return exceptionHandlerFunc[T]{
 		handleEvent: func(EventException[T]) ExceptionAction {
@@ -172,6 +192,7 @@ func NewIgnoreExceptionHandler[T any]() ExceptionHandler[T] {
 	}
 }
 
+// RetryExceptionHandler retries failed events before using an exhausted action.
 type RetryExceptionHandler[T any] struct {
 	mu              sync.Mutex
 	maxRetries      int
@@ -179,6 +200,7 @@ type RetryExceptionHandler[T any] struct {
 	attempts        map[int64]int
 }
 
+// NewRetryExceptionHandler creates a bounded retry exception handler.
 func NewRetryExceptionHandler[T any](
 	maxRetries int,
 	exhaustedAction ExceptionAction,
@@ -197,6 +219,7 @@ func NewRetryExceptionHandler[T any](
 	}, nil
 }
 
+// HandleEventException returns retry until the configured retry budget is exhausted.
 func (h *RetryExceptionHandler[T]) HandleEventException(
 	request EventException[T],
 ) ExceptionAction {
@@ -213,12 +236,14 @@ func (h *RetryExceptionHandler[T]) HandleEventException(
 	return h.exhaustedAction
 }
 
+// HandleStartException halts processors when lifecycle start fails.
 func (h *RetryExceptionHandler[T]) HandleStartException(
 	request LifecycleException,
 ) ExceptionAction {
 	return ExceptionActionHalt
 }
 
+// HandleShutdownException halts processors when lifecycle shutdown fails.
 func (h *RetryExceptionHandler[T]) HandleShutdownException(
 	request LifecycleException,
 ) ExceptionAction {

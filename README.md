@@ -13,7 +13,7 @@ adapters, or recovery policies.
 ## Install
 
 ```bash
-go get github.com/photowey/disruptor.go
+go get github.com/photowey/disruptor.go/pkg/disruptor
 ```
 
 Import the public package:

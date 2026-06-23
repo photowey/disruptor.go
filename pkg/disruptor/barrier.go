@@ -20,6 +20,7 @@ import (
 	"time"
 )
 
+// Barrier waits for available sequences and supports cooperative alerts.
 type Barrier interface {
 	WaitFor(ctx context.Context, sequence int64) (int64, error)
 	Cursor() int64

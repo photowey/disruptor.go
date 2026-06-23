@@ -16,26 +16,33 @@ package disruptor
 
 import "context"
 
+// EventFactory creates the initial value for each ring buffer slot.
 type EventFactory[T any] interface {
 	NewEvent() T
 }
 
+// EventFactoryFunc adapts a function to the EventFactory interface.
 type EventFactoryFunc[T any] func() T
 
+// NewEvent returns the event produced by the wrapped function.
 func (fn EventFactoryFunc[T]) NewEvent() T {
 	return fn()
 }
 
+// EventTranslator writes producer data into a claimed event slot.
 type EventTranslator[T any] interface {
 	Translate(request TranslateRequest[T])
 }
 
+// EventTranslatorFunc adapts a function to the EventTranslator interface.
 type EventTranslatorFunc[T any] func(request TranslateRequest[T])
 
+// Translate calls the wrapped translator function.
 func (fn EventTranslatorFunc[T]) Translate(request TranslateRequest[T]) {
 	fn(request)
 }
 
+// TranslateRequest carries the claimed event slot and sequence metadata.
 type TranslateRequest[T any] struct {
 	Context  context.Context
 	Event    *T

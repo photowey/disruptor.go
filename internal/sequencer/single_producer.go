@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 )
 
+// singleProducerSequencer is optimized for one publishing goroutine.
 type singleProducerSequencer struct {
 	gatingMu sync.RWMutex
 
@@ -34,6 +35,7 @@ type singleProducerSequencer struct {
 	cachedGatingSequence atomic.Int64
 }
 
+// NewSingleProducer creates a sequencer for a single ordered producer.
 func NewSingleProducer(size int64, waitStrategy CapacityWaitStrategy) Sequencer {
 	sequencer := &singleProducerSequencer{
 		size:            size,

@@ -105,6 +105,33 @@ func TestDisruptorHandleEventsWithRequiresHandler(t *testing.T) {
 	}
 }
 
+func TestDisruptorRejectsHandlerRegistrationAfterStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d, err := disruptor.New(
+		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		8,
+	)
+	if err != nil {
+		t.Fatalf("new disruptor: %v", err)
+	}
+
+	if err := d.Start(ctx); err != nil {
+		t.Fatalf("start disruptor: %v", err)
+	}
+	defer d.Stop()
+
+	_, err = d.HandleEventsWith(disruptor.EventHandlerFunc[longEvent](
+		func(request disruptor.EventRequest[longEvent]) error {
+			return nil
+		},
+	))
+	if !errors.Is(err, disruptor.ErrClosed) {
+		t.Fatalf("handle events with error = %v, want ErrClosed", err)
+	}
+}
+
 func TestDisruptorWaitReturnsProcessorError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -187,14 +214,4 @@ type testHandlerError struct{}
 
 func (e *testHandlerError) Error() string {
 	return "handler failed"
-}
-
-func waitForDisruptorSignal(t *testing.T, done <-chan struct{}) {
-	t.Helper()
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for disruptor signal")
-	}
 }

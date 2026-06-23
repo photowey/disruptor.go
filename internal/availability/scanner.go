@@ -14,14 +14,17 @@
 
 package availability
 
+// Checker reports whether a sequence has been published.
 type Checker interface {
 	Available(sequence int64) bool
 }
 
+// Scanner finds the highest contiguous published sequence.
 type Scanner interface {
 	HighestPublished(request ScanRequest) int64
 }
 
+// ScanRequest carries the range and availability source for a scan.
 type ScanRequest struct {
 	LowerBound        int64
 	AvailableSequence int64

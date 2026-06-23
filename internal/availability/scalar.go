@@ -14,8 +14,10 @@
 
 package availability
 
+// ScalarScanner scans availability one sequence at a time.
 type ScalarScanner struct{}
 
+// NewScalarScanner creates the default scalar availability scanner.
 func NewScalarScanner() Scanner {
 	return ScalarScanner{}
 }

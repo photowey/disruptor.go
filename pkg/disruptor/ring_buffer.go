@@ -22,6 +22,7 @@ import (
 	internalsequencer "github.com/photowey/disruptor.go/internal/sequencer"
 )
 
+// RingBuffer stores preallocated events and coordinates producer publication.
 type RingBuffer[T any] struct {
 	entries      []T
 	mask         int64
@@ -31,6 +32,7 @@ type RingBuffer[T any] struct {
 	metrics      MetricsSink
 }
 
+// NewRingBuffer creates a ring buffer with a power-of-two size.
 func NewRingBuffer[T any](
 	factory EventFactory[T],
 	size int,
@@ -68,30 +70,37 @@ func NewRingBuffer[T any](
 	}, nil
 }
 
+// Next claims one sequence, blocking until capacity is available or ctx ends.
 func (r *RingBuffer[T]) Next(ctx context.Context) (int64, error) {
 	return r.NextN(ctx, 1)
 }
 
+// NextN claims n sequences and returns the highest claimed sequence.
 func (r *RingBuffer[T]) NextN(ctx context.Context, n int64) (int64, error) {
 	return r.sequencer.NextN(ctx, n)
 }
 
+// TryNext claims one sequence without blocking.
 func (r *RingBuffer[T]) TryNext() (int64, error) {
 	return r.TryNextN(1)
 }
 
+// TryNextN claims n sequences without blocking.
 func (r *RingBuffer[T]) TryNextN(n int64) (int64, error) {
 	return r.sequencer.TryNextN(n)
 }
 
+// Get returns the mutable event slot for sequence.
 func (r *RingBuffer[T]) Get(sequence int64) *T {
 	return &r.entries[sequence&r.mask]
 }
 
+// Publish marks a single claimed sequence as available.
 func (r *RingBuffer[T]) Publish(sequence int64) {
 	r.publishRange(sequence, sequence, time.Time{}, nil)
 }
 
+// PublishRange marks an inclusive sequence range as available.
 func (r *RingBuffer[T]) PublishRange(lo, hi int64) {
 	r.publishRange(lo, hi, time.Time{}, nil)
 }
@@ -106,6 +115,7 @@ func (r *RingBuffer[T]) publishRange(lo, hi int64, started time.Time, err error)
 	r.publishMetric(lo, hi, started, err)
 }
 
+// PublishEvent claims, translates, and publishes one event.
 func (r *RingBuffer[T]) PublishEvent(
 	ctx context.Context,
 	translator EventTranslator[T],
@@ -133,10 +143,12 @@ func (r *RingBuffer[T]) PublishEvent(
 	return nil
 }
 
+// AddGatingSequences registers consumer sequences for producer backpressure.
 func (r *RingBuffer[T]) AddGatingSequences(sequences ...*Sequence) {
 	r.sequencer.AddGatingSequences(sequences...)
 }
 
+// RemoveGatingSequence unregisters a consumer sequence.
 func (r *RingBuffer[T]) RemoveGatingSequence(sequence *Sequence) bool {
 	removed := r.sequencer.RemoveGatingSequence(sequence)
 	if removed {
@@ -146,6 +158,7 @@ func (r *RingBuffer[T]) RemoveGatingSequence(sequence *Sequence) bool {
 	return removed
 }
 
+// NewBarrier creates a processing barrier over the ring buffer cursor.
 func (r *RingBuffer[T]) NewBarrier(dependencies ...*Sequence) Barrier {
 	return newProcessingBarrier(r.sequencer.Cursor(), r.waitStrategy, r.metrics, dependencies...)
 }

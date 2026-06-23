@@ -14,14 +14,19 @@
 
 package disruptor
 
+// ProducerType selects the producer sequencing strategy.
 type ProducerType uint8
 
 const (
+	// ProducerTypeUnknown is the zero value and is rejected by configuration.
 	ProducerTypeUnknown ProducerType = iota
+	// ProducerTypeSingle uses the single-producer sequencer.
 	ProducerTypeSingle
+	// ProducerTypeMulti uses the multi-producer sequencer.
 	ProducerTypeMulti
 )
 
+// RingBufferOption configures ring buffer construction.
 type RingBufferOption interface {
 	applyRingBuffer(config *ringBufferConfig) error
 }
@@ -42,6 +47,7 @@ func (fn ringBufferOptionFunc) applyRingBuffer(config *ringBufferConfig) error {
 	return fn.applyFunc(config)
 }
 
+// WithProducerType configures the ring buffer producer strategy.
 func WithProducerType(producerType ProducerType) RingBufferOption {
 	return ringBufferOptionFunc{
 		applyFunc: func(config *ringBufferConfig) error {
@@ -55,6 +61,7 @@ func WithProducerType(producerType ProducerType) RingBufferOption {
 	}
 }
 
+// WithWaitStrategy configures the ring buffer wait strategy.
 func WithWaitStrategy(strategy WaitStrategy) RingBufferOption {
 	return ringBufferOptionFunc{
 		applyFunc: func(config *ringBufferConfig) error {
@@ -68,6 +75,7 @@ func WithWaitStrategy(strategy WaitStrategy) RingBufferOption {
 	}
 }
 
+// WithMetricsSink configures optional metrics collection.
 func WithMetricsSink(sink MetricsSink) RingBufferOption {
 	return ringBufferOptionFunc{
 		applyFunc: func(config *ringBufferConfig) error {

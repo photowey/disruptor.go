@@ -16,6 +16,7 @@ package sequencer
 
 import "context"
 
+// Sequencer claims producer sequences and tracks publication progress.
 type Sequencer interface {
 	Next(ctx context.Context) (int64, error)
 	NextN(ctx context.Context, n int64) (int64, error)

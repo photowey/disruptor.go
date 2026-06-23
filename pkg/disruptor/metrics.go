@@ -16,6 +16,7 @@ package disruptor
 
 import "time"
 
+// MetricsSink receives backend-neutral runtime metrics.
 type MetricsSink interface {
 	OnPublish(request PublishMetric)
 	OnBatchStart(request BatchMetric)
@@ -24,12 +25,22 @@ type MetricsSink interface {
 	OnProcessorState(request ProcessorMetric)
 }
 
+// PublishMetricFunc adapts a function to publish metrics.
 type PublishMetricFunc func(PublishMetric)
+
+// BatchMetricFunc adapts a function to batch metrics.
 type BatchMetricFunc func(BatchMetric)
+
+// EventMetricFunc adapts a function to event metrics.
 type EventMetricFunc func(EventMetric)
+
+// WaitMetricFunc adapts a function to wait metrics.
 type WaitMetricFunc func(WaitMetric)
+
+// ProcessorMetricFunc adapts a function to processor metrics.
 type ProcessorMetricFunc func(ProcessorMetric)
 
+// MetricsSinkFunc combines optional metric callbacks into one sink.
 type MetricsSinkFunc struct {
 	Publish        PublishMetricFunc
 	BatchStart     BatchMetricFunc
@@ -38,6 +49,7 @@ type MetricsSinkFunc struct {
 	ProcessorState ProcessorMetricFunc
 }
 
+// OnPublish dispatches the publish callback when configured.
 func (f MetricsSinkFunc) OnPublish(request PublishMetric) {
 	if f.Publish == nil {
 		return
@@ -46,6 +58,7 @@ func (f MetricsSinkFunc) OnPublish(request PublishMetric) {
 	f.Publish(request)
 }
 
+// OnBatchStart dispatches the batch-start callback when configured.
 func (f MetricsSinkFunc) OnBatchStart(request BatchMetric) {
 	if f.BatchStart == nil {
 		return
@@ -54,6 +67,7 @@ func (f MetricsSinkFunc) OnBatchStart(request BatchMetric) {
 	f.BatchStart(request)
 }
 
+// OnEventHandled dispatches the event-handled callback when configured.
 func (f MetricsSinkFunc) OnEventHandled(request EventMetric) {
 	if f.EventHandled == nil {
 		return
@@ -62,6 +76,7 @@ func (f MetricsSinkFunc) OnEventHandled(request EventMetric) {
 	f.EventHandled(request)
 }
 
+// OnWait dispatches the wait callback when configured.
 func (f MetricsSinkFunc) OnWait(request WaitMetric) {
 	if f.Wait == nil {
 		return
@@ -70,6 +85,7 @@ func (f MetricsSinkFunc) OnWait(request WaitMetric) {
 	f.Wait(request)
 }
 
+// OnProcessorState dispatches the processor-state callback when configured.
 func (f MetricsSinkFunc) OnProcessorState(request ProcessorMetric) {
 	if f.ProcessorState == nil {
 		return
@@ -78,6 +94,7 @@ func (f MetricsSinkFunc) OnProcessorState(request ProcessorMetric) {
 	f.ProcessorState(request)
 }
 
+// NoopMetricsSink implements MetricsSink without recording anything.
 type NoopMetricsSink struct{}
 
 func (NoopMetricsSink) OnPublish(request PublishMetric)          {}
@@ -86,6 +103,7 @@ func (NoopMetricsSink) OnEventHandled(request EventMetric)       {}
 func (NoopMetricsSink) OnWait(request WaitMetric)                {}
 func (NoopMetricsSink) OnProcessorState(request ProcessorMetric) {}
 
+// PublishMetric describes a publish operation.
 type PublishMetric struct {
 	ProducerType ProducerType
 	Sequence     int64
@@ -94,17 +112,20 @@ type PublishMetric struct {
 	Err          error
 }
 
+// BatchMetric describes a batch start notification.
 type BatchMetric struct {
 	BatchSize  int64
 	QueueDepth int64
 }
 
+// EventMetric describes a handled event.
 type EventMetric struct {
 	Sequence int64
 	Duration time.Duration
 	Err      error
 }
 
+// WaitMetric describes a wait operation.
 type WaitMetric struct {
 	RequestedSequence int64
 	AvailableSequence int64
@@ -113,6 +134,7 @@ type WaitMetric struct {
 	Err               error
 }
 
+// ProcessorMetric describes a processor lifecycle event.
 type ProcessorMetric struct {
 	State string
 	Err   error

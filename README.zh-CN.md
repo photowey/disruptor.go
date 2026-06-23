@@ -12,7 +12,7 @@ exception handler、wait strategy 和 metrics sink。核心算法可以在内部
 ## 安装
 
 ```bash
-go get github.com/photowey/disruptor.go
+go get github.com/photowey/disruptor.go/pkg/disruptor
 ```
 
 导入公共包：

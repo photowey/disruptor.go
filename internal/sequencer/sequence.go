@@ -20,14 +20,17 @@ import (
 	"github.com/photowey/disruptor.go/internal/padding"
 )
 
+// InitialSequenceValue is the value before any event has been published.
 const InitialSequenceValue int64 = -1
 
+// Sequence is a padded atomic sequence counter.
 type Sequence struct {
 	_     padding.CacheLine
 	value atomic.Int64
 	_     padding.CacheLine
 }
 
+// NewSequence creates a padded atomic sequence initialized to initial.
 func NewSequence(initial int64) *Sequence {
 	sequence := &Sequence{}
 	sequence.Store(initial)
@@ -35,18 +38,22 @@ func NewSequence(initial int64) *Sequence {
 	return sequence
 }
 
+// Value returns the current sequence value.
 func (s *Sequence) Value() int64 {
 	return s.value.Load()
 }
 
+// Store sets the current sequence value.
 func (s *Sequence) Store(value int64) {
 	s.value.Store(value)
 }
 
+// Add atomically adds delta and returns the new sequence value.
 func (s *Sequence) Add(delta int64) int64 {
 	return s.value.Add(delta)
 }
 
+// CompareAndSwap atomically swaps the sequence value when oldValue matches.
 func (s *Sequence) CompareAndSwap(oldValue, newValue int64) bool {
 	return s.value.CompareAndSwap(oldValue, newValue)
 }

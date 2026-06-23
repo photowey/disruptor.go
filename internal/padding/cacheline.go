@@ -14,4 +14,5 @@
 
 package padding
 
+// CacheLine is a byte array sized to the selected cache-line width.
 type CacheLine [CacheLineSize]byte

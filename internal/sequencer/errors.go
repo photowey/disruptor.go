@@ -17,6 +17,8 @@ package sequencer
 import "errors"
 
 var (
+	// ErrInsufficientCapacity reports that a non-blocking claim cannot proceed.
 	ErrInsufficientCapacity = errors.New("disruptor: insufficient capacity")
-	ErrInvalidSequence      = errors.New("disruptor: invalid sequence")
+	// ErrInvalidSequence reports an invalid sequence request.
+	ErrInvalidSequence = errors.New("disruptor: invalid sequence")
 )
