@@ -3,8 +3,8 @@
 English | [中文](README.zh-CN.md)
 
 High-performance Disruptor pattern implementation for Go, with generic ring
-buffers, cancellable sequencing, recovery hooks, metrics, examples, and
-benchmarks.
+buffers, cancellable sequencing, dependency graphs, recovery hooks, metrics,
+examples, and benchmarks.
 
 The public API favors interfaces and replaceable components. Core algorithms can
 evolve internally without forcing users to rewrite producers, consumers, metrics
@@ -103,8 +103,12 @@ func main() {
 
 - `RingBuffer[T]` is the low-level API for claiming, mutating, and publishing
   preallocated event slots.
-- `Disruptor[T]` is the high-level facade for one ring buffer with parallel
-  consumers. Each V1 consumer receives all events.
+- `Disruptor[T]` is the high-level facade for one ring buffer with managed
+  processors.
+- `HandleEventsWith` wires the V1 fan-out mode where every consumer receives
+  every event.
+- `Graph[T]` and `HandleGraph` wire V1.1 dependency topologies such as
+  pipelines, fan-in, fan-out, and diamond graphs.
 - `EventFactory[T]`, `EventTranslator[T]`, `EventHandler[T]`,
   `ExceptionHandler[T]`, `WaitStrategy`, and `MetricsSink` are interfaces.
 - `XxxFunc` adapters are available where callbacks are useful without exposing
@@ -151,6 +155,28 @@ sequenceDiagram
     H-->>P: nil or error
 ```
 
+## Topology Graphs
+
+`Graph[T]` models explicit handler dependencies. The graph is constructed before
+`Start`, registered once through `HandleGraph`, and then frozen so the running
+topology remains inspectable.
+
+```mermaid
+flowchart LR
+    App["Application"] --> G["Graph[T]"]
+    G --> D["Disruptor[T].HandleGraph"]
+    D --> A["validate"]
+    A --> B["enrich"]
+    A --> C["audit"]
+    B --> J["persist"]
+    C --> J
+    J --> Leaf["leaf processor gates producer"]
+```
+
+Graph processors still consume from the same ring buffer. Source nodes wait on
+the cursor; downstream nodes wait on their upstream sequences. Producer
+backpressure is attached to leaf nodes only.
+
 ## Backpressure
 
 A producer can claim a slot only when the wrap point stays behind the slowest
@@ -187,7 +213,7 @@ internal/
   sequencer/      sequence primitive plus single/multi producer sequencers
 
 pkg/disruptor/    public API, ring buffer facade, barriers, processors, metrics
-benchmarks/       end-to-end and channel comparison benchmarks
+benchmarks/       end-to-end, topology, and comparison benchmarks
 examples/         runnable usage examples
 docs/             API and design documentation
 ```
@@ -251,6 +277,9 @@ Runnable examples live under `examples/`:
 - `examples/error_recovery`
 - `examples/batch_publish`
 - `examples/single_producer`
+- `examples/pipeline`
+- `examples/diamond`
+- `examples/graph_export`
 
 Run one with:
 
@@ -270,8 +299,8 @@ go test -run '^$' -bench=BenchmarkE2ELatencyQuantiles -benchmem -count=10 ./benc
 benchstat benchmarks/baseline/baseline.txt /tmp/disruptor-new.txt
 ```
 
-See `benchmarks/README.md` for end-to-end, M/N producer-consumer, channel,
-`sync.Cond`, baseline, and tail-latency groups.
+See `benchmarks/README.md` for end-to-end, M/N producer-consumer, graph
+topology, channel, `sync.Cond`, baseline, and tail-latency groups.
 
 Channels remain the right default for ordinary ownership transfer and simple
 synchronization. Use this library when benchmarks show that you need high

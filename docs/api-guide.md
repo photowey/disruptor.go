@@ -1,6 +1,6 @@
 # API Guide
 
-This guide documents the public V1 surface of
+This guide documents the public V1 and V1.1 surface of
 `github.com/photowey/disruptor.go/pkg/disruptor`.
 
 ## Event Storage
@@ -112,8 +112,8 @@ gating sequences.
 
 ## High-Level Disruptor
 
-Use `Disruptor[T]` for the common V1 topology: one ring buffer with parallel
-consumers. Every handler receives every event.
+Use `Disruptor[T]` for one ring buffer with managed processors. The V1 fan-out
+mode wires parallel consumers where every handler receives every event.
 
 ```go
 type LongEventHandler struct {
@@ -142,6 +142,10 @@ if err := d.Start(ctx); err != nil {
 }
 defer d.Stop()
 ```
+
+`HandleEventsWith` and `HandleGraph` are mutually exclusive on one
+`Disruptor[T]` instance. Create a new disruptor when an application needs a
+separate fan-out stream and a graph stream.
 
 `HandleEventsWithOptions` attaches processor-specific options, currently
 `WithExceptionHandler[T](handler)`.
@@ -191,6 +195,78 @@ if err != nil {
 The processor adds its sequence as a ring-buffer gating sequence and removes it
 when the processor exits.
 
+## Topology Graphs
+
+Use `Graph[T]` when a topology has dependencies between handlers. The graph is
+constructed before `Start`, then registered through `HandleGraph`.
+
+```go
+graph := disruptor.MustGraph[LongEvent]("order-pipeline").
+    MustNode("validate", validateHandler).
+    MustNode("enrich", enrichHandler).
+    MustNode("persist", persistHandler).
+    MustEdge("validate", "enrich").
+    MustEdge("enrich", "persist")
+
+processors, err := d.HandleGraph(graph)
+if err != nil {
+    return err
+}
+
+if err := d.Start(ctx); err != nil {
+    return err
+}
+defer d.Stop()
+
+_ = processors
+```
+
+`Join` is a convenience for fan-in and fan-out edges:
+
+```go
+graph.Join("validate", "enrich").MustTo("persist")
+```
+
+The graph API exposes named processors after registration:
+
+```go
+persist, ok := processors.Processor("persist")
+sequence, ok := processors.Sequence("persist")
+snapshot := processors.Snapshot()
+```
+
+`GraphProcessors` is read-only. The owning `Disruptor` still manages start,
+stop, and wait.
+
+Graph handlers receive lightweight node context on each request:
+
+```go
+type NodeContext struct {
+    GraphName string
+    NodeName  string
+    NodeLabel string
+}
+```
+
+`EventRequest`, `BatchStartRequest`, `EventException`, `LifecycleException`,
+`BatchMetric`, `EventMetric`, and `ProcessorMetric` also carry `NodeContext`
+when they originate from graph processors.
+
+Graph mode uses its own exception semantics:
+
+- `ExceptionActionContinue` advances the sequence and keeps the graph moving.
+- `ExceptionActionRetry` retries the same sequence.
+- `ExceptionActionHalt` is graph-terminal and does not advance the failed
+  sequence.
+
+Graph mode keeps producer backpressure on leaf processors only. Intermediate
+processors remain barrier dependencies for downstream nodes but do not gate the
+producer.
+
+`HandleGraph` freezes the graph instance. A handled graph cannot be mutated or
+registered on another disruptor. Use `Snapshot`, `Mermaid`, or `DOT` before or
+after registration when a topology needs to be logged or inspected.
+
 ## Options
 
 Ring buffer options:
@@ -202,6 +278,16 @@ Ring buffer options:
 Processor options:
 
 - `WithExceptionHandler[T](handler)`
+
+Graph options:
+
+- `WithGraphExceptionHandler[T](handler)`
+
+Node options:
+
+- `WithNodeExceptionHandler[T](handler)`
+- `WithNodeLabel[T](label)`
+- `WithNodeMetadata[T](key, value)`
 
 Options are separated by lifecycle stage so a processor option cannot be passed
 to ring-buffer construction.
@@ -217,6 +303,9 @@ publication can happen out of claim order.
 
 `ProducerTypeUnknown` and out-of-range producer values are rejected. A nil wait
 strategy is rejected. A nil metrics sink disables metrics.
+
+Graph node and graph names are trimmed before storage. They must not be empty or
+contain control characters.
 
 ## Wait Strategies
 

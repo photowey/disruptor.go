@@ -16,5 +16,5 @@
 //
 // Each child directory is a small main package focused on one usage path:
 // basic publication, multi-consumer fan-out, metrics, recovery, batch publish,
-// or single-producer sequencing.
+// single-producer sequencing, and graph topologies.
 package examples

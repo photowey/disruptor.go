@@ -16,7 +16,8 @@
 // high-throughput in-process event exchange.
 //
 // The package exposes a generic preallocated ring buffer, cancellable producer
-// sequencing, batch event processors, wait strategies, recovery policies, and
-// backend-neutral metrics hooks. Public extension points are modeled as small
-// interfaces with named function adapters where callbacks are useful.
+// sequencing, batch event processors, dependency graphs, wait strategies,
+// recovery policies, and backend-neutral metrics hooks. Public extension
+// points are modeled as small interfaces with named function adapters where
+// callbacks are useful.
 package disruptor

@@ -1,6 +1,6 @@
 # Benchmarks
 
-Benchmarks are part of V1 release readiness for this repository.
+Benchmarks are part of release readiness for this repository.
 
 Run the full local benchmark suite:
 
@@ -8,12 +8,13 @@ Run the full local benchmark suite:
 go test -run '^$' -bench=. -benchmem -benchtime=100ms -count=10 ./...
 ```
 
-Run only end-to-end and comparison groups:
+Run only end-to-end, topology, and comparison groups:
 
 ```bash
 go test -run '^$' -bench=BenchmarkE2E -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkE2EDisruptorParallelProducers -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkChannelComparison -benchmem -count=10 ./benchmarks
+go test -run '^$' -bench=BenchmarkGraphTopology -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkE2ELatencyQuantiles -benchmem -count=10 ./benchmarks
 ```
 
@@ -32,7 +33,7 @@ Benchmark matrix:
 | Axis | Current groups |
 | --- | --- |
 | Ring size | `1024`, `65536`, `1048576` in `BenchmarkRingBufferMatrix`; `65536` in end-to-end and channel comparisons |
-| Topology | `1/1`, `1/N`, `M/1`, and `M/N` |
+| Topology | `1/1`, `1/N`, `M/1`, `M/N`, graph single-node, graph pipeline, graph fan-in, and graph diamond |
 | Wait strategy | blocking and busy-spin |
 | Claim batch size | `1`, `4`, `16`, `64`, `256` |
 | Queue comparison | unbuffered channel, buffered channel, pointer channel, spin channel, `sync.Cond` ring |

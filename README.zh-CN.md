@@ -3,7 +3,8 @@
 [English](README.md) | 中文
 
 `disruptor.go` 是 Go 版本的高性能 Disruptor 模式实现，提供泛型
-Ring Buffer、可取消的序列申请、异常恢复、指标钩子、示例和 benchmark。
+Ring Buffer、可取消的序列申请、依赖拓扑图、异常恢复、指标钩子、示例和
+benchmark。
 
 公共 API 以接口为核心，用户可以无缝替换 factory、translator、handler、
 exception handler、wait strategy 和 metrics sink。核心算法可以在内部演进，
@@ -98,7 +99,9 @@ func main() {
 ## API 形态
 
 - `RingBuffer[T]` 是底层 API，用于申请、修改和发布预分配事件槽。
-- `Disruptor[T]` 是高层门面，围绕一个 Ring Buffer 管理并行消费者。V1 中每个消费者都会收到全部事件。
+- `Disruptor[T]` 是高层门面，围绕一个 Ring Buffer 管理 processor。
+- `HandleEventsWith` 负责 V1 fan-out 模式，每个消费者都会收到全部事件。
+- `Graph[T]` 和 `HandleGraph` 负责 V1.1 依赖拓扑，例如 pipeline、fan-in、fan-out 和 diamond graph。
 - `EventFactory[T]`、`EventTranslator[T]`、`EventHandler[T]`、`ExceptionHandler[T]`、`WaitStrategy` 和 `MetricsSink` 都是接口。
 - `XxxFunc` 适配器仍然可用，适合快速桥接回调；正式示例优先展示命名类型，避免公开用法过度依赖匿名函数。
 - 阻塞生产者和处理器路径都接受 `context.Context`，等待过程可以被取消。
@@ -141,6 +144,27 @@ sequenceDiagram
     H-->>P: nil or error
 ```
 
+## 拓扑图
+
+`Graph[T]` 用显式节点和边描述 handler 依赖。Graph 必须在 `Start` 前构建，
+通过 `HandleGraph` 注册一次后会被冻结，因此运行中的拓扑仍然可以被快照、
+导出和排查。
+
+```mermaid
+flowchart LR
+    App["应用程序"] --> G["Graph[T]"]
+    G --> D["Disruptor[T].HandleGraph"]
+    D --> A["validate"]
+    A --> B["enrich"]
+    A --> C["audit"]
+    B --> J["persist"]
+    C --> J
+    J --> Leaf["leaf processor 对生产者施加背压"]
+```
+
+Graph processor 仍然消费同一个 Ring Buffer。source 节点等待 cursor，
+下游节点等待上游 sequence。生产者背压只挂在 leaf 节点上。
+
 ## 背压
 
 生产者只有在 `wrap point` 没有超过最慢消费者 sequence 时才能继续申请槽位，
@@ -176,7 +200,7 @@ internal/
   sequencer/      sequence 原语以及 single/multi producer sequencer
 
 pkg/disruptor/    公共 API、ring buffer facade、barrier、processor、metrics
-benchmarks/       端到端和 channel 对比 benchmark
+benchmarks/       端到端、拓扑和对比 benchmark
 examples/         可运行示例
 docs/             API 和设计文档
 ```
@@ -231,6 +255,9 @@ func (CountingMetricsSink) OnProcessorState(metric disruptor.ProcessorMetric) {}
 - `examples/error_recovery`
 - `examples/batch_publish`
 - `examples/single_producer`
+- `examples/pipeline`
+- `examples/diamond`
+- `examples/graph_export`
 
 运行示例：
 
@@ -250,6 +277,7 @@ go test -run '^$' -bench=BenchmarkE2ELatencyQuantiles -benchmem -count=10 ./benc
 benchstat benchmarks/baseline/baseline.txt /tmp/disruptor-new.txt
 ```
 
-更多端到端、M/N 生产消费、channel、`sync.Cond`、baseline 和尾延迟分组见 `benchmarks/README.md`。
+更多端到端、M/N 生产消费、graph topology、channel、`sync.Cond`、
+baseline 和尾延迟分组见 `benchmarks/README.md`。
 
 普通所有权转移和简单同步仍然优先使用 channel。只有当 benchmark 证明你需要高吞吐、低分配、广播给多个消费者或可控背压时，再使用这个库。
