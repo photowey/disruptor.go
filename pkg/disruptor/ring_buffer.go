@@ -124,7 +124,12 @@ func (r *RingBuffer[T]) AddGatingSequences(sequences ...*Sequence) {
 }
 
 func (r *RingBuffer[T]) RemoveGatingSequence(sequence *Sequence) bool {
-	return r.sequencer.RemoveGatingSequence(sequence)
+	removed := r.sequencer.RemoveGatingSequence(sequence)
+	if removed {
+		r.waitStrategy.SignalAll()
+	}
+
+	return removed
 }
 
 func (r *RingBuffer[T]) NewBarrier(dependencies ...*Sequence) Barrier {

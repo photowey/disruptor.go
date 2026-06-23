@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,6 +52,39 @@ func BenchmarkE2EDisruptor(b *testing.B) {
 	}
 }
 
+func BenchmarkE2EDisruptorParallelProducers(b *testing.B) {
+	for _, tt := range []struct {
+		name          string
+		waitStrategy  disruptor.WaitStrategy
+		consumerCount int
+	}{
+		{
+			name:          "blocking_mp_1c",
+			waitStrategy:  disruptor.NewBlockingWaitStrategy(),
+			consumerCount: 1,
+		},
+		{
+			name:          "busy_spin_mp_1c",
+			waitStrategy:  disruptor.NewBusySpinWaitStrategy(),
+			consumerCount: 1,
+		},
+		{
+			name:          "blocking_mp_4c",
+			waitStrategy:  disruptor.NewBlockingWaitStrategy(),
+			consumerCount: 4,
+		},
+		{
+			name:          "busy_spin_mp_4c",
+			waitStrategy:  disruptor.NewBusySpinWaitStrategy(),
+			consumerCount: 4,
+		},
+	} {
+		b.Run(tt.name, func(b *testing.B) {
+			benchmarkDisruptorParallelProducers(b, tt.waitStrategy, tt.consumerCount)
+		})
+	}
+}
+
 func benchmarkDisruptorE2E(
 	b *testing.B,
 	waitStrategy disruptor.WaitStrategy,
@@ -88,12 +122,13 @@ func benchmarkDisruptorE2E(
 		b.Fatalf("start disruptor: %v", err)
 	}
 
+	publishContext := context.Background()
 	var published int64
 	started := time.Now()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		sequence, err := d.RingBuffer().Next(ctx)
+		sequence, err := d.RingBuffer().Next(publishContext)
 		if err != nil {
 			b.Fatalf("next: %v", err)
 		}
@@ -114,6 +149,77 @@ func benchmarkDisruptorE2E(
 	elapsed := time.Since(started).Seconds()
 	if elapsed > 0 {
 		b.ReportMetric(float64(published)/elapsed, "events/s")
+	}
+}
+
+func benchmarkDisruptorParallelProducers(
+	b *testing.B,
+	waitStrategy disruptor.WaitStrategy,
+	consumerCount int,
+) {
+	b.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d, err := disruptor.New(
+		disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
+		65536,
+		disruptor.WithProducerType(disruptor.ProducerTypeMulti),
+		disruptor.WithWaitStrategy(waitStrategy),
+	)
+	if err != nil {
+		b.Fatalf("new disruptor: %v", err)
+	}
+
+	var processed atomic.Int64
+	handlers := make([]disruptor.EventHandler[benchEvent], 0, consumerCount)
+	for range consumerCount {
+		handlers = append(handlers, disruptor.EventHandlerFunc[benchEvent](func(
+			request disruptor.EventRequest[benchEvent],
+		) error {
+			benchmarkValueSink.Store(request.Event.Value)
+			processed.Add(1)
+			return nil
+		}))
+	}
+	if _, err := d.HandleEventsWith(handlers...); err != nil {
+		b.Fatalf("handle events with: %v", err)
+	}
+	if err := d.Start(ctx); err != nil {
+		b.Fatalf("start disruptor: %v", err)
+	}
+
+	publishContext := context.Background()
+	var published atomic.Int64
+	started := time.Now()
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			sequence, err := d.RingBuffer().Next(publishContext)
+			if err != nil {
+				b.Fatalf("next: %v", err)
+			}
+			value := published.Add(1)
+			d.RingBuffer().Get(sequence).Value = value
+			d.RingBuffer().Publish(sequence)
+		}
+	})
+	b.StopTimer()
+
+	publishedCount := published.Load()
+	target := publishedCount * int64(consumerCount)
+	waitForBenchmarkEvents(b, &processed, target)
+
+	d.Stop()
+	if err := d.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		b.Fatalf("wait disruptor: %v", err)
+	}
+
+	elapsed := time.Since(started).Seconds()
+	if elapsed > 0 {
+		b.ReportMetric(float64(publishedCount)/elapsed, "events/s")
 	}
 }
 
@@ -159,6 +265,9 @@ func BenchmarkChannelComparison(b *testing.B) {
 	})
 	b.Run("buffered_value_non_blocking_spin_1024", func(b *testing.B) {
 		benchmarkChannelNonBlockingSpin(b, 1024)
+	})
+	b.Run("sync_cond_ring_65536", func(b *testing.B) {
+		benchmarkCondQueueValue(b, 65536)
 	})
 }
 
@@ -242,6 +351,101 @@ func benchmarkChannelNonBlockingSpin(b *testing.B, capacity int) {
 
 	close(done)
 	benchmarkValueSink.Store(dropped)
+}
+
+func benchmarkCondQueueValue(b *testing.B, capacity int) {
+	b.Helper()
+
+	queue := newBenchmarkCondQueue(capacity)
+	done := make(chan int64, 1)
+	go func() {
+		var sum int64
+		for {
+			event, ok := queue.pop()
+			if !ok {
+				break
+			}
+			sum += event.Value
+		}
+		done <- sum
+	}()
+
+	var value int64
+	b.ReportAllocs()
+	for b.Loop() {
+		queue.push(benchEvent{Value: value})
+		value++
+	}
+
+	queue.close()
+	benchmarkValueSink.Store(<-done)
+}
+
+type benchmarkCondQueue struct {
+	mu       sync.Mutex
+	notEmpty *sync.Cond
+	notFull  *sync.Cond
+
+	buffer []benchEvent
+	head   int
+	tail   int
+	count  int
+	closed bool
+}
+
+func newBenchmarkCondQueue(capacity int) *benchmarkCondQueue {
+	queue := &benchmarkCondQueue{
+		buffer: make([]benchEvent, capacity),
+	}
+	queue.notEmpty = sync.NewCond(&queue.mu)
+	queue.notFull = sync.NewCond(&queue.mu)
+
+	return queue
+}
+
+func (q *benchmarkCondQueue) push(event benchEvent) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	for q.count == len(q.buffer) && !q.closed {
+		q.notFull.Wait()
+	}
+	if q.closed {
+		return
+	}
+
+	q.buffer[q.tail] = event
+	q.tail = (q.tail + 1) % len(q.buffer)
+	q.count++
+	q.notEmpty.Signal()
+}
+
+func (q *benchmarkCondQueue) pop() (benchEvent, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	for q.count == 0 && !q.closed {
+		q.notEmpty.Wait()
+	}
+	if q.count == 0 && q.closed {
+		return benchEvent{}, false
+	}
+
+	event := q.buffer[q.head]
+	q.head = (q.head + 1) % len(q.buffer)
+	q.count--
+	q.notFull.Signal()
+
+	return event, true
+}
+
+func (q *benchmarkCondQueue) close() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	q.closed = true
+	q.notEmpty.Broadcast()
+	q.notFull.Broadcast()
 }
 
 func waitForBenchmarkEvents(

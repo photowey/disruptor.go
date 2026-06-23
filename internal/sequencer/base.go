@@ -150,6 +150,6 @@ func (s *baseSequencer) capacityWaitRequestLocked(
 		RequestedSequences: requestedSequences,
 		CurrentSequence:    s.nextSequence,
 		WrapPoint:          nextSequence - s.size,
-		GatingSequence:     newMinimumSequenceReader(s.gatingSequences),
+		GatingSequence:     baseSequencerGatingReader{sequencer: s},
 	}
 }

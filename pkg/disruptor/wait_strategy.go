@@ -42,8 +42,10 @@ func NewBlockingWaitStrategy() WaitStrategy {
 
 func (s *BlockingWaitStrategy) WaitFor(request WaitRequest) (int64, error) {
 	s.init()
-	stopContextSignal := context.AfterFunc(request.Context, s.SignalAll)
-	defer stopContextSignal()
+	if request.Context.Done() != nil {
+		stopContextSignal := context.AfterFunc(request.Context, s.SignalAll)
+		defer stopContextSignal()
+	}
 
 	for {
 		generation := s.generationValue()
@@ -67,20 +69,22 @@ func (s *BlockingWaitStrategy) WaitFor(request WaitRequest) (int64, error) {
 
 func (s *BlockingWaitStrategy) WaitForCapacity(request CapacityWaitRequest) error {
 	s.init()
-	stopContextSignal := context.AfterFunc(request.Context, s.SignalAll)
-	defer stopContextSignal()
-
-	for {
-		generation := s.generationValue()
-		if err := request.Context.Err(); err != nil {
-			return err
-		}
-		if capacityAvailable(request) {
-			return nil
-		}
-
-		s.waitForSignal(generation, request.Context)
+	if request.Context.Done() != nil {
+		stopContextSignal := context.AfterFunc(request.Context, s.SignalAll)
+		defer stopContextSignal()
 	}
+
+	if err := request.Context.Err(); err != nil {
+		return err
+	}
+
+	generation := s.generationValue()
+	if capacityAvailable(request) {
+		return nil
+	}
+
+	s.waitForSignal(generation, request.Context)
+	return request.Context.Err()
 }
 
 func (s *BlockingWaitStrategy) SignalAll() {

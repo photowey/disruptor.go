@@ -119,6 +119,28 @@ func TestBlockingWaitStrategyWaitsUntilSignal(t *testing.T) {
 	}
 }
 
+func TestBlockingWaitStrategyCapacitySignalCannotBeLost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	strategy := disruptor.NewBlockingWaitStrategy()
+	reader := &signalingSequenceReader{
+		value: disruptor.InitialSequenceValue,
+		signal: func() {
+			strategy.SignalAll()
+		},
+	}
+
+	err := strategy.WaitForCapacity(disruptor.CapacityWaitRequest{
+		Context:        ctx,
+		WrapPoint:      0,
+		GatingSequence: reader,
+	})
+	if err != nil {
+		t.Fatalf("wait for capacity: %v", err)
+	}
+}
+
 type capturingWaitStrategy struct {
 	mu sync.Mutex
 
@@ -170,4 +192,17 @@ func (s *capturingWaitStrategy) capacityRequest() disruptor.CapacityWaitRequest 
 	defer s.mu.Unlock()
 
 	return s.capturedCapacityRequest
+}
+
+type signalingSequenceReader struct {
+	once sync.Once
+
+	value  int64
+	signal func()
+}
+
+func (r *signalingSequenceReader) Value() int64 {
+	r.once.Do(r.signal)
+
+	return r.value
 }

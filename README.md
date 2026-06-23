@@ -185,10 +185,11 @@ go test ./...
 go test -race ./...
 go test -bench=. -benchmem -count=10 -cpu=1,2,4,8 ./...
 go test -bench=BenchmarkE2ELatencyQuantiles -benchmem -count=10 ./benchmarks
+benchstat benchmarks/baseline/main.txt /tmp/disruptor-new.txt
 ```
 
-See `benchmarks/README.md` for end-to-end, channel comparison, and tail-latency
-groups.
+See `benchmarks/README.md` for end-to-end, M/N producer-consumer, channel,
+`sync.Cond`, baseline, and tail-latency groups.
 
 Channels remain the right default for ordinary ownership transfer and simple
 synchronization. Use this library when benchmarks show that you need high

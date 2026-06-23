@@ -12,6 +12,7 @@ Run only end-to-end and comparison groups:
 
 ```bash
 go test -bench=BenchmarkE2E -benchmem -count=10 ./benchmarks
+go test -bench=BenchmarkE2EDisruptorParallelProducers -benchmem -count=10 ./benchmarks
 go test -bench=BenchmarkChannelComparison -benchmem -count=10 ./benchmarks
 go test -bench=BenchmarkE2ELatencyQuantiles -benchmem -count=10 ./benchmarks
 ```
@@ -20,8 +21,22 @@ Recommended release comparison:
 
 ```bash
 go test -bench=. -benchmem -count=10 -cpu=1,2,4,8 ./... | tee /tmp/disruptor-new.txt
-benchstat /tmp/disruptor-old.txt /tmp/disruptor-new.txt
+benchstat benchmarks/baseline/main.txt /tmp/disruptor-new.txt
 ```
+
+The checked-in baseline lives in `benchmarks/baseline/main.txt`.
+Regenerate it only after an intentional release-gate run on the target machine.
+
+Benchmark matrix:
+
+| Axis | Current groups |
+| --- | --- |
+| Ring size | `65536` in end-to-end and channel comparisons; batch microbenchmarks use fixed ring sizing |
+| Topology | `1/1`, `1/N`, `M/1`, and `M/N` |
+| Wait strategy | blocking and busy-spin |
+| Claim batch size | `1`, `4`, `16`, `64`, `256` |
+| Queue comparison | unbuffered channel, buffered channel, pointer channel, spin channel, `sync.Cond` ring |
+| CPU matrix | run release gate with `-cpu=1,2,4,8` |
 
 `BenchmarkE2ELatencyQuantiles` reports sampled publish-to-handle `p50_ns`,
 `p95_ns`, and `p99_ns` for blocking and busy-spin wait strategies. Treat these

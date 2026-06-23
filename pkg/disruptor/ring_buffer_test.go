@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
 )
@@ -201,6 +202,44 @@ func TestRemoveGatingSequence(t *testing.T) {
 	}
 	if _, err := rb.Next(context.Background()); err != nil {
 		t.Fatalf("second next without gating sequence: %v", err)
+	}
+}
+
+func TestNextUnblocksWhenGatingSequenceIsRemoved(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rb := newTestRingBuffer(t, 1)
+	gating := disruptor.NewSequence(disruptor.InitialSequenceValue)
+	rb.AddGatingSequences(gating)
+
+	if _, err := rb.Next(ctx); err != nil {
+		t.Fatalf("first next: %v", err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := rb.Next(ctx)
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		t.Fatalf("next returned before gating sequence was removed: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	if removed := rb.RemoveGatingSequence(gating); !removed {
+		t.Fatal("remove gating sequence should return true")
+	}
+
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("next after gating sequence removal: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for next after gating sequence removal")
 	}
 }
 

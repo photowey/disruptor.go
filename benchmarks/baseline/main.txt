@@ -1,0 +1,66 @@
+goos: darwin
+goarch: amd64
+pkg: github.com/photowey/disruptor.go/benchmarks
+cpu: Intel(R) Core(TM) i7-7700HQ CPU @ 2.80GHz
+BenchmarkE2EDisruptor/blocking_1p_1c-8     	 6267436	       195.2 ns/op	   5111231 events/s	       0 B/op	       0 allocs/op
+BenchmarkE2EDisruptor/busy_spin_1p_1c-8    	12667456	        93.39 ns/op	  10706006 events/s	       0 B/op	       0 allocs/op
+BenchmarkE2EDisruptor/blocking_1p_4c-8     	 2005874	       608.8 ns/op	   1614027 events/s	       0 B/op	       0 allocs/op
+BenchmarkE2EDisruptor/busy_spin_1p_4c-8    	 7838936	       160.9 ns/op	   6196892 events/s	       0 B/op	       0 allocs/op
+BenchmarkE2EDisruptorParallelProducers/blocking_mp_1c-8         	 3569978	       340.6 ns/op	   2932843 events/s	       0 B/op	       0 allocs/op
+BenchmarkE2EDisruptorParallelProducers/busy_spin_mp_1c-8        	 4135458	       291.3 ns/op	   3432999 events/s	       0 B/op	       0 allocs/op
+BenchmarkE2EDisruptorParallelProducers/blocking_mp_4c-8         	 1000000	      1004 ns/op	    970690 events/s	       0 B/op	       0 allocs/op
+BenchmarkE2EDisruptorParallelProducers/busy_spin_mp_4c-8        	 3892134	       319.3 ns/op	   3130642 events/s	       0 B/op	       0 allocs/op
+BenchmarkRingBufferParallelProducers-8                          	 5370078	       220.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkChannelComparison/unbuffered_value-8                   	 4770946	       266.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkChannelComparison/buffered_value_65536-8               	18512257	        67.65 ns/op	       0 B/op	       0 allocs/op
+BenchmarkChannelComparison/buffered_pointer_allocating_65536-8  	14898813	        80.72 ns/op	       8 B/op	       1 allocs/op
+BenchmarkChannelComparison/buffered_value_non_blocking_spin_1024-8         	86797832	        12.59 ns/op	       0 B/op	       0 allocs/op
+BenchmarkChannelComparison/sync_cond_ring_65536-8                          	20353768	        58.76 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferBatchSizes/batch_1-8                                    	14320762	        81.70 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferBatchSizes/batch_4-8                                    	10146907	       114.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferBatchSizes/batch_16-8                                   	 5103006	       238.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferBatchSizes/batch_64-8                                   	 1513257	       768.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferBatchSizes/batch_256-8                                  	  435472	      2749 ns/op	       0 B/op	       0 allocs/op
+BenchmarkE2ELatencyQuantiles/blocking_1p_1c-8                              	 4045048	       301.7 ns/op	   3290853 events/s	    301437 p50_ns	    514339 p95_ns	    535680 p99_ns	       0 B/op	       0 allocs/op
+BenchmarkE2ELatencyQuantiles/busy_spin_1p_1c-8                             	 6775258	       184.1 ns/op	   5429331 events/s	      1119 p50_ns	      9143 p95_ns	     15793 p99_ns	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/photowey/disruptor.go/benchmarks	26.910s
+?   	github.com/photowey/disruptor.go/examples/basic	[no test files]
+?   	github.com/photowey/disruptor.go/examples/error_recovery	[no test files]
+?   	github.com/photowey/disruptor.go/examples/metrics	[no test files]
+?   	github.com/photowey/disruptor.go/examples/multi_consumer	[no test files]
+?   	github.com/photowey/disruptor.go/internal/availability	[no test files]
+PASS
+ok  	github.com/photowey/disruptor.go/internal/padding	1.046s
+goos: darwin
+goarch: amd64
+pkg: github.com/photowey/disruptor.go/internal/sequencer
+cpu: Intel(R) Core(TM) i7-7700HQ CPU @ 2.80GHz
+BenchmarkSingleProducerClaimPublish-8   	95671204	        12.55 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMultiProducerClaimPublish-8    	19611265	        62.52 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSequencerBatchClaimPublish/batch_1-8         	21258225	        57.17 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSequencerBatchClaimPublish/batch_4-8         	13280266	        87.77 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSequencerBatchClaimPublish/batch_16-8        	 5955922	       208.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSequencerBatchClaimPublish/batch_64-8        	 1800871	       684.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSequencerBatchClaimPublish/batch_256-8       	  486656	      2497 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/photowey/disruptor.go/internal/sequencer	8.976s
+goos: darwin
+goarch: amd64
+pkg: github.com/photowey/disruptor.go/pkg/disruptor
+cpu: Intel(R) Core(TM) i7-7700HQ CPU @ 2.80GHz
+BenchmarkSequenceValue-8                     	825994941	         1.425 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSequenceStore-8                     	151905493	         7.740 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSequenceAdd-8                       	167052602	         7.174 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSequenceCompareAndSwap-8            	160523026	         7.624 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferGet-8                     	679089445	         1.761 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferNextPublish-8             	13320280	        88.94 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferTryNextPublish-8          	13255693	        87.12 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferNextNPublishRange/batch_1-8         	13670860	        86.77 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferNextNPublishRange/batch_4-8         	 9936081	       125.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferNextNPublishRange/batch_16-8        	 3926097	       264.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferNextNPublishRange/batch_64-8        	 1443798	       804.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingBufferNextNPublishRange/batch_256-8       	  433714	      3045 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBarrierWaitForPublishedSequence-8             	177423332	         6.593 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/photowey/disruptor.go/pkg/disruptor	16.019s
