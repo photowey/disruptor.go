@@ -21,10 +21,10 @@ Recommended release comparison:
 
 ```bash
 go test -bench=. -benchmem -count=10 -cpu=1,2,4,8 ./... | tee /tmp/disruptor-new.txt
-benchstat benchmarks/baseline/main.txt /tmp/disruptor-new.txt
+benchstat benchmarks/baseline/baseline.txt /tmp/disruptor-new.txt
 ```
 
-The checked-in baseline lives in `benchmarks/baseline/main.txt`.
+The checked-in baseline lives in `benchmarks/baseline/baseline.txt`.
 Regenerate it only after an intentional release-gate run on the target machine.
 
 Benchmark matrix:
