@@ -11,12 +11,35 @@ type longEvent struct {
 	Value int64
 }
 
+type longEventFactory struct{}
+
+func (longEventFactory) NewEvent() longEvent {
+	return longEvent{}
+}
+
+type valueHandler struct {
+	done chan<- int64
+}
+
+func (h valueHandler) OnEvent(request disruptor.EventRequest[longEvent]) error {
+	h.done <- request.Event.Value
+	return nil
+}
+
+type valueTranslator struct {
+	value int64
+}
+
+func (t valueTranslator) Translate(request disruptor.TranslateRequest[longEvent]) {
+	request.Event.Value = t.value
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		longEventFactory{},
 		1024,
 	)
 	if err != nil {
@@ -24,12 +47,7 @@ func main() {
 	}
 
 	done := make(chan int64, 1)
-	_, err = d.HandleEventsWith(disruptor.EventHandlerFunc[longEvent](func(
-		request disruptor.EventRequest[longEvent],
-	) error {
-		done <- request.Event.Value
-		return nil
-	}))
+	_, err = d.HandleEventsWith(valueHandler{done: done})
 	if err != nil {
 		panic(err)
 	}
@@ -37,11 +55,7 @@ func main() {
 		panic(err)
 	}
 
-	err = d.RingBuffer().PublishEvent(ctx, disruptor.EventTranslatorFunc[longEvent](func(
-		request disruptor.TranslateRequest[longEvent],
-	) {
-		request.Event.Value = 42
-	}))
+	err = d.RingBuffer().PublishEvent(ctx, valueTranslator{value: 42})
 	if err != nil {
 		panic(err)
 	}

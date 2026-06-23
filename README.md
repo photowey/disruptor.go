@@ -1,5 +1,7 @@
 # disruptor.go
 
+English | [中文](README.zh-CN.md)
+
 High-performance Disruptor pattern implementation for Go, with generic ring
 buffers, cancellable sequencing, recovery hooks, metrics, examples, and
 benchmarks.
@@ -36,11 +38,38 @@ type LongEvent struct {
     Value int64
 }
 
+type LongEventFactory struct{}
+
+func (LongEventFactory) NewEvent() LongEvent {
+    return LongEvent{}
+}
+
+type LongEventHandler struct {
+    Done chan<- int64
+}
+
+func (h LongEventHandler) OnEvent(
+    request disruptor.EventRequest[LongEvent],
+) error {
+    h.Done <- request.Event.Value
+    return nil
+}
+
+type LongEventTranslator struct {
+    Value int64
+}
+
+func (t LongEventTranslator) Translate(
+    request disruptor.TranslateRequest[LongEvent],
+) {
+    request.Event.Value = t.Value
+}
+
 func main() {
     ctx := context.Background()
 
     d, err := disruptor.New(
-        disruptor.EventFactoryFunc[LongEvent](func() LongEvent { return LongEvent{} }),
+        LongEventFactory{},
         1024,
     )
     if err != nil {
@@ -48,12 +77,7 @@ func main() {
     }
 
     done := make(chan int64, 1)
-    _, err = d.HandleEventsWith(disruptor.EventHandlerFunc[LongEvent](func(
-        request disruptor.EventRequest[LongEvent],
-    ) error {
-        done <- request.Event.Value
-        return nil
-    }))
+    _, err = d.HandleEventsWith(LongEventHandler{Done: done})
     if err != nil {
         panic(err)
     }
@@ -61,11 +85,7 @@ func main() {
         panic(err)
     }
 
-    err = d.RingBuffer().PublishEvent(ctx, disruptor.EventTranslatorFunc[LongEvent](func(
-        request disruptor.TranslateRequest[LongEvent],
-    ) {
-        request.Event.Value = 42
-    }))
+    err = d.RingBuffer().PublishEvent(ctx, LongEventTranslator{Value: 42})
     if err != nil {
         panic(err)
     }
@@ -151,14 +171,13 @@ Metrics are opt-in and backend-neutral. The default sink is nil, so hot paths
 short-circuit before measuring or dispatching.
 
 ```go
-metrics := disruptor.MetricsSinkFunc{
-    Publish: func(metric disruptor.PublishMetric) {
-        // record publish batch size, sequence, duration, error, etc.
-    },
-    EventHandled: func(metric disruptor.EventMetric) {
-        // record handler duration and errors.
-    },
-}
+type CountingMetricsSink struct{}
+
+func (CountingMetricsSink) OnPublish(metric disruptor.PublishMetric) {}
+func (CountingMetricsSink) OnBatchStart(metric disruptor.BatchMetric) {}
+func (CountingMetricsSink) OnEventHandled(metric disruptor.EventMetric) {}
+func (CountingMetricsSink) OnWait(metric disruptor.WaitMetric) {}
+func (CountingMetricsSink) OnProcessorState(metric disruptor.ProcessorMetric) {}
 ```
 
 ## Examples
@@ -169,6 +188,8 @@ Runnable examples live under `examples/`:
 - `examples/multi_consumer`
 - `examples/metrics`
 - `examples/error_recovery`
+- `examples/batch_publish`
+- `examples/single_producer`
 
 Run one with:
 

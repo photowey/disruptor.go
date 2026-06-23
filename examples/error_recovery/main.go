@@ -13,12 +13,41 @@ type recoveryEvent struct {
 	Value int64
 }
 
+type recoveryEventFactory struct{}
+
+func (recoveryEventFactory) NewEvent() recoveryEvent {
+	return recoveryEvent{}
+}
+
+type retryingHandler struct {
+	attempts *atomic.Int64
+	done     chan<- int64
+}
+
+func (h retryingHandler) OnEvent(request disruptor.EventRequest[recoveryEvent]) error {
+	attempt := h.attempts.Add(1)
+	if attempt <= 2 {
+		return errors.New("temporary failure")
+	}
+
+	h.done <- request.Event.Value
+	return nil
+}
+
+type recoveryTranslator struct {
+	value int64
+}
+
+func (t recoveryTranslator) Translate(request disruptor.TranslateRequest[recoveryEvent]) {
+	request.Event.Value = t.value
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[recoveryEvent](func() recoveryEvent { return recoveryEvent{} }),
+		recoveryEventFactory{},
 		1024,
 	)
 	if err != nil {
@@ -27,17 +56,7 @@ func main() {
 
 	var attempts atomic.Int64
 	done := make(chan int64, 1)
-	handler := disruptor.EventHandlerFunc[recoveryEvent](func(
-		request disruptor.EventRequest[recoveryEvent],
-	) error {
-		attempt := attempts.Add(1)
-		if attempt <= 2 {
-			return errors.New("temporary failure")
-		}
-
-		done <- request.Event.Value
-		return nil
-	})
+	handler := retryingHandler{attempts: &attempts, done: done}
 
 	retryHandler, err := disruptor.NewRetryExceptionHandler[recoveryEvent](
 		2,
@@ -57,11 +76,7 @@ func main() {
 		panic(err)
 	}
 
-	err = d.RingBuffer().PublishEvent(ctx, disruptor.EventTranslatorFunc[recoveryEvent](func(
-		request disruptor.TranslateRequest[recoveryEvent],
-	) {
-		request.Event.Value = 9
-	}))
+	err = d.RingBuffer().PublishEvent(ctx, recoveryTranslator{value: 9})
 	if err != nil {
 		panic(err)
 	}

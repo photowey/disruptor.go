@@ -1,0 +1,53 @@
+name: Disruptor.go CI
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ "*" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ubuntu-latest - Go from go.mod
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+        env:
+          GOPROXY: "https://proxy.golang.org,direct"
+
+      - name: Verify go mod tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Check code formatting
+        run: |
+          files=$(gofmt -l .)
+          if [ -n "$files" ]; then
+            echo "The following files are not formatted:"
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: go test -shuffle=on -coverprofile=coverage.out ./...
+
+      - name: Run race tests
+        run: go test -race -shuffle=on ./...
+
+      - name: Run benchmark smoke test
+        run: go test -run '^$' -bench=BenchmarkRingBufferMatrix -benchmem -benchtime=100ms -count=1 ./benchmarks
