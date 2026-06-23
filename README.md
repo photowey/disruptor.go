@@ -114,6 +114,43 @@ func main() {
 - `ProducerTypeMulti` is the default; `ProducerTypeSingle` is a lighter path for
   one producer that publishes claimed sequences in order.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    App["Application"] --> D["Disruptor[T]"]
+    App --> RB["RingBuffer[T]"]
+    D --> RB
+    RB --> S["Sequencer"]
+    RB --> W["WaitStrategy"]
+    RB --> M["MetricsSink"]
+    D --> P["BatchEventProcessor[T]"]
+    P --> B["Barrier"]
+    P --> H["EventHandler[T]"]
+    P --> E["ExceptionHandler[T]"]
+    P --> M
+```
+
+## Event Flow
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant RB as RingBuffer T
+    participant Seq as Sequencer
+    participant P as BatchEventProcessor T
+    participant H as EventHandler T
+
+    App->>RB: PublishEvent(ctx, translator)
+    RB->>Seq: Next(ctx)
+    Seq-->>RB: sequence
+    RB->>RB: translate into slot
+    RB->>Seq: Publish(sequence)
+    Seq-->>P: sequence available
+    P->>H: OnEvent(request)
+    H-->>P: nil or error
+```
+
 ## Layout
 
 The public package is `pkg/disruptor`. Internal algorithm boundaries live under

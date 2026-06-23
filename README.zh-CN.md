@@ -104,6 +104,43 @@ func main() {
 - 阻塞生产者和处理器路径都接受 `context.Context`，等待过程可以被取消。
 - 默认生产者类型是 `ProducerTypeMulti`；单生产者场景可以使用 `ProducerTypeSingle` 获得更轻的顺序发布路径。
 
+## 架构
+
+```mermaid
+flowchart LR
+    App["应用程序"] --> D["Disruptor[T]"]
+    App --> RB["RingBuffer[T]"]
+    D --> RB
+    RB --> S["Sequencer"]
+    RB --> W["WaitStrategy"]
+    RB --> M["MetricsSink"]
+    D --> P["BatchEventProcessor[T]"]
+    P --> B["Barrier"]
+    P --> H["EventHandler[T]"]
+    P --> E["ExceptionHandler[T]"]
+    P --> M
+```
+
+## 流转流程
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant RB as RingBuffer T
+    participant Seq as Sequencer
+    participant P as BatchEventProcessor T
+    participant H as EventHandler T
+
+    App->>RB: PublishEvent(ctx, translator)
+    RB->>Seq: Next(ctx)
+    Seq-->>RB: sequence
+    RB->>RB: translate into slot
+    RB->>Seq: Publish(sequence)
+    Seq-->>P: sequence available
+    P->>H: OnEvent(request)
+    H-->>P: nil or error
+```
+
 ## 项目布局
 
 公共包位于 `pkg/disruptor`。内部算法边界位于 `internal/`：
