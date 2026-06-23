@@ -75,6 +75,76 @@ func TestBatchEventProcessorReportsNodeContext(t *testing.T) {
 	}
 }
 
+func TestBatchEventProcessorReportsNodeContextForBatchStartException(t *testing.T) {
+	rb := newInternalProcessorRingBuffer(t, 4)
+	exceptions := make(chan LifecycleException, 1)
+	handler := internalProcessorBatchStartHandler{
+		batchStart: func(request BatchStartRequest) error {
+			return errInternalProcessorBatchStartHandler
+		},
+		handle: func(request EventRequest[internalProcessorEvent]) error {
+			return nil
+		},
+	}
+
+	processor, err := newBatchEventProcessor(
+		rb,
+		rb.NewBarrier(),
+		handler,
+		batchEventProcessorConfig[internalProcessorEvent]{
+			exceptionHandler: exceptionHandlerFunc[internalProcessorEvent]{
+				handleEvent: func(request EventException[internalProcessorEvent]) ExceptionAction {
+					return ExceptionActionHalt
+				},
+				handleStart: func(request LifecycleException) ExceptionAction {
+					exceptions <- request
+					return ExceptionActionContinue
+				},
+				handleShutdown: func(request LifecycleException) ExceptionAction {
+					return ExceptionActionHalt
+				},
+			},
+			producerGating: true,
+			haltAdvances:   true,
+			node: NodeContext{
+				GraphName: "orders",
+				NodeName:  "validate",
+				NodeLabel: "Validate",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("new processor: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := processor.Start(ctx); err != nil {
+		t.Fatalf("start processor: %v", err)
+	}
+	defer processor.Stop()
+
+	publishInternalProcessorValue(t, rb, 9)
+
+	select {
+	case request := <-exceptions:
+		if request.Node.GraphName != "orders" {
+			t.Fatalf("graph name = %q, want orders", request.Node.GraphName)
+		}
+		if request.Node.NodeName != "validate" {
+			t.Fatalf("node name = %q, want validate", request.Node.NodeName)
+		}
+		if request.Node.NodeLabel != "Validate" {
+			t.Fatalf("node label = %q, want Validate", request.Node.NodeLabel)
+		}
+		if !errors.Is(request.Err, errInternalProcessorBatchStartHandler) {
+			t.Fatalf("request err = %v, want batch start handler error", request.Err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timed out waiting for batch start exception")
+	}
+}
+
 func TestBatchEventProcessorCanSkipProducerGating(t *testing.T) {
 	rb := newInternalProcessorRingBuffer(t, 1)
 	_, err := newBatchEventProcessor(
@@ -162,6 +232,31 @@ func TestBatchEventProcessorPublicConstructorKeepsV1HaltAdvance(t *testing.T) {
 	}
 }
 
+type internalProcessorBatchStartHandler struct {
+	batchStart func(BatchStartRequest) error
+	handle     func(EventRequest[internalProcessorEvent]) error
+}
+
+func (h internalProcessorBatchStartHandler) OnBatchStart(
+	request BatchStartRequest,
+) error {
+	if h.batchStart == nil {
+		return nil
+	}
+
+	return h.batchStart(request)
+}
+
+func (h internalProcessorBatchStartHandler) OnEvent(
+	request EventRequest[internalProcessorEvent],
+) error {
+	if h.handle == nil {
+		return nil
+	}
+
+	return h.handle(request)
+}
+
 func newInternalProcessorRingBuffer(
 	t *testing.T,
 	size int,
@@ -220,3 +315,4 @@ func (h internalProcessorHandler) OnEvent(
 }
 
 var errInternalProcessorHandler = errors.New("internal processor handler failed")
+var errInternalProcessorBatchStartHandler = errors.New("internal processor batch start failed")

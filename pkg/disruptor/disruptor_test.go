@@ -105,6 +105,81 @@ func TestDisruptorHandleEventsWithRequiresHandler(t *testing.T) {
 	}
 }
 
+func TestDisruptorHandleEventsWithRollsBackAfterNilHandler(t *testing.T) {
+	t.Run("producer gating", func(t *testing.T) {
+		d, err := disruptor.New(
+			disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+			1,
+		)
+		if err != nil {
+			t.Fatalf("new disruptor: %v", err)
+		}
+
+		handler := disruptor.EventHandlerFunc[longEvent](func(
+			request disruptor.EventRequest[longEvent],
+		) error {
+			return nil
+		})
+		if _, err := d.HandleEventsWith(handler, nil); err == nil {
+			t.Fatal("expected nil handler error")
+		}
+
+		if _, err := d.RingBuffer().TryNext(); err != nil {
+			t.Fatalf("first try next after failed registration: %v", err)
+		}
+		if _, err := d.RingBuffer().TryNext(); err != nil {
+			t.Fatalf("second try next after failed registration: %v", err)
+		}
+	})
+
+	t.Run("processor list", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		d, err := disruptor.New(
+			disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+			8,
+		)
+		if err != nil {
+			t.Fatalf("new disruptor: %v", err)
+		}
+
+		stale := make(chan struct{}, 1)
+		staleHandler := disruptor.EventHandlerFunc[longEvent](func(
+			request disruptor.EventRequest[longEvent],
+		) error {
+			stale <- struct{}{}
+			return nil
+		})
+		if _, err := d.HandleEventsWith(staleHandler, nil); err == nil {
+			t.Fatal("expected nil handler error")
+		}
+
+		active := make(chan struct{}, 1)
+		activeHandler := disruptor.EventHandlerFunc[longEvent](func(
+			request disruptor.EventRequest[longEvent],
+		) error {
+			active <- struct{}{}
+			return nil
+		})
+		if _, err := d.HandleEventsWith(activeHandler); err != nil {
+			t.Fatalf("handle events after failed registration: %v", err)
+		}
+		if err := d.Start(ctx); err != nil {
+			t.Fatalf("start disruptor: %v", err)
+		}
+		defer d.Stop()
+
+		publishValues(t, d.RingBuffer(), 1)
+		waitForSignal(t, active)
+		select {
+		case <-stale:
+			t.Fatal("stale processor handled event after failed registration")
+		case <-time.After(50 * time.Millisecond):
+		}
+	})
+}
+
 func TestDisruptorRejectsHandlerRegistrationAfterStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

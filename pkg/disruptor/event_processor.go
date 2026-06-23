@@ -401,6 +401,7 @@ func (p *BatchEventProcessor[T]) notifyBatchStart(request BatchStartRequest) boo
 		action := p.exceptionHandler.HandleStartException(LifecycleException{
 			Context: request.Context,
 			Err:     err,
+			Node:    p.node,
 		})
 		switch action {
 		case ExceptionActionContinue:

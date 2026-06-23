@@ -77,6 +77,23 @@ func (d *Disruptor[T]) HandleEventsWithOptions(
 	if len(handlers) == 0 {
 		return nil, fmt.Errorf("disruptor: no event handlers")
 	}
+	for _, handler := range handlers {
+		if handler == nil {
+			return nil, fmt.Errorf("disruptor: event handler is nil")
+		}
+	}
+
+	processorOptions := processorConfig[T]{
+		exceptionHandler: defaultProcessorConfig[T]().exceptionHandler,
+	}
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		if err := opt.applyProcessor(&processorOptions); err != nil {
+			return nil, fmt.Errorf("applying processor option: %w", err)
+		}
+	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -89,27 +106,32 @@ func (d *Disruptor[T]) HandleEventsWithOptions(
 			ErrConsumerModeConflict,
 		)
 	}
-	d.mode = consumerModeFanOut
 
 	processors := make([]EventProcessor, 0, len(handlers))
 	for _, handler := range handlers {
-		if handler == nil {
-			return nil, fmt.Errorf("disruptor: event handler is nil")
-		}
-
-		processor, err := NewBatchEventProcessor(
+		processor, err := newBatchEventProcessor(
 			d.ringBuffer,
 			d.ringBuffer.NewBarrier(),
 			handler,
-			opts...,
+			batchEventProcessorConfig[T]{
+				exceptionHandler: processorOptions.exceptionHandler,
+				producerGating:   true,
+				haltAdvances:     true,
+			},
 		)
 		if err != nil {
+			for _, created := range processors {
+				if batchProcessor, ok := created.(*BatchEventProcessor[T]); ok {
+					batchProcessor.removeGatingSequence()
+				}
+			}
 			return nil, fmt.Errorf("creating batch event processor: %w", err)
 		}
 
 		processors = append(processors, processor)
-		d.processors = append(d.processors, processor)
 	}
+	d.mode = consumerModeFanOut
+	d.processors = append(d.processors, processors...)
 
 	return processors, nil
 }
