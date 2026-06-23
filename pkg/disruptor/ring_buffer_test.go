@@ -89,6 +89,37 @@ func TestNextNReturnsHighSequenceAndPublishRangeAdvancesBarrier(t *testing.T) {
 	}
 }
 
+func TestRingBufferSingleProducerOptionPublishesEvents(t *testing.T) {
+	ctx := context.Background()
+	rb, err := disruptor.NewRingBuffer(
+		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		8,
+		disruptor.WithProducerType(disruptor.ProducerTypeSingle),
+	)
+	if err != nil {
+		t.Fatalf("new ring buffer: %v", err)
+	}
+
+	sequence, err := rb.Next(ctx)
+	if err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	rb.Get(sequence).Value = 42
+	rb.Publish(sequence)
+
+	barrier := rb.NewBarrier()
+	available, err := barrier.WaitFor(ctx, sequence)
+	if err != nil {
+		t.Fatalf("wait for published sequence: %v", err)
+	}
+	if available != sequence {
+		t.Fatalf("available sequence = %d, want %d", available, sequence)
+	}
+	if got := rb.Get(sequence).Value; got != 42 {
+		t.Fatalf("event value = %d, want 42", got)
+	}
+}
+
 func TestPublishEventPublishesClaimedSequenceWhenTranslatorPanics(t *testing.T) {
 	ctx := context.Background()
 	rb := newTestRingBuffer(t, 4)

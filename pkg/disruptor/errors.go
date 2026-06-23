@@ -1,11 +1,15 @@
 package disruptor
 
-import "errors"
+import (
+	"errors"
+
+	sequencer "github.com/photowey/disruptor.go/internal/sequencer"
+)
 
 var (
 	ErrAlerted              = errors.New("disruptor: alerted")
 	ErrClosed               = errors.New("disruptor: closed")
-	ErrInsufficientCapacity = errors.New("disruptor: insufficient capacity")
+	ErrInsufficientCapacity = sequencer.ErrInsufficientCapacity
 	ErrInvalidBufferSize    = errors.New("disruptor: invalid buffer size")
-	ErrInvalidSequence      = errors.New("disruptor: invalid sequence")
+	ErrInvalidSequence      = sequencer.ErrInvalidSequence
 )

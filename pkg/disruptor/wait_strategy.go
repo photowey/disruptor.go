@@ -4,11 +4,11 @@ import (
 	"context"
 	"runtime"
 	"time"
+
+	sequencer "github.com/photowey/disruptor.go/internal/sequencer"
 )
 
-type SequenceReader interface {
-	Value() int64
-}
+type SequenceReader = sequencer.SequenceReader
 
 type WaitStrategy interface {
 	WaitFor(request WaitRequest) (int64, error)
@@ -24,13 +24,7 @@ type WaitRequest struct {
 	Barrier           Barrier
 }
 
-type CapacityWaitRequest struct {
-	Context            context.Context
-	RequestedSequences int64
-	CurrentSequence    int64
-	WrapPoint          int64
-	GatingSequence     SequenceReader
-}
+type CapacityWaitRequest = sequencer.CapacityWaitRequest
 
 type BlockingWaitStrategy struct {
 	interval time.Duration

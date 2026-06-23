@@ -3,23 +3,18 @@ package disruptor
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
+
+	internalsequencer "github.com/photowey/disruptor.go/internal/sequencer"
 )
 
 type RingBuffer[T any] struct {
-	mu sync.Mutex
-
-	entries         []T
-	mask            int64
-	size            int64
-	nextSequence    int64
-	cursor          *Sequence
-	gatingSequences []*Sequence
-	available       map[int64]struct{}
-	waitStrategy    WaitStrategy
-	producerType    ProducerType
-	metrics         MetricsSink
+	entries      []T
+	mask         int64
+	sequencer    internalsequencer.Sequencer
+	waitStrategy WaitStrategy
+	producerType ProducerType
+	metrics      MetricsSink
 }
 
 func NewRingBuffer[T any](
@@ -50,16 +45,12 @@ func NewRingBuffer[T any](
 	}
 
 	return &RingBuffer[T]{
-		entries:         entries,
-		mask:            int64(size - 1),
-		size:            int64(size),
-		nextSequence:    InitialSequenceValue,
-		cursor:          NewSequence(InitialSequenceValue),
-		gatingSequences: []*Sequence{},
-		available:       map[int64]struct{}{},
-		waitStrategy:    config.waitStrategy,
-		producerType:    config.producerType,
-		metrics:         config.metrics,
+		entries:      entries,
+		mask:         int64(size - 1),
+		sequencer:    newRingBufferSequencer(int64(size), config),
+		waitStrategy: config.waitStrategy,
+		producerType: config.producerType,
+		metrics:      config.metrics,
 	}, nil
 }
 
@@ -68,31 +59,7 @@ func (r *RingBuffer[T]) Next(ctx context.Context) (int64, error) {
 }
 
 func (r *RingBuffer[T]) NextN(ctx context.Context, n int64) (int64, error) {
-	if n <= 0 || n > r.size {
-		return InitialSequenceValue, ErrInvalidSequence
-	}
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return InitialSequenceValue, err
-		}
-
-		r.mu.Lock()
-		nextSequence := r.nextSequence + n
-		if r.hasAvailableCapacityLocked(nextSequence) {
-			r.nextSequence = nextSequence
-			r.mu.Unlock()
-
-			return nextSequence, nil
-		}
-
-		request := r.capacityWaitRequestLocked(ctx, n, nextSequence)
-		r.mu.Unlock()
-
-		if err := r.waitStrategy.WaitForCapacity(request); err != nil {
-			return InitialSequenceValue, err
-		}
-	}
+	return r.sequencer.NextN(ctx, n)
 }
 
 func (r *RingBuffer[T]) TryNext() (int64, error) {
@@ -100,20 +67,7 @@ func (r *RingBuffer[T]) TryNext() (int64, error) {
 }
 
 func (r *RingBuffer[T]) TryNextN(n int64) (int64, error) {
-	if n <= 0 || n > r.size {
-		return InitialSequenceValue, ErrInvalidSequence
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	nextSequence := r.nextSequence + n
-	if !r.hasAvailableCapacityLocked(nextSequence) {
-		return InitialSequenceValue, ErrInsufficientCapacity
-	}
-
-	r.nextSequence = nextSequence
-	return nextSequence, nil
+	return r.sequencer.TryNextN(n)
 }
 
 func (r *RingBuffer[T]) Get(sequence int64) *T {
@@ -133,13 +87,7 @@ func (r *RingBuffer[T]) publishRange(lo, hi int64, started time.Time, err error)
 		return
 	}
 
-	r.mu.Lock()
-	for sequence := lo; sequence <= hi; sequence++ {
-		r.available[sequence] = struct{}{}
-	}
-	r.advanceCursorLocked()
-	r.mu.Unlock()
-
+	r.sequencer.PublishRange(lo, hi)
 	r.waitStrategy.SignalAll()
 	r.publishMetric(lo, hi, started, err)
 }
@@ -172,90 +120,15 @@ func (r *RingBuffer[T]) PublishEvent(
 }
 
 func (r *RingBuffer[T]) AddGatingSequences(sequences ...*Sequence) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	for _, sequence := range sequences {
-		if sequence == nil {
-			continue
-		}
-		r.gatingSequences = append(r.gatingSequences, sequence)
-	}
+	r.sequencer.AddGatingSequences(sequences...)
 }
 
 func (r *RingBuffer[T]) RemoveGatingSequence(sequence *Sequence) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	for i, item := range r.gatingSequences {
-		if item != sequence {
-			continue
-		}
-
-		r.gatingSequences = append(
-			r.gatingSequences[:i],
-			r.gatingSequences[i+1:]...,
-		)
-
-		return true
-	}
-
-	return false
+	return r.sequencer.RemoveGatingSequence(sequence)
 }
 
 func (r *RingBuffer[T]) NewBarrier(dependencies ...*Sequence) Barrier {
-	return newProcessingBarrier(r.cursor, r.waitStrategy, r.metrics, dependencies...)
-}
-
-func (r *RingBuffer[T]) hasAvailableCapacityLocked(nextSequence int64) bool {
-	if len(r.gatingSequences) == 0 {
-		return true
-	}
-
-	wrapPoint := nextSequence - r.size
-	return wrapPoint <= r.minimumGatingSequenceLocked()
-}
-
-func (r *RingBuffer[T]) minimumGatingSequenceLocked() int64 {
-	minimum := r.gatingSequences[0].Value()
-	for _, sequence := range r.gatingSequences[1:] {
-		value := sequence.Value()
-		if value < minimum {
-			minimum = value
-		}
-	}
-
-	return minimum
-}
-
-func (r *RingBuffer[T]) capacityWaitRequestLocked(
-	ctx context.Context,
-	requestedSequences int64,
-	nextSequence int64,
-) CapacityWaitRequest {
-	var gating SequenceReader
-	if len(r.gatingSequences) > 0 {
-		gating = r.gatingSequences[0]
-	}
-
-	return CapacityWaitRequest{
-		Context:            ctx,
-		RequestedSequences: requestedSequences,
-		CurrentSequence:    r.nextSequence,
-		WrapPoint:          nextSequence - r.size,
-		GatingSequence:     gating,
-	}
-}
-
-func (r *RingBuffer[T]) advanceCursorLocked() {
-	for sequence := r.cursor.Value() + 1; ; sequence++ {
-		if _, ok := r.available[sequence]; !ok {
-			return
-		}
-
-		delete(r.available, sequence)
-		r.cursor.Store(sequence)
-	}
+	return newProcessingBarrier(r.sequencer.Cursor(), r.waitStrategy, r.metrics, dependencies...)
 }
 
 func (r *RingBuffer[T]) publishMetric(lo, hi int64, started time.Time, err error) {
@@ -275,4 +148,15 @@ func (r *RingBuffer[T]) publishMetric(lo, hi int64, started time.Time, err error
 		Duration:     duration,
 		Err:          err,
 	})
+}
+
+func newRingBufferSequencer(
+	size int64,
+	config ringBufferConfig,
+) internalsequencer.Sequencer {
+	if config.producerType == ProducerTypeSingle {
+		return internalsequencer.NewSingleProducer(size, config.waitStrategy)
+	}
+
+	return internalsequencer.NewMultiProducer(size, config.waitStrategy)
 }

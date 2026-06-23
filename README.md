@@ -92,6 +92,27 @@ func main() {
 - `context.Context` is accepted by blocking producer and processor operations so
   waits can be cancelled.
 
+## Layout
+
+The public package is `pkg/disruptor`. Internal algorithm boundaries live under
+`internal/`:
+
+```text
+internal/
+  availability/   contiguous publication scanning
+  padding/        cache-line padding primitives
+  sequencer/      sequence primitive plus single/multi producer sequencers
+
+pkg/disruptor/    public API, ring buffer facade, barriers, processors, metrics
+benchmarks/       end-to-end and channel comparison benchmarks
+examples/         runnable usage examples
+docs/             API and design documentation
+```
+
+`pkg/disruptor.Sequence` is re-exported from `internal/sequencer`, so external
+users get a stable public type while internal sequencing algorithms remain
+replaceable.
+
 ## Recovery
 
 The default exception handler is fail-fast. You can replace it with ignore or
