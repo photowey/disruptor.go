@@ -31,7 +31,7 @@ func (fn ringBufferOptionFunc) applyRingBuffer(config *ringBufferConfig) error {
 func WithProducerType(producerType ProducerType) RingBufferOption {
 	return ringBufferOptionFunc{
 		applyFunc: func(config *ringBufferConfig) error {
-			if producerType == ProducerTypeUnknown {
+			if producerType != ProducerTypeSingle && producerType != ProducerTypeMulti {
 				return ErrInvalidSequence
 			}
 

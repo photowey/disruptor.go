@@ -121,6 +121,29 @@ func TestRingBufferSingleProducerOptionPublishesEvents(t *testing.T) {
 	}
 }
 
+func TestNewRingBufferRejectsInvalidProducerType(t *testing.T) {
+	tests := []struct {
+		name         string
+		producerType disruptor.ProducerType
+	}{
+		{name: "unknown", producerType: disruptor.ProducerTypeUnknown},
+		{name: "out of range", producerType: disruptor.ProducerType(99)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := disruptor.NewRingBuffer(
+				disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+				8,
+				disruptor.WithProducerType(tt.producerType),
+			)
+			if !errors.Is(err, disruptor.ErrInvalidSequence) {
+				t.Fatalf("error = %v, want ErrInvalidSequence", err)
+			}
+		})
+	}
+}
+
 func TestPublishEventPublishesClaimedSequenceWhenTranslatorPanics(t *testing.T) {
 	ctx := context.Background()
 	rb := newTestRingBuffer(t, 4)

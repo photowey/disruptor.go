@@ -20,68 +20,116 @@ type benchEvent struct {
 var benchmarkValueSink atomic.Int64
 
 func BenchmarkE2EDisruptor(b *testing.B) {
-	for _, tt := range []struct {
-		name          string
-		waitStrategy  disruptor.WaitStrategy
-		consumerCount int
-	}{
-		{
-			name:          "blocking_1p_1c",
-			waitStrategy:  disruptor.NewBlockingWaitStrategy(),
-			consumerCount: 1,
-		},
-		{
-			name:          "busy_spin_1p_1c",
-			waitStrategy:  disruptor.NewBusySpinWaitStrategy(),
-			consumerCount: 1,
-		},
-		{
-			name:          "blocking_1p_4c",
-			waitStrategy:  disruptor.NewBlockingWaitStrategy(),
-			consumerCount: 4,
-		},
-		{
-			name:          "busy_spin_1p_4c",
-			waitStrategy:  disruptor.NewBusySpinWaitStrategy(),
-			consumerCount: 4,
-		},
-	} {
-		b.Run(tt.name, func(b *testing.B) {
-			benchmarkDisruptorE2E(b, tt.waitStrategy, tt.consumerCount)
+	for _, waitStrategy := range benchmarkWaitStrategyCases() {
+		for _, consumerCount := range []int{1, 4} {
+			name := fmt.Sprintf("%s_1p_%dc", waitStrategy.name, consumerCount)
+			b.Run(name, func(b *testing.B) {
+				benchmarkDisruptorE2E(b, waitStrategy.factory(), consumerCount)
+			})
+		}
+	}
+}
+
+func BenchmarkRingBufferMatrix(b *testing.B) {
+	for _, ringSize := range benchmarkRingSizes() {
+		b.Run(fmt.Sprintf("ring_%d", ringSize), func(b *testing.B) {
+			for _, payloadShape := range benchmarkPayloadShapes() {
+				b.Run(payloadShape, func(b *testing.B) {
+					switch payloadShape {
+					case "small_value":
+						benchmarkRingBufferMatrixSmallValue(b, ringSize)
+					case "padded_value":
+						benchmarkRingBufferMatrixPaddedValue(b, ringSize)
+					case "pointer_adapter":
+						benchmarkRingBufferMatrixPointerAdapter(b, ringSize)
+					default:
+						b.Fatalf("unknown payload shape: %s", payloadShape)
+					}
+				})
+			}
 		})
 	}
 }
 
 func BenchmarkE2EDisruptorParallelProducers(b *testing.B) {
-	for _, tt := range []struct {
-		name          string
-		waitStrategy  disruptor.WaitStrategy
-		consumerCount int
-	}{
-		{
-			name:          "blocking_mp_1c",
-			waitStrategy:  disruptor.NewBlockingWaitStrategy(),
-			consumerCount: 1,
-		},
-		{
-			name:          "busy_spin_mp_1c",
-			waitStrategy:  disruptor.NewBusySpinWaitStrategy(),
-			consumerCount: 1,
-		},
-		{
-			name:          "blocking_mp_4c",
-			waitStrategy:  disruptor.NewBlockingWaitStrategy(),
-			consumerCount: 4,
-		},
-		{
-			name:          "busy_spin_mp_4c",
-			waitStrategy:  disruptor.NewBusySpinWaitStrategy(),
-			consumerCount: 4,
-		},
-	} {
-		b.Run(tt.name, func(b *testing.B) {
-			benchmarkDisruptorParallelProducers(b, tt.waitStrategy, tt.consumerCount)
-		})
+	for _, waitStrategy := range benchmarkWaitStrategyCases() {
+		for _, consumerCount := range []int{1, 4} {
+			name := fmt.Sprintf("%s_mp_%dc", waitStrategy.name, consumerCount)
+			b.Run(name, func(b *testing.B) {
+				benchmarkDisruptorParallelProducers(b, waitStrategy.factory(), consumerCount)
+			})
+		}
+	}
+}
+
+func benchmarkRingBufferMatrixSmallValue(b *testing.B, ringSize int) {
+	b.Helper()
+
+	rb, err := disruptor.NewRingBuffer(
+		disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
+		ringSize,
+	)
+	if err != nil {
+		b.Fatalf("new ring buffer: %v", err)
+	}
+
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		sequence, err := rb.Next(ctx)
+		if err != nil {
+			b.Fatalf("next: %v", err)
+		}
+		rb.Get(sequence).Value = sequence
+		rb.Publish(sequence)
+	}
+}
+
+func benchmarkRingBufferMatrixPaddedValue(b *testing.B, ringSize int) {
+	b.Helper()
+
+	rb, err := disruptor.NewRingBuffer(
+		disruptor.EventFactoryFunc[paddedBenchEvent](func() paddedBenchEvent {
+			return paddedBenchEvent{}
+		}),
+		ringSize,
+	)
+	if err != nil {
+		b.Fatalf("new ring buffer: %v", err)
+	}
+
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		sequence, err := rb.Next(ctx)
+		if err != nil {
+			b.Fatalf("next: %v", err)
+		}
+		rb.Get(sequence).Value = sequence
+		rb.Publish(sequence)
+	}
+}
+
+func benchmarkRingBufferMatrixPointerAdapter(b *testing.B, ringSize int) {
+	b.Helper()
+
+	rb, err := disruptor.NewRingBuffer(
+		disruptor.EventFactoryFunc[*benchEvent](func() *benchEvent { return &benchEvent{} }),
+		ringSize,
+	)
+	if err != nil {
+		b.Fatalf("new ring buffer: %v", err)
+	}
+
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		sequence, err := rb.Next(ctx)
+		if err != nil {
+			b.Fatalf("next: %v", err)
+		}
+		(*rb.Get(sequence)).Value = sequence
+		rb.Publish(sequence)
 	}
 }
 
@@ -470,7 +518,7 @@ func waitForBenchmarkEvents(
 }
 
 func BenchmarkRingBufferBatchSizes(b *testing.B) {
-	for _, batchSize := range []int64{1, 4, 16, 64, 256} {
+	for _, batchSize := range benchmarkBatchSizes() {
 		b.Run(fmt.Sprintf("batch_%d", batchSize), func(b *testing.B) {
 			rb, err := disruptor.NewRingBuffer(
 				disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),

@@ -5,12 +5,12 @@
 Refresh it only after a deliberate release-gate run:
 
 ```bash
-go test -bench=. -benchmem -count=10 -cpu=1,2,4,8 ./... | tee benchmarks/baseline/baseline.txt
+go test -run '^$' -bench=. -benchmem -benchtime=100ms -count=10 -cpu=1,2,4,8 ./... | tee benchmarks/baseline/baseline.txt
 ```
 
 Compare a candidate branch against the baseline:
 
 ```bash
-go test -bench=. -benchmem -count=10 -cpu=1,2,4,8 ./... | tee /tmp/disruptor-new.txt
+go test -run '^$' -bench=. -benchmem -benchtime=100ms -count=10 -cpu=1,2,4,8 ./... | tee /tmp/disruptor-new.txt
 benchstat benchmarks/baseline/baseline.txt /tmp/disruptor-new.txt
 ```

@@ -738,7 +738,7 @@ Benchmarking is part of V1 release readiness, not a later nice-to-have.
 
 - `go test ./...`
 - `go test -race ./...`
-- `go test -bench=. -benchmem -count=10 -cpu=1,2,4,8 ./...`
+- `go test -run '^$' -bench=. -benchmem -benchtime=100ms -count=10 -cpu=1,2,4,8 ./...`
 - `benchstat` comparison against `benchmarks/baseline/baseline.txt`.
 - Hot-path `allocs/op == 0` unless a benchmark explicitly documents why an allocation is required.
 - Investigate any sustained `ns/op` regression above 5 percent.
@@ -751,8 +751,8 @@ Benchmarking is part of V1 release readiness, not a later nice-to-have.
 Because the module targets Go 1.26, new benchmarks should use `b.Loop()`.
 
 ```bash
-go test -bench=. -benchmem -count=10 ./...
-go test -bench=BenchmarkE2E -benchmem -count=10 ./benchmarks | tee /tmp/disruptor-bench.txt
+go test -run '^$' -bench=. -benchmem -benchtime=100ms -count=10 ./...
+go test -run '^$' -bench=BenchmarkE2E -benchmem -count=10 ./benchmarks | tee /tmp/disruptor-bench.txt
 benchstat benchmarks/baseline/baseline.txt /tmp/disruptor-new.txt
 ```
 
@@ -766,7 +766,7 @@ Benchmarks should report:
 Important runs should include:
 
 ```bash
-go test -bench=. -benchmem -count=10 -cpu=1,2,4,8 ./...
+go test -run '^$' -bench=. -benchmem -benchtime=100ms -count=10 -cpu=1,2,4,8 ./...
 ```
 
 Performance claims require statistically meaningful `benchstat` output.
