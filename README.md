@@ -91,6 +91,8 @@ func main() {
   anonymous function types in public signatures.
 - `context.Context` is accepted by blocking producer and processor operations so
   waits can be cancelled.
+- `ProducerTypeMulti` is the default; `ProducerTypeSingle` is a lighter path for
+  one producer that publishes claimed sequences in order.
 
 ## Layout
 

@@ -92,6 +92,15 @@ Processor options:
 Options are separated by lifecycle stage so a processor option cannot be passed
 to ring-buffer construction.
 
+`ProducerTypeMulti` is the default. It tracks claimed and published sequences
+with per-slot availability metadata, so consumers do not observe a later
+published sequence while an earlier claimed sequence is still unpublished.
+
+`ProducerTypeSingle` is the lighter path for one producer goroutine. It assumes
+the single producer publishes claimed sequences in order, including batch ranges.
+Use `ProducerTypeMulti` when multiple producers publish concurrently or when
+publication can happen out of claim order.
+
 ## Wait Strategies
 
 Built-ins:

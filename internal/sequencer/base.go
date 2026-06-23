@@ -4,8 +4,6 @@ import (
 	"context"
 	"runtime"
 	"sync"
-
-	"github.com/photowey/disruptor.go/internal/availability"
 )
 
 type baseSequencer struct {
@@ -15,8 +13,6 @@ type baseSequencer struct {
 	nextSequence    int64
 	cursor          *Sequence
 	gatingSequences []*Sequence
-	available       map[int64]struct{}
-	scanner         availability.Scanner
 	waitStrategy    CapacityWaitStrategy
 }
 
@@ -26,8 +22,6 @@ func newBaseSequencer(size int64, waitStrategy CapacityWaitStrategy) *baseSequen
 		nextSequence:    InitialSequenceValue,
 		cursor:          NewSequence(InitialSequenceValue),
 		gatingSequences: []*Sequence{},
-		available:       map[int64]struct{}{},
-		scanner:         availability.NewScalarScanner(),
 		waitStrategy:    waitStrategy,
 	}
 }
@@ -89,24 +83,6 @@ func (s *baseSequencer) TryNextN(n int64) (int64, error) {
 	return nextSequence, nil
 }
 
-func (s *baseSequencer) Publish(sequence int64) {
-	s.PublishRange(sequence, sequence)
-}
-
-func (s *baseSequencer) PublishRange(lo, hi int64) {
-	if lo > hi {
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for sequence := lo; sequence <= hi; sequence++ {
-		s.available[sequence] = struct{}{}
-	}
-	s.advanceCursorLocked()
-}
-
 func (s *baseSequencer) Cursor() *Sequence {
 	return s.cursor
 }
@@ -141,28 +117,6 @@ func (s *baseSequencer) RemoveGatingSequence(sequence *Sequence) bool {
 	}
 
 	return false
-}
-
-func (s *baseSequencer) HighestPublished(
-	lowerBound int64,
-	availableSequence int64,
-) int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.scanner.HighestPublished(availability.ScanRequest{
-		LowerBound:        lowerBound,
-		AvailableSequence: availableSequence,
-		Availability:      mapAvailability{s.available},
-	})
-}
-
-func (s *baseSequencer) Available(sequence int64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, ok := s.available[sequence]
-	return ok
 }
 
 func (s *baseSequencer) hasAvailableCapacityLocked(nextSequence int64) bool {
@@ -203,30 +157,4 @@ func (s *baseSequencer) capacityWaitRequestLocked(
 		WrapPoint:          nextSequence - s.size,
 		GatingSequence:     gating,
 	}
-}
-
-func (s *baseSequencer) advanceCursorLocked() {
-	lowerBound := s.cursor.Value() + 1
-	highestPublished := s.scanner.HighestPublished(availability.ScanRequest{
-		LowerBound:        lowerBound,
-		AvailableSequence: s.nextSequence,
-		Availability:      mapAvailability{s.available},
-	})
-	if highestPublished < lowerBound {
-		return
-	}
-
-	for sequence := lowerBound; sequence <= highestPublished; sequence++ {
-		delete(s.available, sequence)
-	}
-	s.cursor.Store(highestPublished)
-}
-
-type mapAvailability struct {
-	available map[int64]struct{}
-}
-
-func (a mapAvailability) Available(sequence int64) bool {
-	_, ok := a.available[sequence]
-	return ok
 }
