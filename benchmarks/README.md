@@ -13,6 +13,7 @@ Run only end-to-end and comparison groups:
 ```bash
 go test -bench=BenchmarkE2E -benchmem -count=10 ./benchmarks
 go test -bench=BenchmarkChannelComparison -benchmem -count=10 ./benchmarks
+go test -bench=BenchmarkE2ELatencyQuantiles -benchmem -count=10 ./benchmarks
 ```
 
 Recommended release comparison:
@@ -22,8 +23,12 @@ go test -bench=. -benchmem -count=10 -cpu=1,2,4,8 ./... | tee /tmp/disruptor-new
 benchstat /tmp/disruptor-old.txt /tmp/disruptor-new.txt
 ```
 
+`BenchmarkE2ELatencyQuantiles` reports sampled publish-to-handle `p50_ns`,
+`p95_ns`, and `p99_ns` for blocking and busy-spin wait strategies. Treat these
+tail-latency metrics as release gates alongside `ns/op`, `B/op`, `allocs/op`,
+and `events/s`.
+
 Use channel benchmarks as context, not as a claim that one primitive replaces
 the other. Channels remain the default Go tool for ordinary ownership transfer.
 Disruptor is intended for measured high-throughput, low-allocation, fan-out, and
 controlled-backpressure workflows.
-

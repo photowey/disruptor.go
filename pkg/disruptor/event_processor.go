@@ -24,7 +24,6 @@ type BatchEventProcessor[T any] struct {
 
 	sequence *Sequence
 
-	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	started atomic.Bool
@@ -76,11 +75,12 @@ func (p *BatchEventProcessor[T]) Start(ctx context.Context) error {
 		return ErrClosed
 	}
 
-	p.ctx, p.cancel = context.WithCancel(ctx)
+	processorCtx, cancel := context.WithCancel(ctx)
+	p.cancel = cancel
 	p.sequence.Store(InitialSequenceValue)
 	p.wg.Add(1)
 	p.processorStateMetric("running", nil)
-	go p.run()
+	go p.run(processorCtx)
 
 	return nil
 }
@@ -117,19 +117,19 @@ func (p *BatchEventProcessor[T]) Sequence() *Sequence {
 	return p.sequence
 }
 
-func (p *BatchEventProcessor[T]) run() {
+func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 	defer p.wg.Done()
-	defer p.ringBuffer.RemoveGatingSequence(p.sequence)
+	defer p.removeGatingSequence()
 	defer p.processorStateMetric("stopped", nil)
 
-	if !p.notifyLifecycleStart() {
+	if !p.notifyLifecycleStart(ctx) {
 		return
 	}
-	defer p.notifyLifecycleShutdown()
+	defer p.notifyLifecycleShutdown(ctx)
 
 	nextSequence := p.sequence.Value() + 1
 	for {
-		availableSequence, err := p.barrier.WaitFor(p.ctx, nextSequence)
+		availableSequence, err := p.barrier.WaitFor(ctx, nextSequence)
 		if err != nil {
 			if p.stopped.Load() || errors.Is(err, context.Canceled) || errors.Is(err, ErrAlerted) {
 				p.storeTerminalErr(nil)
@@ -141,7 +141,7 @@ func (p *BatchEventProcessor[T]) run() {
 		}
 
 		batchRequest := BatchStartRequest{
-			Context:    p.ctx,
+			Context:    ctx,
 			BatchSize:  availableSequence - nextSequence + 1,
 			QueueDepth: availableSequence - nextSequence + 1,
 		}
@@ -151,7 +151,7 @@ func (p *BatchEventProcessor[T]) run() {
 		p.batchStartMetric(batchRequest)
 		for nextSequence <= availableSequence {
 			request := EventRequest[T]{
-				Context:    p.ctx,
+				Context:    ctx,
 				Event:      p.ringBuffer.Get(nextSequence),
 				Sequence:   nextSequence,
 				EndOfBatch: nextSequence == availableSequence,
@@ -165,7 +165,7 @@ func (p *BatchEventProcessor[T]) run() {
 			p.eventHandledMetric(nextSequence, started, err)
 			if err != nil {
 				action := p.exceptionHandler.HandleEventException(EventException[T]{
-					Context:  p.ctx,
+					Context:  ctx,
 					Event:    request.Event,
 					Sequence: nextSequence,
 					Err:      err,
@@ -173,20 +173,20 @@ func (p *BatchEventProcessor[T]) run() {
 
 				switch action {
 				case ExceptionActionContinue:
-					p.sequence.Store(nextSequence)
+					p.storeSequence(nextSequence)
 					nextSequence++
 					continue
 				case ExceptionActionRetry:
 					continue
 				default:
-					p.sequence.Store(nextSequence)
+					p.storeSequence(nextSequence)
 					p.storeTerminalErr(err)
 					return
 				}
 			}
 
 			p.resetRetryState(nextSequence)
-			p.sequence.Store(nextSequence)
+			p.storeSequence(nextSequence)
 			nextSequence++
 		}
 	}
@@ -216,6 +216,7 @@ func (p *BatchEventProcessor[T]) invokeBatchStart(
 }
 
 func (p *BatchEventProcessor[T]) invokeLifecycleStart(
+	ctx context.Context,
 	handler LifecycleHandler,
 ) (err error) {
 	defer func() {
@@ -224,10 +225,11 @@ func (p *BatchEventProcessor[T]) invokeLifecycleStart(
 		}
 	}()
 
-	return handler.OnStart(p.ctx)
+	return handler.OnStart(ctx)
 }
 
 func (p *BatchEventProcessor[T]) invokeLifecycleShutdown(
+	ctx context.Context,
 	handler LifecycleHandler,
 ) (err error) {
 	defer func() {
@@ -236,7 +238,7 @@ func (p *BatchEventProcessor[T]) invokeLifecycleShutdown(
 		}
 	}()
 
-	return handler.OnShutdown(p.ctx)
+	return handler.OnShutdown(ctx)
 }
 
 func (p *BatchEventProcessor[T]) storeTerminalErr(err error) {
@@ -254,20 +256,20 @@ func (p *BatchEventProcessor[T]) storeTerminalErr(err error) {
 	p.terminalErr.Store(err)
 }
 
-func (p *BatchEventProcessor[T]) notifyLifecycleStart() bool {
+func (p *BatchEventProcessor[T]) notifyLifecycleStart(ctx context.Context) bool {
 	handler, ok := p.handler.(LifecycleHandler)
 	if !ok {
 		return true
 	}
 
 	for {
-		err := p.invokeLifecycleStart(handler)
+		err := p.invokeLifecycleStart(ctx, handler)
 		if err == nil {
 			return true
 		}
 
 		action := p.exceptionHandler.HandleStartException(LifecycleException{
-			Context: p.ctx,
+			Context: ctx,
 			Err:     err,
 		})
 		switch action {
@@ -282,20 +284,20 @@ func (p *BatchEventProcessor[T]) notifyLifecycleStart() bool {
 	}
 }
 
-func (p *BatchEventProcessor[T]) notifyLifecycleShutdown() {
+func (p *BatchEventProcessor[T]) notifyLifecycleShutdown(ctx context.Context) {
 	handler, ok := p.handler.(LifecycleHandler)
 	if !ok {
 		return
 	}
 
 	for {
-		err := p.invokeLifecycleShutdown(handler)
+		err := p.invokeLifecycleShutdown(ctx, handler)
 		if err == nil {
 			return
 		}
 
 		action := p.exceptionHandler.HandleShutdownException(LifecycleException{
-			Context: p.ctx,
+			Context: ctx,
 			Err:     err,
 		})
 		switch action {
@@ -379,4 +381,26 @@ func (p *BatchEventProcessor[T]) resetRetryState(sequence int64) {
 	}
 
 	resetter.resetRetry(sequence)
+}
+
+func (p *BatchEventProcessor[T]) storeSequence(sequence int64) {
+	p.sequence.Store(sequence)
+	p.signalWaiters()
+}
+
+func (p *BatchEventProcessor[T]) removeGatingSequence() {
+	if p.ringBuffer == nil {
+		return
+	}
+	if p.ringBuffer.RemoveGatingSequence(p.sequence) {
+		p.signalWaiters()
+	}
+}
+
+func (p *BatchEventProcessor[T]) signalWaiters() {
+	if p.ringBuffer == nil || p.ringBuffer.waitStrategy == nil {
+		return
+	}
+
+	p.ringBuffer.waitStrategy.SignalAll()
 }

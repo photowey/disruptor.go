@@ -279,6 +279,56 @@ func TestBatchEventProcessorRemovesGatingSequenceOnExit(t *testing.T) {
 	}
 }
 
+func TestBatchEventProcessorSignalsCapacityWaitersAfterAdvancing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rb := newTestRingBuffer(t, 1)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	handler := disruptor.EventHandlerFunc[longEvent](func(
+		request disruptor.EventRequest[longEvent],
+	) error {
+		close(entered)
+		<-release
+		return nil
+	})
+	processor, err := disruptor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
+	if err != nil {
+		t.Fatalf("new processor: %v", err)
+	}
+	if err := processor.Start(ctx); err != nil {
+		t.Fatalf("start processor: %v", err)
+	}
+	defer processor.Stop()
+
+	publishValues(t, rb, 1)
+	waitForSignal(t, entered)
+
+	nextResult := make(chan error, 1)
+	go func() {
+		_, err := rb.Next(ctx)
+		nextResult <- err
+	}()
+
+	select {
+	case err := <-nextResult:
+		t.Fatalf("next returned before consumer advanced: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-nextResult:
+		if err != nil {
+			t.Fatalf("next after consumer advance: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for capacity waiter")
+	}
+}
+
 func TestBatchEventProcessorInvokesBatchStartHandler(t *testing.T) {
 	rb := newTestRingBuffer(t, 8)
 	handler := &batchStartRecordingHandler{

@@ -16,11 +16,12 @@ type Barrier interface {
 }
 
 type processingBarrier struct {
-	cursor       *Sequence
-	dependencies []*Sequence
-	waitStrategy WaitStrategy
-	metrics      MetricsSink
-	alerted      atomic.Bool
+	cursor            *Sequence
+	dependencies      []*Sequence
+	dependentSequence SequenceReader
+	waitStrategy      WaitStrategy
+	metrics           MetricsSink
+	alerted           atomic.Bool
 }
 
 func newProcessingBarrier(
@@ -29,11 +30,14 @@ func newProcessingBarrier(
 	metrics MetricsSink,
 	dependencies ...*Sequence,
 ) *processingBarrier {
+	copiedDependencies := append([]*Sequence(nil), dependencies...)
+
 	return &processingBarrier{
-		cursor:       cursor,
-		dependencies: dependencies,
-		waitStrategy: waitStrategy,
-		metrics:      metrics,
+		cursor:            cursor,
+		dependencies:      copiedDependencies,
+		dependentSequence: newMinimumSequenceReader(copiedDependencies),
+		waitStrategy:      waitStrategy,
+		metrics:           metrics,
 	}
 }
 
@@ -59,6 +63,7 @@ func (b *processingBarrier) WaitFor(ctx context.Context, sequence int64) (int64,
 			Context:           ctx,
 			RequestedSequence: sequence,
 			CursorSequence:    b.cursor,
+			DependentSequence: b.dependentSequence,
 			Barrier:           b,
 		})
 		b.waitMetric(sequence, available, started, err)

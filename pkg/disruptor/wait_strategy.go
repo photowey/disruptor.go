@@ -3,7 +3,7 @@ package disruptor
 import (
 	"context"
 	"runtime"
-	"time"
+	"sync"
 
 	sequencer "github.com/photowey/disruptor.go/internal/sequencer"
 )
@@ -27,53 +27,71 @@ type WaitRequest struct {
 type CapacityWaitRequest = sequencer.CapacityWaitRequest
 
 type BlockingWaitStrategy struct {
-	interval time.Duration
+	once       sync.Once
+	mu         sync.Mutex
+	cond       *sync.Cond
+	generation uint64
 }
 
 func NewBlockingWaitStrategy() WaitStrategy {
-	return &BlockingWaitStrategy{
-		interval: time.Microsecond,
-	}
+	strategy := &BlockingWaitStrategy{}
+	strategy.init()
+
+	return strategy
 }
 
 func (s *BlockingWaitStrategy) WaitFor(request WaitRequest) (int64, error) {
-	if err := request.Context.Err(); err != nil {
-		return InitialSequenceValue, err
-	}
-	if request.Barrier != nil {
-		if err := request.Barrier.CheckAlert(); err != nil {
+	s.init()
+	stopContextSignal := context.AfterFunc(request.Context, s.SignalAll)
+	defer stopContextSignal()
+
+	for {
+		generation := s.generationValue()
+		if err := request.Context.Err(); err != nil {
 			return InitialSequenceValue, err
 		}
-	}
+		if request.Barrier != nil {
+			if err := request.Barrier.CheckAlert(); err != nil {
+				return InitialSequenceValue, err
+			}
+		}
 
-	timer := time.NewTimer(s.interval)
-	defer timer.Stop()
+		available := readAvailableSequence(request)
+		if available >= request.RequestedSequence {
+			return available, nil
+		}
 
-	select {
-	case <-request.Context.Done():
-		return InitialSequenceValue, request.Context.Err()
-	case <-timer.C:
-		return readAvailableSequence(request), nil
+		s.waitForSignal(generation, request.Context)
 	}
 }
 
 func (s *BlockingWaitStrategy) WaitForCapacity(request CapacityWaitRequest) error {
-	if err := request.Context.Err(); err != nil {
-		return err
-	}
+	s.init()
+	stopContextSignal := context.AfterFunc(request.Context, s.SignalAll)
+	defer stopContextSignal()
 
-	timer := time.NewTimer(s.interval)
-	defer timer.Stop()
+	for {
+		generation := s.generationValue()
+		if err := request.Context.Err(); err != nil {
+			return err
+		}
+		if capacityAvailable(request) {
+			return nil
+		}
 
-	select {
-	case <-request.Context.Done():
-		return request.Context.Err()
-	case <-timer.C:
-		return nil
+		s.waitForSignal(generation, request.Context)
 	}
 }
 
-func (s *BlockingWaitStrategy) SignalAll() {}
+func (s *BlockingWaitStrategy) SignalAll() {
+	s.init()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.generation++
+	s.cond.Broadcast()
+}
 
 type BusySpinWaitStrategy struct{}
 
@@ -122,4 +140,37 @@ func readAvailableSequence(request WaitRequest) int64 {
 	}
 
 	return available
+}
+
+func (s *BlockingWaitStrategy) init() {
+	s.once.Do(func() {
+		s.cond = sync.NewCond(&s.mu)
+	})
+}
+
+func (s *BlockingWaitStrategy) generationValue() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.generation
+}
+
+func (s *BlockingWaitStrategy) waitForSignal(
+	generation uint64,
+	ctx context.Context,
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for generation == s.generation && ctx.Err() == nil {
+		s.cond.Wait()
+	}
+}
+
+func capacityAvailable(request CapacityWaitRequest) bool {
+	if request.GatingSequence == nil {
+		return true
+	}
+
+	return request.WrapPoint <= request.GatingSequence.Value()
 }

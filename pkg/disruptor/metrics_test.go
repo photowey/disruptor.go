@@ -268,14 +268,8 @@ func TestBarrierReportsWaitMetric(t *testing.T) {
 
 	select {
 	case metric := <-waits:
-		if metric.RequestedSequence != 0 {
-			t.Fatalf("requested sequence = %d, want 0", metric.RequestedSequence)
-		}
-		if metric.AvailableSequence != disruptor.InitialSequenceValue {
-			t.Fatalf("available sequence = %d, want initial sequence", metric.AvailableSequence)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for wait metric")
+		t.Fatalf("wait metric reported before signal: %+v", metric)
+	case <-time.After(10 * time.Millisecond):
 	}
 
 	publishValues(t, rb, 1)
@@ -287,6 +281,18 @@ func TestBarrierReportsWaitMetric(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for barrier")
+	}
+
+	select {
+	case metric := <-waits:
+		if metric.RequestedSequence != 0 {
+			t.Fatalf("requested sequence = %d, want 0", metric.RequestedSequence)
+		}
+		if metric.AvailableSequence != 0 {
+			t.Fatalf("available sequence = %d, want 0", metric.AvailableSequence)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for wait metric")
 	}
 }
 

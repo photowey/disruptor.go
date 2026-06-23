@@ -145,16 +145,11 @@ func (s *baseSequencer) capacityWaitRequestLocked(
 	requestedSequences int64,
 	nextSequence int64,
 ) CapacityWaitRequest {
-	var gating SequenceReader
-	if len(s.gatingSequences) > 0 {
-		gating = s.gatingSequences[0]
-	}
-
 	return CapacityWaitRequest{
 		Context:            ctx,
 		RequestedSequences: requestedSequences,
 		CurrentSequence:    s.nextSequence,
 		WrapPoint:          nextSequence - s.size,
-		GatingSequence:     gating,
+		GatingSequence:     newMinimumSequenceReader(s.gatingSequences),
 	}
 }

@@ -183,10 +183,12 @@ Benchmarks are part of release readiness:
 ```bash
 go test ./...
 go test -race ./...
-go test -bench=. -benchmem -count=10 ./...
+go test -bench=. -benchmem -count=10 -cpu=1,2,4,8 ./...
+go test -bench=BenchmarkE2ELatencyQuantiles -benchmem -count=10 ./benchmarks
 ```
 
-See `benchmarks/README.md` for end-to-end and channel comparison groups.
+See `benchmarks/README.md` for end-to-end, channel comparison, and tail-latency
+groups.
 
 Channels remain the right default for ordinary ownership transfer and simple
 synchronization. Use this library when benchmarks show that you need high

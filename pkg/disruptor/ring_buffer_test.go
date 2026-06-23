@@ -207,9 +207,20 @@ func TestRemoveGatingSequence(t *testing.T) {
 func newTestRingBuffer(t *testing.T, size int) *disruptor.RingBuffer[longEvent] {
 	t.Helper()
 
+	return newTestRingBufferWithOptions(t, size)
+}
+
+func newTestRingBufferWithOptions(
+	t *testing.T,
+	size int,
+	opts ...disruptor.RingBufferOption,
+) *disruptor.RingBuffer[longEvent] {
+	t.Helper()
+
 	rb, err := disruptor.NewRingBuffer(
 		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		size,
+		opts...,
 	)
 	if err != nil {
 		t.Fatalf("new ring buffer: %v", err)
