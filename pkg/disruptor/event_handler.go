@@ -39,6 +39,7 @@ type EventRequest[T any] struct {
 	Event      *T
 	Sequence   int64
 	EndOfBatch bool
+	Node       NodeContext
 }
 
 // BatchStartHandler is notified before a batch of events is processed.
@@ -51,6 +52,7 @@ type BatchStartRequest struct {
 	Context    context.Context
 	BatchSize  int64
 	QueueDepth int64
+	Node       NodeContext
 }
 
 // LifecycleHandler observes processor start and shutdown transitions.
@@ -86,12 +88,14 @@ type EventException[T any] struct {
 	Event    *T
 	Sequence int64
 	Err      error
+	Node     NodeContext
 }
 
 // LifecycleException reports a start or shutdown failure.
 type LifecycleException struct {
 	Context context.Context
 	Err     error
+	Node    NodeContext
 }
 
 type exceptionHandlerFunc[T any] struct {

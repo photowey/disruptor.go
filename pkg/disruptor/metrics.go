@@ -116,6 +116,7 @@ type PublishMetric struct {
 type BatchMetric struct {
 	BatchSize  int64
 	QueueDepth int64
+	Node       NodeContext
 }
 
 // EventMetric describes a handled event.
@@ -123,6 +124,7 @@ type EventMetric struct {
 	Sequence int64
 	Duration time.Duration
 	Err      error
+	Node     NodeContext
 }
 
 // WaitMetric describes a wait operation.
@@ -138,4 +140,5 @@ type WaitMetric struct {
 type ProcessorMetric struct {
 	State string
 	Err   error
+	Node  NodeContext
 }

@@ -37,6 +37,9 @@ type BatchEventProcessor[T any] struct {
 	barrier          Barrier
 	handler          EventHandler[T]
 	exceptionHandler ExceptionHandler[T]
+	node             NodeContext
+	producerGating   bool
+	haltAdvances     bool
 
 	sequence *Sequence
 
@@ -48,11 +51,38 @@ type BatchEventProcessor[T any] struct {
 	terminalErr atomic.Value
 }
 
+type batchEventProcessorConfig[T any] struct {
+	exceptionHandler ExceptionHandler[T]
+	producerGating   bool
+	haltAdvances     bool
+	node             NodeContext
+}
+
 // NewBatchEventProcessor creates a processor for one event handler.
 func NewBatchEventProcessor[T any](
 	ringBuffer *RingBuffer[T],
 	barrier Barrier,
 	handler EventHandler[T],
+	opts ...ProcessorOption[T],
+) (*BatchEventProcessor[T], error) {
+	return newBatchEventProcessor(
+		ringBuffer,
+		barrier,
+		handler,
+		batchEventProcessorConfig[T]{
+			exceptionHandler: defaultProcessorConfig[T]().exceptionHandler,
+			producerGating:   true,
+			haltAdvances:     true,
+		},
+		opts...,
+	)
+}
+
+func newBatchEventProcessor[T any](
+	ringBuffer *RingBuffer[T],
+	barrier Barrier,
+	handler EventHandler[T],
+	config batchEventProcessorConfig[T],
 	opts ...ProcessorOption[T],
 ) (*BatchEventProcessor[T], error) {
 	if ringBuffer == nil {
@@ -65,24 +95,36 @@ func NewBatchEventProcessor[T any](
 		return nil, fmt.Errorf("disruptor: event handler is nil")
 	}
 
-	config := defaultProcessorConfig[T]()
+	if config.exceptionHandler == nil {
+		config.exceptionHandler = defaultProcessorConfig[T]().exceptionHandler
+	}
+
+	processorOptions := processorConfig[T]{
+		exceptionHandler: config.exceptionHandler,
+	}
 	for _, opt := range opts {
 		if opt == nil {
 			continue
 		}
-		if err := opt.applyProcessor(&config); err != nil {
+		if err := opt.applyProcessor(&processorOptions); err != nil {
 			return nil, fmt.Errorf("applying processor option: %w", err)
 		}
 	}
+	config.exceptionHandler = processorOptions.exceptionHandler
 
 	processor := &BatchEventProcessor[T]{
 		ringBuffer:       ringBuffer,
 		barrier:          barrier,
 		handler:          handler,
 		exceptionHandler: config.exceptionHandler,
+		node:             config.node,
+		producerGating:   config.producerGating,
+		haltAdvances:     config.haltAdvances,
 		sequence:         NewSequence(InitialSequenceValue),
 	}
-	ringBuffer.AddGatingSequences(processor.sequence)
+	if processor.producerGating {
+		ringBuffer.AddGatingSequences(processor.sequence)
+	}
 
 	return processor, nil
 }
@@ -165,6 +207,7 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 			Context:    ctx,
 			BatchSize:  availableSequence - nextSequence + 1,
 			QueueDepth: availableSequence - nextSequence + 1,
+			Node:       p.node,
 		}
 		if !p.notifyBatchStart(batchRequest) {
 			return
@@ -176,6 +219,7 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 				Event:      p.ringBuffer.Get(nextSequence),
 				Sequence:   nextSequence,
 				EndOfBatch: nextSequence == availableSequence,
+				Node:       p.node,
 			}
 
 			var started time.Time
@@ -190,6 +234,7 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 					Event:    request.Event,
 					Sequence: nextSequence,
 					Err:      err,
+					Node:     p.node,
 				})
 
 				switch action {
@@ -200,7 +245,9 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 				case ExceptionActionRetry:
 					continue
 				default:
-					p.storeSequence(nextSequence)
+					if p.haltAdvances {
+						p.storeSequence(nextSequence)
+					}
 					p.storeTerminalErr(err)
 					return
 				}
@@ -292,6 +339,7 @@ func (p *BatchEventProcessor[T]) notifyLifecycleStart(ctx context.Context) bool 
 		action := p.exceptionHandler.HandleStartException(LifecycleException{
 			Context: ctx,
 			Err:     err,
+			Node:    p.node,
 		})
 		switch action {
 		case ExceptionActionContinue:
@@ -320,6 +368,7 @@ func (p *BatchEventProcessor[T]) notifyLifecycleShutdown(ctx context.Context) {
 		action := p.exceptionHandler.HandleShutdownException(LifecycleException{
 			Context: ctx,
 			Err:     err,
+			Node:    p.node,
 		})
 		switch action {
 		case ExceptionActionContinue:
@@ -369,6 +418,7 @@ func (p *BatchEventProcessor[T]) batchStartMetric(request BatchStartRequest) {
 	p.ringBuffer.metrics.OnBatchStart(BatchMetric{
 		BatchSize:  request.BatchSize,
 		QueueDepth: request.QueueDepth,
+		Node:       p.node,
 	})
 }
 
@@ -381,6 +431,7 @@ func (p *BatchEventProcessor[T]) eventHandledMetric(sequence int64, started time
 		Sequence: sequence,
 		Duration: time.Since(started),
 		Err:      err,
+		Node:     p.node,
 	})
 }
 
@@ -392,6 +443,7 @@ func (p *BatchEventProcessor[T]) processorStateMetric(state string, err error) {
 	p.ringBuffer.metrics.OnProcessorState(ProcessorMetric{
 		State: state,
 		Err:   err,
+		Node:  p.node,
 	})
 }
 
@@ -410,7 +462,7 @@ func (p *BatchEventProcessor[T]) storeSequence(sequence int64) {
 }
 
 func (p *BatchEventProcessor[T]) removeGatingSequence() {
-	if p.ringBuffer == nil {
+	if p.ringBuffer == nil || !p.producerGating {
 		return
 	}
 	if p.ringBuffer.RemoveGatingSequence(p.sequence) {
