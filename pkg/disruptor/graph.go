@@ -55,6 +55,7 @@ type nodeOptionFunc[T any] struct {
 	applyFunc func(*nodeConfig[T]) error
 }
 
+//nolint:unused // The method satisfies NodeOption[T] and is called through the interface.
 func (fn nodeOptionFunc[T]) applyNode(config *nodeConfig[T]) error {
 	return fn.applyFunc(config)
 }

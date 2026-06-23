@@ -358,6 +358,9 @@ func TestGraphProcessorsLookupAndSnapshot(t *testing.T) {
 	}
 
 	snapshot := processors.Snapshot()
+	if !snapshot.Frozen {
+		t.Fatal("snapshot should be frozen after HandleGraph")
+	}
 	snapshot.Nodes[0].Name = "changed"
 	if fresh := processors.Snapshot(); fresh.Nodes[0].Name != "A" {
 		t.Fatalf("snapshot mutation leaked, got %q", fresh.Nodes[0].Name)

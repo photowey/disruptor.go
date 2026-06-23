@@ -33,6 +33,7 @@ type graphHandleOptionFunc[T any] struct {
 	applyFunc func(*graphHandleConfig[T]) error
 }
 
+//nolint:unused // The method satisfies GraphHandleOption[T] and is called through the interface.
 func (fn graphHandleOptionFunc[T]) applyGraphHandle(config *graphHandleConfig[T]) error {
 	return fn.applyFunc(config)
 }
@@ -174,6 +175,7 @@ func (d *Disruptor[T]) HandleGraph(
 	}
 
 	graph.freezeHandledLocked()
+	snapshot.Frozen = true
 	d.mode = consumerModeGraph
 	d.processors = append(d.processors, createdProcessors...)
 
