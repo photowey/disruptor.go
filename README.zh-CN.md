@@ -141,6 +141,30 @@ sequenceDiagram
     H-->>P: nil or error
 ```
 
+## 背压
+
+生产者只有在 `wrap point` 没有超过最慢消费者 sequence 时才能继续申请槽位，
+避免覆盖尚未消费的事件槽。
+
+```mermaid
+flowchart LR
+    P["生产者"] --> Claim["Next / TryNext"]
+    Claim --> S["Sequencer"]
+    S --> Wrap["wrap point = claimed - buffer size"]
+    Wrap --> G["Gating sequences"]
+    G --> Slow["最慢消费者 sequence"]
+    Slow --> Capacity{"容量可用?"}
+    Capacity -->|是| Slot["RingBuffer[T] 槽位"]
+    Capacity -->|否| Wait["等待或 ErrInsufficientCapacity"]
+    Slot --> Pub["Publish"]
+    Pub --> B["Barrier"]
+    B --> EP["BatchEventProcessor[T]"]
+    EP --> H["EventHandler[T]"]
+    H --> Store["保存消费 sequence"]
+    Store --> G
+    Wait --> P
+```
+
 ## 项目布局
 
 公共包位于 `pkg/disruptor`。内部算法边界位于 `internal/`：

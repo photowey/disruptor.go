@@ -151,6 +151,30 @@ sequenceDiagram
     H-->>P: nil or error
 ```
 
+## Backpressure
+
+A producer can claim a slot only when the wrap point stays behind the slowest
+gating sequence. This prevents unconsumed event slots from being overwritten.
+
+```mermaid
+flowchart LR
+    P["Producer"] --> Claim["Next / TryNext"]
+    Claim --> S["Sequencer"]
+    S --> Wrap["wrap point = claimed - buffer size"]
+    Wrap --> G["Gating sequences"]
+    G --> Slow["Slowest consumer sequence"]
+    Slow --> Capacity{"Capacity available?"}
+    Capacity -->|yes| Slot["RingBuffer[T] slot"]
+    Capacity -->|no| Wait["wait or ErrInsufficientCapacity"]
+    Slot --> Pub["Publish"]
+    Pub --> B["Barrier"]
+    B --> EP["BatchEventProcessor[T]"]
+    EP --> H["EventHandler[T]"]
+    H --> Store["Store consumer sequence"]
+    Store --> G
+    Wait --> P
+```
+
 ## Layout
 
 The public package is `pkg/disruptor`. Internal algorithm boundaries live under
