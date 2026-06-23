@@ -1,0 +1,294 @@
+package benchmarks
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"runtime"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/photowey/disruptor.go/pkg/disruptor"
+)
+
+type benchEvent struct {
+	Value int64
+}
+
+var benchmarkValueSink atomic.Int64
+
+func BenchmarkE2EDisruptor(b *testing.B) {
+	for _, tt := range []struct {
+		name          string
+		waitStrategy  disruptor.WaitStrategy
+		consumerCount int
+	}{
+		{
+			name:          "blocking_1p_1c",
+			waitStrategy:  disruptor.NewBlockingWaitStrategy(),
+			consumerCount: 1,
+		},
+		{
+			name:          "busy_spin_1p_1c",
+			waitStrategy:  disruptor.NewBusySpinWaitStrategy(),
+			consumerCount: 1,
+		},
+		{
+			name:          "blocking_1p_4c",
+			waitStrategy:  disruptor.NewBlockingWaitStrategy(),
+			consumerCount: 4,
+		},
+		{
+			name:          "busy_spin_1p_4c",
+			waitStrategy:  disruptor.NewBusySpinWaitStrategy(),
+			consumerCount: 4,
+		},
+	} {
+		b.Run(tt.name, func(b *testing.B) {
+			benchmarkDisruptorE2E(b, tt.waitStrategy, tt.consumerCount)
+		})
+	}
+}
+
+func benchmarkDisruptorE2E(
+	b *testing.B,
+	waitStrategy disruptor.WaitStrategy,
+	consumerCount int,
+) {
+	b.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d, err := disruptor.New(
+		disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
+		65536,
+		disruptor.WithWaitStrategy(waitStrategy),
+	)
+	if err != nil {
+		b.Fatalf("new disruptor: %v", err)
+	}
+
+	var processed atomic.Int64
+	handlers := make([]disruptor.EventHandler[benchEvent], 0, consumerCount)
+	for range consumerCount {
+		handlers = append(handlers, disruptor.EventHandlerFunc[benchEvent](func(
+			request disruptor.EventRequest[benchEvent],
+		) error {
+			benchmarkValueSink.Store(request.Event.Value)
+			processed.Add(1)
+			return nil
+		}))
+	}
+	if _, err := d.HandleEventsWith(handlers...); err != nil {
+		b.Fatalf("handle events with: %v", err)
+	}
+	if err := d.Start(ctx); err != nil {
+		b.Fatalf("start disruptor: %v", err)
+	}
+
+	var published int64
+	started := time.Now()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		sequence, err := d.RingBuffer().Next(ctx)
+		if err != nil {
+			b.Fatalf("next: %v", err)
+		}
+		d.RingBuffer().Get(sequence).Value = published
+		d.RingBuffer().Publish(sequence)
+		published++
+	}
+	b.StopTimer()
+
+	target := published * int64(consumerCount)
+	waitForBenchmarkEvents(b, &processed, target)
+
+	d.Stop()
+	if err := d.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		b.Fatalf("wait disruptor: %v", err)
+	}
+
+	elapsed := time.Since(started).Seconds()
+	if elapsed > 0 {
+		b.ReportMetric(float64(published)/elapsed, "events/s")
+	}
+}
+
+func BenchmarkRingBufferParallelProducers(b *testing.B) {
+	rb, err := disruptor.NewRingBuffer(
+		disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
+		65536,
+		disruptor.WithProducerType(disruptor.ProducerTypeMulti),
+	)
+	if err != nil {
+		b.Fatalf("new ring buffer: %v", err)
+	}
+
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			sequence, err := rb.Next(ctx)
+			if err != nil {
+				b.Fatalf("next: %v", err)
+			}
+			rb.Get(sequence).Value = sequence
+			rb.Publish(sequence)
+		}
+	})
+}
+
+func BenchmarkChannelComparison(b *testing.B) {
+	for _, tt := range []struct {
+		name     string
+		capacity int
+	}{
+		{name: "unbuffered_value", capacity: 0},
+		{name: "buffered_value_65536", capacity: 65536},
+	} {
+		b.Run(tt.name, func(b *testing.B) {
+			benchmarkChannelValue(b, tt.capacity)
+		})
+	}
+
+	b.Run("buffered_pointer_allocating_65536", func(b *testing.B) {
+		benchmarkChannelPointer(b, 65536)
+	})
+	b.Run("buffered_value_non_blocking_spin_1024", func(b *testing.B) {
+		benchmarkChannelNonBlockingSpin(b, 1024)
+	})
+}
+
+func benchmarkChannelValue(b *testing.B, capacity int) {
+	b.Helper()
+
+	ch := make(chan benchEvent, capacity)
+	done := make(chan int64, 1)
+	go func() {
+		var sum int64
+		for event := range ch {
+			sum += event.Value
+		}
+		done <- sum
+	}()
+
+	var value int64
+	b.ReportAllocs()
+	for b.Loop() {
+		ch <- benchEvent{Value: value}
+		value++
+	}
+
+	close(ch)
+	benchmarkValueSink.Store(<-done)
+}
+
+func benchmarkChannelPointer(b *testing.B, capacity int) {
+	b.Helper()
+
+	ch := make(chan *benchEvent, capacity)
+	done := make(chan int64, 1)
+	go func() {
+		var sum int64
+		for event := range ch {
+			sum += event.Value
+		}
+		done <- sum
+	}()
+
+	var value int64
+	b.ReportAllocs()
+	for b.Loop() {
+		ch <- &benchEvent{Value: value}
+		value++
+	}
+
+	close(ch)
+	benchmarkValueSink.Store(<-done)
+}
+
+func benchmarkChannelNonBlockingSpin(b *testing.B, capacity int) {
+	b.Helper()
+
+	ch := make(chan benchEvent, capacity)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case event := <-ch:
+				benchmarkValueSink.Store(event.Value)
+			default:
+				runtime.Gosched()
+			}
+		}
+	}()
+
+	var dropped int64
+	var value int64
+	b.ReportAllocs()
+	for b.Loop() {
+		select {
+		case ch <- benchEvent{Value: value}:
+		default:
+			dropped++
+		}
+		value++
+	}
+
+	close(done)
+	benchmarkValueSink.Store(dropped)
+}
+
+func waitForBenchmarkEvents(
+	b *testing.B,
+	processed *atomic.Int64,
+	target int64,
+) {
+	b.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for processed.Load() < target {
+		if time.Now().After(deadline) {
+			b.Fatalf(
+				"timed out waiting for processed events: got %d, want %d",
+				processed.Load(),
+				target,
+			)
+		}
+
+		runtime.Gosched()
+	}
+}
+
+func BenchmarkRingBufferBatchSizes(b *testing.B) {
+	for _, batchSize := range []int64{1, 4, 16, 64, 256} {
+		b.Run(fmt.Sprintf("batch_%d", batchSize), func(b *testing.B) {
+			rb, err := disruptor.NewRingBuffer(
+				disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
+				65536,
+			)
+			if err != nil {
+				b.Fatalf("new ring buffer: %v", err)
+			}
+
+			ctx := context.Background()
+			b.ReportAllocs()
+			for b.Loop() {
+				hi, err := rb.NextN(ctx, batchSize)
+				if err != nil {
+					b.Fatalf("next batch: %v", err)
+				}
+				lo := hi - batchSize + 1
+				for sequence := lo; sequence <= hi; sequence++ {
+					rb.Get(sequence).Value = sequence
+				}
+				rb.PublishRange(lo, hi)
+			}
+		})
+	}
+}

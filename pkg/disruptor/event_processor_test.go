@@ -157,6 +157,238 @@ func TestBatchEventProcessorDefaultHandlerHaltsOnError(t *testing.T) {
 	}
 }
 
+func TestRetryExceptionHandlerRetriesUntilSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rb := newTestRingBuffer(t, 4)
+	handlerErr := errors.New("handler failed")
+	done := make(chan struct{})
+
+	var attempts int
+	handler := disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+		attempts++
+		if attempts <= 2 {
+			return handlerErr
+		}
+
+		close(done)
+		return nil
+	})
+
+	retryHandler, err := disruptor.NewRetryExceptionHandler[longEvent](2, disruptor.ExceptionActionHalt)
+	if err != nil {
+		t.Fatalf("new retry exception handler: %v", err)
+	}
+	processor, err := disruptor.NewBatchEventProcessor(
+		rb,
+		rb.NewBarrier(),
+		handler,
+		disruptor.WithExceptionHandler[longEvent](retryHandler),
+	)
+	if err != nil {
+		t.Fatalf("new processor: %v", err)
+	}
+
+	if err := processor.Start(ctx); err != nil {
+		t.Fatalf("start processor: %v", err)
+	}
+	defer processor.Stop()
+
+	publishValues(t, rb, 1)
+	waitForSignal(t, done)
+
+	processor.Stop()
+	if err := processor.Wait(); err != nil {
+		t.Fatalf("wait processor: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestRetryExceptionHandlerHaltsAfterMaxRetries(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rb := newTestRingBuffer(t, 4)
+	handlerErr := errors.New("handler failed")
+
+	var attempts int
+	handler := disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+		attempts++
+		return handlerErr
+	})
+
+	retryHandler, err := disruptor.NewRetryExceptionHandler[longEvent](1, disruptor.ExceptionActionHalt)
+	if err != nil {
+		t.Fatalf("new retry exception handler: %v", err)
+	}
+	processor, err := disruptor.NewBatchEventProcessor(
+		rb,
+		rb.NewBarrier(),
+		handler,
+		disruptor.WithExceptionHandler[longEvent](retryHandler),
+	)
+	if err != nil {
+		t.Fatalf("new processor: %v", err)
+	}
+	if err := processor.Start(ctx); err != nil {
+		t.Fatalf("start processor: %v", err)
+	}
+
+	publishValues(t, rb, 1)
+	if err := processor.Wait(); !errors.Is(err, handlerErr) {
+		t.Fatalf("wait error = %v, want handler error", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestBatchEventProcessorRemovesGatingSequenceOnExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rb := newTestRingBuffer(t, 1)
+	handler := disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+		return nil
+	})
+
+	processor, err := disruptor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
+	if err != nil {
+		t.Fatalf("new processor: %v", err)
+	}
+	if err := processor.Start(ctx); err != nil {
+		t.Fatalf("start processor: %v", err)
+	}
+
+	processor.Stop()
+	if err := processor.Wait(); err != nil {
+		t.Fatalf("wait processor: %v", err)
+	}
+
+	sequence, err := rb.TryNext()
+	if err != nil {
+		t.Fatalf("first try next after processor stop: %v", err)
+	}
+	rb.Publish(sequence)
+
+	if _, err := rb.TryNext(); err != nil {
+		t.Fatalf("second try next after processor stop should not be gated: %v", err)
+	}
+}
+
+func TestBatchEventProcessorInvokesBatchStartHandler(t *testing.T) {
+	rb := newTestRingBuffer(t, 8)
+	handler := &batchStartRecordingHandler{
+		batches: make(chan disruptor.BatchStartRequest, 1),
+		events:  make(chan int64, 3),
+	}
+	processor, err := disruptor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
+	if err != nil {
+		t.Fatalf("new processor: %v", err)
+	}
+
+	const batchSize int64 = 3
+	hi, err := rb.NextN(context.Background(), batchSize)
+	if err != nil {
+		t.Fatalf("next batch: %v", err)
+	}
+	lo := hi - batchSize + 1
+	for sequence := lo; sequence <= hi; sequence++ {
+		rb.Get(sequence).Value = sequence
+	}
+	rb.PublishRange(lo, hi)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := processor.Start(ctx); err != nil {
+		t.Fatalf("start processor: %v", err)
+	}
+	defer processor.Stop()
+
+	select {
+	case request := <-handler.batches:
+		if request.Context == nil {
+			t.Fatal("batch start context should be set")
+		}
+		if request.BatchSize != batchSize {
+			t.Fatalf("batch size = %d, want %d", request.BatchSize, batchSize)
+		}
+		if request.QueueDepth != batchSize {
+			t.Fatalf("queue depth = %d, want %d", request.QueueDepth, batchSize)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for batch start")
+	}
+}
+
+func TestBatchEventProcessorInvokesLifecycleHandler(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rb := newTestRingBuffer(t, 4)
+	handler := &lifecycleRecordingHandler{
+		started:  make(chan struct{}, 1),
+		shutdown: make(chan struct{}, 1),
+	}
+	processor, err := disruptor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
+	if err != nil {
+		t.Fatalf("new processor: %v", err)
+	}
+	if err := processor.Start(ctx); err != nil {
+		t.Fatalf("start processor: %v", err)
+	}
+
+	waitForSignal(t, handler.started)
+	processor.Stop()
+	if err := processor.Wait(); err != nil {
+		t.Fatalf("wait processor: %v", err)
+	}
+	waitForSignal(t, handler.shutdown)
+}
+
+type batchStartRecordingHandler struct {
+	batches chan disruptor.BatchStartRequest
+	events  chan int64
+}
+
+func (h *batchStartRecordingHandler) OnBatchStart(
+	request disruptor.BatchStartRequest,
+) error {
+	h.batches <- request
+	return nil
+}
+
+func (h *batchStartRecordingHandler) OnEvent(
+	request disruptor.EventRequest[longEvent],
+) error {
+	h.events <- request.Event.Value
+	return nil
+}
+
+type lifecycleRecordingHandler struct {
+	started  chan struct{}
+	shutdown chan struct{}
+}
+
+func (h *lifecycleRecordingHandler) OnStart(ctx context.Context) error {
+	h.started <- struct{}{}
+	return nil
+}
+
+func (h *lifecycleRecordingHandler) OnShutdown(ctx context.Context) error {
+	h.shutdown <- struct{}{}
+	return nil
+}
+
+func (h *lifecycleRecordingHandler) OnEvent(
+	request disruptor.EventRequest[longEvent],
+) error {
+	return nil
+}
+
 type continueExceptionHandler[T any] struct {
 	events chan<- disruptor.EventException[T]
 }

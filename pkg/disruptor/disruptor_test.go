@@ -2,6 +2,7 @@ package disruptor_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -116,6 +117,53 @@ func TestDisruptorWaitReturnsProcessorError(t *testing.T) {
 	publishValues(t, d.RingBuffer(), 100)
 	if err := d.Wait(); err == nil {
 		t.Fatal("expected processor error")
+	}
+}
+
+func TestDisruptorWaitStopsPeerProcessorsWhenOneFails(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d, err := disruptor.New(
+		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		8,
+	)
+	if err != nil {
+		t.Fatalf("new disruptor: %v", err)
+	}
+
+	handlerErr := errDisruptorTestHandler
+	_, err = d.HandleEventsWith(
+		disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+			return handlerErr
+		}),
+		disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("handle events with: %v", err)
+	}
+	if err := d.Start(ctx); err != nil {
+		t.Fatalf("start disruptor: %v", err)
+	}
+
+	publishValues(t, d.RingBuffer(), 100)
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- d.Wait()
+	}()
+
+	select {
+	case err := <-waitDone:
+		if !errors.Is(err, handlerErr) {
+			t.Fatalf("wait error = %v, want handler error", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		d.Stop()
+		<-waitDone
+		t.Fatal("wait should stop peer processors after one processor fails")
 	}
 }
 

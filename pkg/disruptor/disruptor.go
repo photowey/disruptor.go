@@ -112,10 +112,26 @@ func (d *Disruptor[T]) Wait() error {
 	d.mu.Lock()
 	processors := append([]EventProcessor(nil), d.processors...)
 	d.mu.Unlock()
+	if len(processors) == 0 {
+		return nil
+	}
+
+	var stopOnce sync.Once
+	errc := make(chan error, len(processors))
+	for _, processor := range processors {
+		go func(processor EventProcessor) {
+			err := processor.Wait()
+			if err != nil {
+				stopOnce.Do(d.Stop)
+			}
+
+			errc <- err
+		}(processor)
+	}
 
 	errs := make([]error, 0, len(processors))
-	for _, processor := range processors {
-		if err := processor.Wait(); err != nil {
+	for range processors {
+		if err := <-errc; err != nil {
 			errs = append(errs, err)
 		}
 	}

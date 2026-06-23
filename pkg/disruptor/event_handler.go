@@ -3,6 +3,7 @@ package disruptor
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 type EventHandler[T any] interface {
@@ -155,4 +156,64 @@ func NewIgnoreExceptionHandler[T any]() ExceptionHandler[T] {
 			return ExceptionActionContinue
 		},
 	}
+}
+
+type RetryExceptionHandler[T any] struct {
+	mu              sync.Mutex
+	maxRetries      int
+	exhaustedAction ExceptionAction
+	attempts        map[int64]int
+}
+
+func NewRetryExceptionHandler[T any](
+	maxRetries int,
+	exhaustedAction ExceptionAction,
+) (*RetryExceptionHandler[T], error) {
+	if maxRetries < 0 {
+		return nil, fmt.Errorf("disruptor: max retries must be non-negative")
+	}
+	if exhaustedAction == ExceptionActionUnknown || exhaustedAction == ExceptionActionRetry {
+		return nil, fmt.Errorf("disruptor: invalid exhausted retry action")
+	}
+
+	return &RetryExceptionHandler[T]{
+		maxRetries:      maxRetries,
+		exhaustedAction: exhaustedAction,
+		attempts:        make(map[int64]int),
+	}, nil
+}
+
+func (h *RetryExceptionHandler[T]) HandleEventException(
+	request EventException[T],
+) ExceptionAction {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	attempts := h.attempts[request.Sequence]
+	if attempts < h.maxRetries {
+		h.attempts[request.Sequence] = attempts + 1
+		return ExceptionActionRetry
+	}
+
+	delete(h.attempts, request.Sequence)
+	return h.exhaustedAction
+}
+
+func (h *RetryExceptionHandler[T]) HandleStartException(
+	request LifecycleException,
+) ExceptionAction {
+	return ExceptionActionHalt
+}
+
+func (h *RetryExceptionHandler[T]) HandleShutdownException(
+	request LifecycleException,
+) ExceptionAction {
+	return ExceptionActionHalt
+}
+
+func (h *RetryExceptionHandler[T]) resetRetry(sequence int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	delete(h.attempts, sequence)
 }

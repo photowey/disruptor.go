@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 type RingBuffer[T any] struct {
@@ -120,10 +121,14 @@ func (r *RingBuffer[T]) Get(sequence int64) *T {
 }
 
 func (r *RingBuffer[T]) Publish(sequence int64) {
-	r.PublishRange(sequence, sequence)
+	r.publishRange(sequence, sequence, time.Time{}, nil)
 }
 
 func (r *RingBuffer[T]) PublishRange(lo, hi int64) {
+	r.publishRange(lo, hi, time.Time{}, nil)
+}
+
+func (r *RingBuffer[T]) publishRange(lo, hi int64, started time.Time, err error) {
 	if lo > hi {
 		return
 	}
@@ -136,7 +141,7 @@ func (r *RingBuffer[T]) PublishRange(lo, hi int64) {
 	r.mu.Unlock()
 
 	r.waitStrategy.SignalAll()
-	r.publishMetric(lo, hi, nil)
+	r.publishMetric(lo, hi, started, err)
 }
 
 func (r *RingBuffer[T]) PublishEvent(
@@ -152,7 +157,11 @@ func (r *RingBuffer[T]) PublishEvent(
 		return err
 	}
 
-	defer r.Publish(sequence)
+	var started time.Time
+	if r.metrics != nil {
+		started = time.Now()
+	}
+	defer r.publishRange(sequence, sequence, started, nil)
 	translator.Translate(TranslateRequest[T]{
 		Context:  ctx,
 		Event:    r.Get(sequence),
@@ -195,7 +204,7 @@ func (r *RingBuffer[T]) RemoveGatingSequence(sequence *Sequence) bool {
 }
 
 func (r *RingBuffer[T]) NewBarrier(dependencies ...*Sequence) Barrier {
-	return newProcessingBarrier(r.cursor, r.waitStrategy, dependencies...)
+	return newProcessingBarrier(r.cursor, r.waitStrategy, r.metrics, dependencies...)
 }
 
 func (r *RingBuffer[T]) hasAvailableCapacityLocked(nextSequence int64) bool {
@@ -249,15 +258,21 @@ func (r *RingBuffer[T]) advanceCursorLocked() {
 	}
 }
 
-func (r *RingBuffer[T]) publishMetric(lo, hi int64, err error) {
+func (r *RingBuffer[T]) publishMetric(lo, hi int64, started time.Time, err error) {
 	if r.metrics == nil {
 		return
+	}
+
+	var duration time.Duration
+	if !started.IsZero() {
+		duration = time.Since(started)
 	}
 
 	r.metrics.OnPublish(PublishMetric{
 		ProducerType: r.producerType,
 		Sequence:     hi,
 		BatchSize:    hi - lo + 1,
+		Duration:     duration,
 		Err:          err,
 	})
 }
