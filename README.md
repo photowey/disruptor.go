@@ -24,6 +24,8 @@ import "github.com/photowey/disruptor.go/pkg/disruptor"
 
 ## Quick Start
 
+### Fan-Out
+
 ```go
 package main
 
@@ -96,6 +98,42 @@ func main() {
     if err := d.Wait(); err != nil {
         panic(err)
     }
+}
+```
+
+### Graph Dependencies
+
+Use `Graph[T]` when handlers must run in dependency order. Graph mode and
+fan-out mode are mutually exclusive on one `Disruptor`, so build a fresh
+instance for graph processing. A complete runnable version lives in
+`examples/graph_quickstart`.
+
+```go
+type GraphStepHandler struct {
+    Steps chan<- string
+}
+
+func (h GraphStepHandler) OnEvent(
+    request disruptor.EventRequest[LongEvent],
+) error {
+    h.Steps <- fmt.Sprintf("%s:%d", request.Node.NodeName, request.Event.Value)
+    return nil
+}
+
+steps := make(chan string, 2)
+graph := disruptor.MustGraph[LongEvent]("quickstart").
+    MustNode("validate", GraphStepHandler{Steps: steps}).
+    MustNode("persist", GraphStepHandler{Steps: steps}).
+    MustEdge("validate", "persist")
+
+graphDisruptor, err := disruptor.New(LongEventFactory{}, 1024)
+if err != nil {
+    panic(err)
+}
+
+_, err = graphDisruptor.HandleGraph(graph)
+if err != nil {
+    panic(err)
 }
 ```
 
@@ -277,6 +315,7 @@ Runnable examples live under `examples/`:
 - `examples/error_recovery`
 - `examples/batch_publish`
 - `examples/single_producer`
+- `examples/graph_quickstart`
 - `examples/pipeline`
 - `examples/diamond`
 - `examples/graph_export`
@@ -285,6 +324,7 @@ Run one with:
 
 ```bash
 go run ./examples/basic
+go run ./examples/graph_quickstart
 ```
 
 ## Benchmarks

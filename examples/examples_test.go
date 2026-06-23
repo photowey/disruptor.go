@@ -35,6 +35,7 @@ func TestExamplesRun(t *testing.T) {
 		{name: "error recovery", dir: "error_recovery", expected: "value=9 attempts=3\n"},
 		{name: "batch publish", dir: "batch_publish", expected: "batch=1,2,3,4 sum=10\n"},
 		{name: "single producer", dir: "single_producer", expected: "single=7\n"},
+		{name: "graph quickstart", dir: "graph_quickstart", expected: "validate:42,persist:42\n"},
 		{name: "pipeline", dir: "pipeline", expected: "validate:7,enrich:7,persist:7\n"},
 		{name: "diamond", dir: "diamond", expected: "diamond:D after B+C for 9\n"},
 		{name: "graph export", dir: "graph_export", expected: "graph=export sources=validate leaves=persist edges=1\n"},

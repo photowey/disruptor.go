@@ -24,6 +24,8 @@ import "github.com/photowey/disruptor.go/pkg/disruptor"
 
 ## 快速开始
 
+### Fan-Out
+
 ```go
 package main
 
@@ -93,6 +95,41 @@ func main() {
     if err := d.Wait(); err != nil {
         panic(err)
     }
+}
+```
+
+### Graph 依赖
+
+当 handler 必须按依赖顺序运行时，使用 `Graph[T]`。Graph mode 和 fan-out
+mode 在同一个 `Disruptor` 实例上互斥，因此 graph 处理需要使用一个新的实例。
+完整可运行版本位于 `examples/graph_quickstart`。
+
+```go
+type GraphStepHandler struct {
+    Steps chan<- string
+}
+
+func (h GraphStepHandler) OnEvent(
+    request disruptor.EventRequest[LongEvent],
+) error {
+    h.Steps <- fmt.Sprintf("%s:%d", request.Node.NodeName, request.Event.Value)
+    return nil
+}
+
+steps := make(chan string, 2)
+graph := disruptor.MustGraph[LongEvent]("quickstart").
+    MustNode("validate", GraphStepHandler{Steps: steps}).
+    MustNode("persist", GraphStepHandler{Steps: steps}).
+    MustEdge("validate", "persist")
+
+graphDisruptor, err := disruptor.New(LongEventFactory{}, 1024)
+if err != nil {
+    panic(err)
+}
+
+_, err = graphDisruptor.HandleGraph(graph)
+if err != nil {
+    panic(err)
 }
 ```
 
@@ -255,6 +292,7 @@ func (CountingMetricsSink) OnProcessorState(metric disruptor.ProcessorMetric) {}
 - `examples/error_recovery`
 - `examples/batch_publish`
 - `examples/single_producer`
+- `examples/graph_quickstart`
 - `examples/pipeline`
 - `examples/diamond`
 - `examples/graph_export`
@@ -263,6 +301,7 @@ func (CountingMetricsSink) OnProcessorState(metric disruptor.ProcessorMetric) {}
 
 ```bash
 go run ./examples/basic
+go run ./examples/graph_quickstart
 ```
 
 ## Benchmark

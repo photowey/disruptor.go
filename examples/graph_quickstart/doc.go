@@ -12,9 +12,5 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package examples groups runnable examples for the public disruptor package.
-//
-// Each child directory is a small main package focused on one usage path:
-// basic publication, multi-consumer fan-out, metrics, recovery, batch publish,
-// single-producer sequencing, graph quick starts, and graph topologies.
-package examples
+// Package main demonstrates the smallest graph topology for quick starts.
+package main
