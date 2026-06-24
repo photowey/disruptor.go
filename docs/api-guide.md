@@ -200,6 +200,14 @@ when the processor exits.
 Use `Graph[T]` when a topology has dependencies between handlers. The graph is
 constructed before `Start`, then registered through `HandleGraph`.
 
+```mermaid
+flowchart LR
+    Start["START"] --> Validate["validate"]
+    Validate --> Enrich["enrich"]
+    Enrich --> Persist["persist"]
+    Persist --> End["END"]
+```
+
 ```go
 graph := disruptor.MustGraph[LongEvent]("order-pipeline").
     MustNode("validate", validateHandler).
@@ -296,6 +304,15 @@ Use `RuntimeGraph[T]` when each event may activate a different handler path.
 Runtime graphs use the same explicit `START` and `END` terminal model as static
 graphs, but each edge can have a condition.
 
+```mermaid
+flowchart LR
+    Start["START"] -->|"true"| Route["route"]
+    Route -->|"${route.fast}"| Fast["fast"]
+    Route -->|"${route.audit}"| Audit["audit"]
+    Fast --> End["END"]
+    Audit --> End
+```
+
 ```go
 runtimeGraph := disruptor.MustRuntimeGraph[LongEvent]("runtime-route").
     MustNode("route", routeHandler).
@@ -372,6 +389,24 @@ Processor options:
 Graph options:
 
 - `WithGraphExceptionHandler[T](handler)`
+
+Runtime graph options:
+
+- `WithRuntimeGraphExpressionCompiler(compiler)`
+- `NewRuntimeExpressionCompiler(WithExpressionValueConverter(converter))`
+
+Runtime graph handle options:
+
+- `WithRuntimeGraphExceptionHandler[T](handler)`
+- `WithRuntimeGraphWorkers[T](workers)`
+- `WithRuntimeGraphNoRouteAction[T](action)`
+- `WithRuntimeGraphVariablesProvider[T](provider)`
+- `WithRuntimeGraphEventValueResolver[T](resolver)`
+- `WithRuntimeGraphMetricsSink[T](sink)`
+
+`WithRuntimeGraphWorkers` is a forward-compatible configuration hook in v1.2.0:
+the value is validated, while current execution remains deterministic inside the
+runtime graph scheduler processor.
 
 Node options:
 

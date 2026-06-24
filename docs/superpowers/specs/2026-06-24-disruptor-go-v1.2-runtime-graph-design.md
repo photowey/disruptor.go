@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft approved for implementation planning.
+Implemented and under release review.
 
 Target tag: `v1.2.0`
 
@@ -55,6 +55,24 @@ V1.2.0 standardizes graph terminal semantics:
 on edges. Each event starts at `START`, evaluates outgoing edge conditions, and
 routes only through selected edges. Handlers for unselected paths do not run.
 
+```mermaid
+flowchart TB
+    App["Application"] --> D["Disruptor[T]"]
+    D --> Fanout["HandleEventsWith"]
+    D --> StaticGraph["HandleGraph"]
+    D --> RuntimeGraphMode["HandleRuntimeGraph"]
+    Fanout --> Batch["BatchEventProcessor[T]"]
+    StaticGraph --> Graph["Graph[T]"]
+    StaticGraph --> GraphProcessors["GraphProcessors"]
+    RuntimeGraphMode --> RG["RuntimeGraph[T]"]
+    RuntimeGraphMode --> Scheduler["runtime graph scheduler"]
+    RG --> Conditions["edge conditions"]
+    Conditions --> Compiler["ExpressionCompiler"]
+    Scheduler --> Runtime["RuntimeContext and RuntimeBag"]
+    Scheduler --> Selected["selected handler paths"]
+    Scheduler --> RuntimeExceptions["RuntimeGraphExceptionHandler[T]"]
+```
+
 ## Phase 1: Static Graph Terminal Edges
 
 ### Current V1.1 Behavior
@@ -70,6 +88,13 @@ developer intent. V1.2.0 removes this implicit edge completion.
 ### V1.2.0 Static Graph Rule
 
 `START` and `END` are built-in nodes, but terminal edges must be explicit.
+
+```mermaid
+flowchart LR
+    Start["START"] --> Validate["validate"]
+    Validate --> Persist["persist"]
+    Persist --> End["END"]
+```
 
 ```go
 graph := disruptor.MustGraph[OrderEvent]("order").
@@ -210,6 +235,16 @@ Terminal edges also support conditions:
 - `node -> END` can have a condition.
 - The default condition is `true`.
 
+```mermaid
+flowchart LR
+    Start["START"] -->|"true"| Validate["validate"]
+    Validate -->|"${flags} & 1"| Payment["payment"]
+    Validate -->|"${risk.score} > 80"| Audit["audit"]
+    Payment --> End["END"]
+    Audit --> End
+    Validate -->|"all outgoing false"| NoRoute["NoRoute action"]
+```
+
 ### RuntimeGraph API Sketch
 
 ```go
@@ -233,15 +268,26 @@ runtimeGraph := disruptor.MustRuntimeGraph[OrderEvent]("order").
 
 processors, err := d.HandleRuntimeGraph(
     runtimeGraph,
-    disruptor.WithRuntimeGraphWorkers[OrderEvent](4),
+    disruptor.WithRuntimeGraphNoRouteAction[OrderEvent](
+        disruptor.RuntimeNoRouteActionComplete,
+    ),
 )
 ```
 
 Expected public constructors and registration methods:
 
 ```go
-func NewRuntimeGraph[T any](name string) (*RuntimeGraph[T], error)
-func MustRuntimeGraph[T any](name string) *RuntimeGraph[T]
+func NewRuntimeGraph[T any](
+    name string,
+    opts ...RuntimeGraphOption,
+) (*RuntimeGraph[T], error)
+func MustRuntimeGraph[T any](
+    name string,
+    opts ...RuntimeGraphOption,
+) *RuntimeGraph[T]
+func WithRuntimeGraphExpressionCompiler(
+    compiler ExpressionCompiler,
+) RuntimeGraphOption
 
 func (g *RuntimeGraph[T]) Name() string
 func (g *RuntimeGraph[T]) Node(
@@ -670,36 +716,56 @@ NoRoute must never block producer gating indefinitely.
 RuntimeGraph uses:
 
 - one scheduler processor
-- a configurable worker pool
+- deterministic in-processor route-state ownership
 - default workers: `1`
 
 ```go
 func WithRuntimeGraphWorkers[T any](workers int) RuntimeGraphHandleOption[T]
 ```
 
-The scheduler owns route state. Workers execute handlers and report completion.
+The scheduler owns route state. `WithRuntimeGraphWorkers` validates the runtime
+graph configuration and leaves a forward-compatibility hook for later worker
+pool expansion, but v1.2.0 executes ready nodes inside the scheduler processor.
 
 Rules:
 
 - Scheduler state is single-owner.
-- Workers do not mutate route state directly.
-- The runtime bag is concurrency-safe because multiple workers may write it.
+- No worker mutates route state directly.
+- The runtime bag is concurrency-safe for handler code and future parallel
+  execution.
 - Default `workers=1` gives deterministic execution and simpler debugging.
-- Higher worker counts allow independent active nodes to run in parallel.
+- Higher worker counts are accepted for configuration compatibility.
 
 ### Per-Sequence State
 
 Each sequence has runtime state:
 
 - runtime bag
-- edge status map
 - node status map
-- active work count
-- terminal reachability state
-- first terminal error, if any
+- ready node queue
+- end-reached flag
+- no-route result
 
 The state can be released when the event reaches `END`, completes by configured
 NoRoute action, or halts.
+
+```mermaid
+sequenceDiagram
+    participant Proc as Scheduler processor
+    participant Bag as RuntimeBag
+    participant Cond as Compiled condition
+    participant H as EventHandler T
+    participant End as END or NoRoute
+
+    Proc->>Cond: evaluate START edge
+    Cond-->>Proc: true or false
+    Proc->>H: run selected node
+    H->>Bag: Set runtime variables
+    H-->>Proc: nil or error
+    Proc->>Cond: evaluate outgoing edges
+    Cond-->>Proc: selected next nodes
+    Proc->>End: complete, halt, or no-route complete
+```
 
 ## Error Handling
 
@@ -718,11 +784,11 @@ type RuntimeGraphExceptionHandler[T any] interface {
 type RuntimeGraphExceptionKind uint8
 
 const (
-    RuntimeGraphExceptionUnknown RuntimeGraphExceptionKind = iota
-    RuntimeGraphExceptionHandler
-    RuntimeGraphExceptionCondition
-    RuntimeGraphExceptionNoRoute
-    RuntimeGraphExceptionPanic
+    RuntimeGraphExceptionKindUnknown RuntimeGraphExceptionKind = iota
+    RuntimeGraphExceptionKindHandler
+    RuntimeGraphExceptionKindCondition
+    RuntimeGraphExceptionKindNoRoute
+    RuntimeGraphExceptionKindPanic
 )
 ```
 

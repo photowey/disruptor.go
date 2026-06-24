@@ -150,28 +150,55 @@ if err != nil {
 ## 架构
 
 ```mermaid
-flowchart LR
+flowchart TB
     App["应用程序"] --> D["Disruptor[T]"]
     App --> RB["RingBuffer[T]"]
     D --> RB
-    RB --> S["Sequencer"]
-    RB --> W["WaitStrategy"]
-    RB --> M["MetricsSink"]
-    D --> P["BatchEventProcessor[T]"]
+
+    subgraph Core["核心 Ring"]
+        RB --> S["Sequencer"]
+        RB --> W["WaitStrategy"]
+        RB --> M["MetricsSink"]
+    end
+
+    subgraph Modes["处理模式"]
+        D --> Fanout["HandleEventsWith"]
+        D --> StaticGraph["HandleGraph"]
+        D --> RuntimeGraphMode["HandleRuntimeGraph"]
+    end
+
+    Fanout --> P["BatchEventProcessor[T]"]
+    StaticGraph --> G["Graph[T]"]
+    StaticGraph --> GP["GraphProcessors"]
+    RuntimeGraphMode --> RG["RuntimeGraph[T]"]
+    RuntimeGraphMode --> RSP["runtime graph scheduler"]
+
     P --> B["Barrier"]
     P --> H["EventHandler[T]"]
     P --> E["ExceptionHandler[T]"]
+    GP --> B
+    GP --> H
+    RG --> EC["edge conditions"]
+    EC --> XC["ExpressionCompiler"]
+    RSP --> RC["RuntimeContext"]
+    RC --> Bag["RuntimeBag"]
+    RSP --> RH["被选中的 EventHandler[T] 路径"]
+    RSP --> RE["RuntimeGraphExceptionHandler[T]"]
     P --> M
+    RSP --> M
 ```
 
 ## 流转流程
+
+发布路径由 fan-out、静态 Graph 和 Runtime Graph 共享。Runtime Graph 的
+条件路由发生在 scheduler processor 观察到可消费 sequence 之后。
 
 ```mermaid
 sequenceDiagram
     participant App
     participant RB as RingBuffer T
     participant Seq as Sequencer
-    participant P as BatchEventProcessor T
+    participant Proc as Processor
     participant H as EventHandler T
 
     App->>RB: PublishEvent(ctx, translator)
@@ -179,9 +206,17 @@ sequenceDiagram
     Seq-->>RB: sequence
     RB->>RB: translate into slot
     RB->>Seq: Publish(sequence)
-    Seq-->>P: sequence available
-    P->>H: OnEvent(request)
-    H-->>P: nil or error
+    Seq-->>Proc: sequence available
+    alt HandleEventsWith 或 HandleGraph
+        Proc->>H: OnEvent(request)
+        H-->>Proc: nil or error
+    else HandleRuntimeGraph
+        Proc->>Proc: evaluate START edges
+        Proc->>H: run selected node handler
+        H-->>Proc: runtime variables and result
+        Proc->>Proc: evaluate outgoing edges
+        Proc->>Proc: complete at END or configured no-route action
+    end
 ```
 
 ## 拓扑图
@@ -245,6 +280,20 @@ _, err = d.HandleRuntimeGraph(runtimeGraph)
 
 runtime 表达式支持 bool、字符串、数值比较、分组、逻辑运算，以及
 `${flags} & 1` 这类整数位运算。
+
+```mermaid
+flowchart LR
+    Start["START"] -->|"true"| Route["route"]
+    Route --> Write["handler 写入 RuntimeBag"]
+    Write --> FastExpr["evaluate ${route.fast}"]
+    Write --> AuditExpr["evaluate ${route.audit}"]
+    FastExpr -->|"true"| Fast["fast"]
+    AuditExpr -->|"true"| Audit["audit"]
+    Fast --> End["END"]
+    Audit --> End
+    FastExpr -->|"false"| SkipFast["skip fast"]
+    AuditExpr -->|"false"| SkipAudit["skip audit"]
+```
 
 ## 背压
 

@@ -163,28 +163,56 @@ if err != nil {
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     App["Application"] --> D["Disruptor[T]"]
     App --> RB["RingBuffer[T]"]
     D --> RB
-    RB --> S["Sequencer"]
-    RB --> W["WaitStrategy"]
-    RB --> M["MetricsSink"]
-    D --> P["BatchEventProcessor[T]"]
+
+    subgraph Core["Core ring"]
+        RB --> S["Sequencer"]
+        RB --> W["WaitStrategy"]
+        RB --> M["MetricsSink"]
+    end
+
+    subgraph Modes["Processing modes"]
+        D --> Fanout["HandleEventsWith"]
+        D --> StaticGraph["HandleGraph"]
+        D --> RuntimeGraphMode["HandleRuntimeGraph"]
+    end
+
+    Fanout --> P["BatchEventProcessor[T]"]
+    StaticGraph --> G["Graph[T]"]
+    StaticGraph --> GP["GraphProcessors"]
+    RuntimeGraphMode --> RG["RuntimeGraph[T]"]
+    RuntimeGraphMode --> RSP["runtime graph scheduler"]
+
     P --> B["Barrier"]
     P --> H["EventHandler[T]"]
     P --> E["ExceptionHandler[T]"]
+    GP --> B
+    GP --> H
+    RG --> EC["edge conditions"]
+    EC --> XC["ExpressionCompiler"]
+    RSP --> RC["RuntimeContext"]
+    RC --> Bag["RuntimeBag"]
+    RSP --> RH["selected EventHandler[T] paths"]
+    RSP --> RE["RuntimeGraphExceptionHandler[T]"]
     P --> M
+    RSP --> M
 ```
 
 ## Event Flow
+
+The publish path is shared by fan-out, static graph, and runtime graph modes.
+Runtime graph routing starts after the scheduler processor observes an available
+sequence.
 
 ```mermaid
 sequenceDiagram
     participant App
     participant RB as RingBuffer T
     participant Seq as Sequencer
-    participant P as BatchEventProcessor T
+    participant Proc as Processor
     participant H as EventHandler T
 
     App->>RB: PublishEvent(ctx, translator)
@@ -192,9 +220,17 @@ sequenceDiagram
     Seq-->>RB: sequence
     RB->>RB: translate into slot
     RB->>Seq: Publish(sequence)
-    Seq-->>P: sequence available
-    P->>H: OnEvent(request)
-    H-->>P: nil or error
+    Seq-->>Proc: sequence available
+    alt HandleEventsWith or HandleGraph
+        Proc->>H: OnEvent(request)
+        H-->>Proc: nil or error
+    else HandleRuntimeGraph
+        Proc->>Proc: evaluate START edges
+        Proc->>H: run selected node handler
+        H-->>Proc: runtime variables and result
+        Proc->>Proc: evaluate outgoing edges
+        Proc->>Proc: complete at END or configured no-route action
+    end
 ```
 
 ## Topology Graphs
@@ -259,6 +295,20 @@ _, err = d.HandleRuntimeGraph(runtimeGraph)
 
 Runtime expressions support bools, strings, numeric comparisons, grouping,
 logical operators, and integer bitwise operators such as `${flags} & 1`.
+
+```mermaid
+flowchart LR
+    Start["START"] -->|"true"| Route["route"]
+    Route --> Write["handler writes RuntimeBag"]
+    Write --> FastExpr["evaluate ${route.fast}"]
+    Write --> AuditExpr["evaluate ${route.audit}"]
+    FastExpr -->|"true"| Fast["fast"]
+    AuditExpr -->|"true"| Audit["audit"]
+    Fast --> End["END"]
+    Audit --> End
+    FastExpr -->|"false"| SkipFast["skip fast"]
+    AuditExpr -->|"false"| SkipAudit["skip audit"]
+```
 
 ## Backpressure
 
