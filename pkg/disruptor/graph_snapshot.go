@@ -21,8 +21,8 @@ import (
 )
 
 // GraphSnapshot is a handler-free view of a graph.
-// Nodes and Edges include virtual START and END terminals for export.
-// Sources and Leaves list real handler nodes only.
+// Nodes and Edges include explicit virtual START and END terminals for export.
+// Sources, Leaves, Entries, and Exits list real handler nodes only.
 type GraphSnapshot struct {
 	Name    string
 	Frozen  bool
@@ -30,6 +30,8 @@ type GraphSnapshot struct {
 	Edges   []GraphEdgeSnapshot
 	Sources []string
 	Leaves  []string
+	Entries []string
+	Exits   []string
 }
 
 // GraphNodeSnapshot describes one graph node.
@@ -58,7 +60,38 @@ func (g *Graph[T]) Snapshot() GraphSnapshot {
 }
 
 func (g *Graph[T]) snapshotLocked() GraphSnapshot {
-	return withGraphVirtualTerminals(g.processingSnapshotLocked())
+	processing := g.processingSnapshotLocked()
+	if len(processing.Nodes) == 0 {
+		return processing
+	}
+
+	startEdges, endEdges, entries, exits := g.terminalEdgesLocked()
+	nodes := make([]GraphNodeSnapshot, 0, len(processing.Nodes)+2)
+	nodes = append(nodes, GraphNodeSnapshot{
+		Name:  GraphStartNode,
+		Label: GraphStartNode,
+	})
+	nodes = append(nodes, processing.Nodes...)
+	nodes = append(nodes, GraphNodeSnapshot{
+		Name:  GraphEndNode,
+		Label: GraphEndNode,
+	})
+
+	edges := make([]GraphEdgeSnapshot, 0, len(startEdges)+len(processing.Edges)+len(endEdges))
+	edges = append(edges, startEdges...)
+	edges = append(edges, processing.Edges...)
+	edges = append(edges, endEdges...)
+
+	return GraphSnapshot{
+		Name:    processing.Name,
+		Frozen:  processing.Frozen,
+		Nodes:   nodes,
+		Edges:   edges,
+		Sources: append([]string(nil), processing.Sources...),
+		Leaves:  append([]string(nil), processing.Leaves...),
+		Entries: entries,
+		Exits:   exits,
+	}
 }
 
 func (g *Graph[T]) processingSnapshotLocked() GraphSnapshot {
@@ -76,6 +109,9 @@ func (g *Graph[T]) processingSnapshotLocked() GraphSnapshot {
 
 	edges := make([]GraphEdgeSnapshot, 0, len(g.edges))
 	for edge := range g.edges {
+		if isGraphTerminalEdge(edge) {
+			continue
+		}
 		edges = append(edges, edge)
 	}
 	sortEdges(edges)
@@ -90,6 +126,34 @@ func (g *Graph[T]) processingSnapshotLocked() GraphSnapshot {
 		Sources: sources,
 		Leaves:  leaves,
 	}
+}
+
+func (g *Graph[T]) terminalEdgesLocked() (
+	[]GraphEdgeSnapshot,
+	[]GraphEdgeSnapshot,
+	[]string,
+	[]string,
+) {
+	startEdges := make([]GraphEdgeSnapshot, 0)
+	endEdges := make([]GraphEdgeSnapshot, 0)
+	entries := make([]string, 0)
+	exits := make([]string, 0)
+	for edge := range g.edges {
+		switch {
+		case edge.From == GraphStartNode && !isGraphVirtualNodeName(edge.To):
+			startEdges = append(startEdges, edge)
+			entries = append(entries, edge.To)
+		case edge.To == GraphEndNode && !isGraphVirtualNodeName(edge.From):
+			endEdges = append(endEdges, edge)
+			exits = append(exits, edge.From)
+		}
+	}
+	sortEdges(startEdges)
+	sortEdges(endEdges)
+	sort.Strings(entries)
+	sort.Strings(exits)
+
+	return startEdges, endEdges, entries, exits
 }
 
 // Mermaid renders the graph as a Mermaid flowchart.
@@ -196,51 +260,6 @@ func (g *Graph[T]) findCycleLocked() []string {
 	return nil
 }
 
-func withGraphVirtualTerminals(snapshot GraphSnapshot) GraphSnapshot {
-	if len(snapshot.Nodes) == 0 {
-		return snapshot
-	}
-
-	nodes := make([]GraphNodeSnapshot, 0, len(snapshot.Nodes)+2)
-	nodes = append(nodes, GraphNodeSnapshot{
-		Name:  GraphStartNode,
-		Label: GraphStartNode,
-	})
-	nodes = append(nodes, snapshot.Nodes...)
-	nodes = append(nodes, GraphNodeSnapshot{
-		Name:  GraphEndNode,
-		Label: GraphEndNode,
-	})
-
-	edges := make(
-		[]GraphEdgeSnapshot,
-		0,
-		len(snapshot.Edges)+len(snapshot.Sources)+len(snapshot.Leaves),
-	)
-	for _, source := range snapshot.Sources {
-		edges = append(edges, GraphEdgeSnapshot{
-			From: GraphStartNode,
-			To:   source,
-		})
-	}
-	edges = append(edges, snapshot.Edges...)
-	for _, leaf := range snapshot.Leaves {
-		edges = append(edges, GraphEdgeSnapshot{
-			From: leaf,
-			To:   GraphEndNode,
-		})
-	}
-
-	return GraphSnapshot{
-		Name:    snapshot.Name,
-		Frozen:  snapshot.Frozen,
-		Nodes:   nodes,
-		Edges:   edges,
-		Sources: append([]string(nil), snapshot.Sources...),
-		Leaves:  append([]string(nil), snapshot.Leaves...),
-	}
-}
-
 func graphTerminals(
 	nodes []GraphNodeSnapshot,
 	edges []GraphEdgeSnapshot,
@@ -268,6 +287,81 @@ func graphTerminals(
 	}
 
 	return sources, leaves
+}
+
+func graphUnreachableNodes(snapshot GraphSnapshot, entries []string) []string {
+	adjacency := graphAdjacency(snapshot.Edges)
+	reachable := graphReachable(entries, adjacency)
+
+	missing := make([]string, 0)
+	for _, node := range snapshot.Nodes {
+		if !reachable[node.Name] {
+			missing = append(missing, node.Name)
+		}
+	}
+
+	return missing
+}
+
+func graphNodesCannotReachExits(snapshot GraphSnapshot, exits []string) []string {
+	reverse := make(map[string][]string, len(snapshot.Nodes))
+	for _, edge := range snapshot.Edges {
+		reverse[edge.To] = append(reverse[edge.To], edge.From)
+	}
+	for node := range reverse {
+		sort.Strings(reverse[node])
+	}
+	reachable := graphReachable(exits, reverse)
+
+	missing := make([]string, 0)
+	for _, node := range snapshot.Nodes {
+		if !reachable[node.Name] {
+			missing = append(missing, node.Name)
+		}
+	}
+
+	return missing
+}
+
+func graphAdjacency(edges []GraphEdgeSnapshot) map[string][]string {
+	adjacency := make(map[string][]string)
+	for _, edge := range edges {
+		adjacency[edge.From] = append(adjacency[edge.From], edge.To)
+	}
+	for node := range adjacency {
+		sort.Strings(adjacency[node])
+	}
+
+	return adjacency
+}
+
+func graphReachable(entries []string, adjacency map[string][]string) map[string]bool {
+	reachable := make(map[string]bool)
+	queue := append([]string(nil), entries...)
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if reachable[current] {
+			continue
+		}
+		reachable[current] = true
+		queue = append(queue, adjacency[current]...)
+	}
+
+	return reachable
+}
+
+func sameStringSet(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+
+	return true
 }
 
 func graphNodeIDs(nodes []GraphNodeSnapshot) map[string]string {
@@ -320,6 +414,8 @@ func copyGraphSnapshot(snapshot GraphSnapshot) GraphSnapshot {
 	edges := append([]GraphEdgeSnapshot(nil), snapshot.Edges...)
 	sources := append([]string(nil), snapshot.Sources...)
 	leaves := append([]string(nil), snapshot.Leaves...)
+	entries := append([]string(nil), snapshot.Entries...)
+	exits := append([]string(nil), snapshot.Exits...)
 
 	return GraphSnapshot{
 		Name:    snapshot.Name,
@@ -328,5 +424,7 @@ func copyGraphSnapshot(snapshot GraphSnapshot) GraphSnapshot {
 		Edges:   edges,
 		Sources: sources,
 		Leaves:  leaves,
+		Entries: entries,
+		Exits:   exits,
 	}
 }

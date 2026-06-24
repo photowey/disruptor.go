@@ -18,5 +18,5 @@ func Example() {
 	main()
 
 	// Output:
-	// graph=export source=validate entry=validate leaf=persist exit=persist nodes=4 edges=3
+	// route:11,fast:11
 }

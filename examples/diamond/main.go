@@ -69,9 +69,11 @@ func main() {
 		MustNode("B", branchHandler{}).
 		MustNode("C", branchHandler{}).
 		MustNode("D", finalHandler{done: done}).
+		MustEdge(disruptor.GraphStartNode, "A").
 		MustEdge("A", "B").
 		MustEdge("A", "C")
 	graph.Join("B", "C").MustTo("D")
+	graph.MustEdge("D", disruptor.GraphEndNode)
 
 	if _, err := d.HandleGraph(graph); err != nil {
 		panic(err)

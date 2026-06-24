@@ -63,8 +63,10 @@ func main() {
 		MustNode("validate", pipelineHandler{steps: steps}).
 		MustNode("enrich", pipelineHandler{steps: steps}).
 		MustNode("persist", pipelineHandler{steps: steps}).
+		MustEdge(disruptor.GraphStartNode, "validate").
 		MustEdge("validate", "enrich").
-		MustEdge("enrich", "persist")
+		MustEdge("enrich", "persist").
+		MustEdge("persist", disruptor.GraphEndNode)
 
 	if _, err := d.HandleGraph(graph); err != nil {
 		panic(err)

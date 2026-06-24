@@ -205,8 +205,10 @@ graph := disruptor.MustGraph[LongEvent]("order-pipeline").
     MustNode("validate", validateHandler).
     MustNode("enrich", enrichHandler).
     MustNode("persist", persistHandler).
+    MustEdge(disruptor.GraphStartNode, "validate").
     MustEdge("validate", "enrich").
-    MustEdge("enrich", "persist")
+    MustEdge("enrich", "persist").
+    MustEdge("persist", disruptor.GraphEndNode)
 
 processors, err := d.HandleGraph(graph)
 if err != nil {
@@ -233,11 +235,20 @@ graph.Join("validate", "enrich").MustTo("persist")
 - `GraphEndNode` has the value `END`.
 
 The virtual terminals make exported graphs complete. They are not real handler
-nodes, cannot be registered through `Node`, and cannot be wired manually through
-`Edge`. `GraphSnapshot.Nodes` and `GraphSnapshot.Edges` include them; identify
-virtual entries by the reserved `GraphStartNode` and `GraphEndNode` names.
-`GraphSnapshot.Sources` and `GraphSnapshot.Leaves` still list real handler
-nodes only.
+nodes and cannot be registered through `Node`. In V1.2, terminal edges are
+explicit and must be declared manually through `Edge`:
+
+```go
+graph.MustEdge(disruptor.GraphStartNode, "validate").
+    MustEdge("persist", disruptor.GraphEndNode)
+```
+
+`GraphSnapshot.Nodes` includes virtual `START` and `END` when the graph has
+real nodes. `GraphSnapshot.Edges` includes only developer-declared edges.
+`Sources` and `Leaves` list real handler nodes by real-node dependencies.
+`Entries` lists real nodes targeted by `START -> node`; `Exits` lists real
+nodes connected through `node -> END`. `Validate` requires `Entries` to match
+`Sources` and `Exits` to match `Leaves`.
 
 The graph API exposes named processors after registration:
 
@@ -278,6 +289,73 @@ producer.
 `HandleGraph` freezes the graph instance. A handled graph cannot be mutated or
 registered on another disruptor. Use `Snapshot`, `Mermaid`, or `DOT` before or
 after registration when a topology needs to be logged or inspected.
+
+## Runtime Graphs
+
+Use `RuntimeGraph[T]` when each event may activate a different handler path.
+Runtime graphs use the same explicit `START` and `END` terminal model as static
+graphs, but each edge can have a condition.
+
+```go
+runtimeGraph := disruptor.MustRuntimeGraph[LongEvent]("runtime-route").
+    MustNode("route", routeHandler).
+    MustNode("fast", fastHandler).
+    MustNode("audit", auditHandler).
+    MustEdge(disruptor.GraphStartNode, "route").
+    MustEdge("route", "fast", disruptor.WhenExpression[LongEvent](`${route.fast}`)).
+    MustEdge("route", "audit", disruptor.WhenExpression[LongEvent](`${route.audit}`)).
+    MustEdge("fast", disruptor.GraphEndNode).
+    MustEdge("audit", disruptor.GraphEndNode)
+
+processors, err := d.HandleRuntimeGraph(runtimeGraph)
+if err != nil {
+    return err
+}
+
+_ = processors
+```
+
+Handlers receive `EventRequest.Runtime`, a per-event runtime context. Handlers
+can set variables:
+
+```go
+request.Runtime.Set("route.fast", true)
+request.Runtime.Set("risk.score", 91)
+```
+
+Expression edges read the merged variable view. Lookup order is runtime bag,
+configured `RuntimeVariablesProvider[T]`, then configured event value resolver.
+The default event resolver uses reflection and supports struct fields, JSON
+tags, and string-keyed maps.
+
+Runtime expressions support:
+
+- bool, nil, string, integer, and float literals
+- path lookups such as `${route.fast}` and `${risk.score}`
+- comparisons: `==`, `!=`, `>`, `>=`, `<`, `<=`
+- logical operators: `&&`, `||`, `!`
+- grouping with parentheses
+- integer bitwise operators: `&`, `|`, `^`, `&^`, `<<`, `>>`
+
+The final expression result is converted to bool. Bool values are used directly,
+integers use zero/non-zero truthiness, and strings use `strconv.ParseBool`.
+Intermediate operands for `&&`, `||`, and `!` must already be bool.
+
+Runtime graph no-route handling defaults to halt:
+
+```go
+_, err = d.HandleRuntimeGraph(
+    runtimeGraph,
+    disruptor.WithRuntimeGraphNoRouteAction[LongEvent](
+        disruptor.RuntimeNoRouteActionComplete,
+    ),
+)
+```
+
+Runtime graph failures are routed through `RuntimeGraphExceptionHandler[T]`.
+This is separate from the existing static/fan-out `ExceptionHandler[T]` so
+handler, condition, no-route, and panic failures can be observed without
+changing V1 semantics.
 
 ## Options
 

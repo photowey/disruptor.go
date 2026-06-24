@@ -15,6 +15,7 @@ go test -run '^$' -bench=BenchmarkE2E -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkE2EDisruptorParallelProducers -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkChannelComparison -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkGraphTopology -benchmem -count=10 ./benchmarks
+go test -run '^$' -bench=BenchmarkRuntimeGraphRouting -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkE2ELatencyQuantiles -benchmem -count=10 ./benchmarks
 ```
 
@@ -33,7 +34,7 @@ Benchmark matrix:
 | Axis | Current groups |
 | --- | --- |
 | Ring size | `1024`, `65536`, `1048576` in `BenchmarkRingBufferMatrix`; `65536` in end-to-end and channel comparisons |
-| Topology | `1/1`, `1/N`, `M/1`, `M/N`, graph single-node, graph pipeline, graph fan-in, and graph diamond |
+| Topology | `1/1`, `1/N`, `M/1`, `M/N`, graph single-node, graph pipeline, graph fan-in, graph diamond, runtime graph single-path, runtime graph expression branch, and runtime graph active join |
 | Wait strategy | blocking and busy-spin |
 | Claim batch size | `1`, `4`, `16`, `64`, `256` |
 | Queue comparison | unbuffered channel, buffered channel, pointer channel, spin channel, `sync.Cond` ring |

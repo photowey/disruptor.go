@@ -12,11 +12,5 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package main demonstrates conditional runtime graph routing.
 package main
-
-func Example() {
-	main()
-
-	// Output:
-	// graph=export source=validate entry=validate leaf=persist exit=persist nodes=4 edges=3
-}

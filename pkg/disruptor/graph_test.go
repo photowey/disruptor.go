@@ -111,6 +111,74 @@ func TestGraphEdgeValidatesEndpoints(t *testing.T) {
 	}
 }
 
+func TestGraphEdgeAllowsExplicitTerminalEdges(t *testing.T) {
+	graph := mustTestGraph(t, "orders")
+	graph.MustNode("A", graphNoopHandler{}).
+		MustNode("B", graphNoopHandler{}).
+		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge("A", "B").
+		MustEdge("B", disruptor.GraphEndNode)
+
+	snapshot := graph.Snapshot()
+	wantNodes := []string{disruptor.GraphStartNode, "A", "B", disruptor.GraphEndNode}
+	if len(snapshot.Nodes) != len(wantNodes) {
+		t.Fatalf("node count = %d, want %d: %+v", len(snapshot.Nodes), len(wantNodes), snapshot.Nodes)
+	}
+	for i, want := range wantNodes {
+		if snapshot.Nodes[i].Name != want {
+			t.Fatalf("node[%d] = %+v, want %q", i, snapshot.Nodes[i], want)
+		}
+	}
+
+	wantEdges := []disruptor.GraphEdgeSnapshot{
+		{From: disruptor.GraphStartNode, To: "A"},
+		{From: "A", To: "B"},
+		{From: "B", To: disruptor.GraphEndNode},
+	}
+	if len(snapshot.Edges) != len(wantEdges) {
+		t.Fatalf("edge count = %d, want %d: %+v", len(snapshot.Edges), len(wantEdges), snapshot.Edges)
+	}
+	for i, want := range wantEdges {
+		if snapshot.Edges[i] != want {
+			t.Fatalf("edge[%d] = %+v, want %+v", i, snapshot.Edges[i], want)
+		}
+	}
+	if got := snapshot.Entries; len(got) != 1 || got[0] != "A" {
+		t.Fatalf("entries = %v, want [A]", got)
+	}
+	if got := snapshot.Exits; len(got) != 1 || got[0] != "B" {
+		t.Fatalf("exits = %v, want [B]", got)
+	}
+}
+
+func TestGraphEdgeRejectsInvalidTerminalEdges(t *testing.T) {
+	graph := mustTestGraph(t, "orders")
+	graph.MustNode("A", graphNoopHandler{})
+
+	cases := []struct {
+		name string
+		from string
+		to   string
+	}{
+		{name: "start to end", from: disruptor.GraphStartNode, to: disruptor.GraphEndNode},
+		{name: "start to start", from: disruptor.GraphStartNode, to: disruptor.GraphStartNode},
+		{name: "end to end", from: disruptor.GraphEndNode, to: disruptor.GraphEndNode},
+		{name: "real to start", from: "A", to: disruptor.GraphStartNode},
+		{name: "end to real", from: disruptor.GraphEndNode, to: "A"},
+		{name: "end to start", from: disruptor.GraphEndNode, to: disruptor.GraphStartNode},
+		{name: "start to missing", from: disruptor.GraphStartNode, to: "missing"},
+		{name: "missing to end", from: "missing", to: disruptor.GraphEndNode},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := graph.Edge(tc.from, tc.to)
+			if !errors.Is(err, disruptor.ErrInvalidGraph) {
+				t.Fatalf("edge error = %v, want ErrInvalidGraph", err)
+			}
+		})
+	}
+}
+
 func TestGraphJoinExpandsEdges(t *testing.T) {
 	graph := mustTestGraph(t, "orders")
 	graph.MustNode("A", graphNoopHandler{}).
@@ -163,23 +231,60 @@ func TestGraphValidateRejectsCycles(t *testing.T) {
 	}
 }
 
-func TestGraphValidateRejectsIsolatedNodeInMultiNodeGraph(t *testing.T) {
-	graph := mustTestGraph(t, "isolated")
+func TestGraphValidateRejectsMissingExplicitTerminals(t *testing.T) {
+	graph := mustTestGraph(t, "missing-terminals")
 	graph.MustNode("A", graphNoopHandler{}).
 		MustNode("B", graphNoopHandler{}).
-		MustNode("C", graphNoopHandler{}).
 		MustEdge("A", "B")
 
 	err := graph.Validate()
 	if !errors.Is(err, disruptor.ErrInvalidGraph) {
 		t.Fatalf("validate error = %v, want ErrInvalidGraph", err)
 	}
-	if !strings.Contains(err.Error(), "node C is isolated") {
-		t.Fatalf("isolated error = %q, want node name", err)
+	if !strings.Contains(err.Error(), "entry") {
+		t.Fatalf("validate error = %q, want entry message", err)
 	}
+}
 
+func TestGraphValidateRejectsEntrySourceMismatch(t *testing.T) {
+	graph := mustTestGraph(t, "entry-mismatch")
+	graph.MustNode("A", graphNoopHandler{}).
+		MustNode("B", graphNoopHandler{}).
+		MustEdge(disruptor.GraphStartNode, "B").
+		MustEdge("A", "B").
+		MustEdge("B", disruptor.GraphEndNode)
+
+	err := graph.Validate()
+	if !errors.Is(err, disruptor.ErrInvalidGraph) {
+		t.Fatalf("validate error = %v, want ErrInvalidGraph", err)
+	}
+	if !strings.Contains(err.Error(), "entries must match sources") {
+		t.Fatalf("validate error = %q, want entry/source mismatch", err)
+	}
+}
+
+func TestGraphValidateRejectsExitLeafMismatch(t *testing.T) {
+	graph := mustTestGraph(t, "exit-mismatch")
+	graph.MustNode("A", graphNoopHandler{}).
+		MustNode("B", graphNoopHandler{}).
+		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge("A", "B").
+		MustEdge("A", disruptor.GraphEndNode)
+
+	err := graph.Validate()
+	if !errors.Is(err, disruptor.ErrInvalidGraph) {
+		t.Fatalf("validate error = %v, want ErrInvalidGraph", err)
+	}
+	if !strings.Contains(err.Error(), "exits must match leaves") {
+		t.Fatalf("validate error = %q, want exit/leaf mismatch", err)
+	}
+}
+
+func TestGraphValidateAcceptsSingleExplicitTerminalNode(t *testing.T) {
 	single := mustTestGraph(t, "single")
-	single.MustNode("A", graphNoopHandler{})
+	single.MustNode("A", graphNoopHandler{}).
+		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge("A", disruptor.GraphEndNode)
 	if err := single.Validate(); err != nil {
 		t.Fatalf("single-node graph validate: %v", err)
 	}
@@ -215,7 +320,9 @@ func TestGraphSnapshotIncludesVirtualTerminals(t *testing.T) {
 	graph := mustTestGraph(t, "orders")
 	graph.MustNode("A", graphNoopHandler{}).
 		MustNode("B", graphNoopHandler{}).
-		MustEdge("A", "B")
+		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge("A", "B").
+		MustEdge("B", disruptor.GraphEndNode)
 
 	snapshot := graph.Snapshot()
 	wantNodes := []string{disruptor.GraphStartNode, "A", "B", disruptor.GraphEndNode}
@@ -246,6 +353,12 @@ func TestGraphSnapshotIncludesVirtualTerminals(t *testing.T) {
 	}
 	if got := snapshot.Leaves; len(got) != 1 || got[0] != "B" {
 		t.Fatalf("leaves = %v, want real leaf [B]", got)
+	}
+	if got := snapshot.Entries; len(got) != 1 || got[0] != "A" {
+		t.Fatalf("entries = %v, want [A]", got)
+	}
+	if got := snapshot.Exits; len(got) != 1 || got[0] != "B" {
+		t.Fatalf("exits = %v, want [B]", got)
 	}
 }
 

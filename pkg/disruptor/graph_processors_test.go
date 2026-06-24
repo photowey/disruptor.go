@@ -38,7 +38,9 @@ func TestDisruptorHandleGraphPipelineOrdersConsumers(t *testing.T) {
 			handled <- "B:" + request.Node.NodeName
 			return nil
 		})).
-		MustEdge("A", "B")
+		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge("A", "B").
+		MustEdge("B", disruptor.GraphEndNode)
 
 	processors, err := d.HandleGraph(graph)
 	if err != nil {
@@ -84,7 +86,10 @@ func TestDisruptorHandleGraphJoinWaitsForAllUpstreamNodes(t *testing.T) {
 		MustNode("C", graphHandlerFunc(func(request disruptor.EventRequest[longEvent]) error {
 			cHandled <- struct{}{}
 			return nil
-		}))
+		})).
+		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge(disruptor.GraphStartNode, "B").
+		MustEdge("C", disruptor.GraphEndNode)
 	graph.Join("A", "B").MustTo("C")
 
 	if _, err := d.HandleGraph(graph); err != nil {
@@ -119,7 +124,9 @@ func TestDisruptorHandleGraphOnlyLeavesGateProducers(t *testing.T) {
 		MustNode("B", graphHandlerFunc(func(request disruptor.EventRequest[longEvent]) error {
 			return nil
 		})).
-		MustEdge("A", "B")
+		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge("A", "B").
+		MustEdge("B", disruptor.GraphEndNode)
 
 	processors, err := d.HandleGraph(graph)
 	if err != nil {
@@ -162,7 +169,9 @@ func TestDisruptorHandleGraphHaltStopsGraphWithoutAdvancingFailedSequence(t *tes
 			bHandled <- struct{}{}
 			return nil
 		})).
-		MustEdge("A", "B")
+		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge("A", "B").
+		MustEdge("B", disruptor.GraphEndNode)
 
 	processors, err := d.HandleGraph(graph)
 	if err != nil {
@@ -196,7 +205,9 @@ func TestDisruptorHandleGraphUsesGraphExceptionHandler(t *testing.T) {
 	graph := disruptor.MustGraph[longEvent]("ignore").
 		MustNode("A", graphHandlerFunc(func(request disruptor.EventRequest[longEvent]) error {
 			return handlerErr
-		}))
+		})).
+		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge("A", disruptor.GraphEndNode)
 
 	processors, err := d.HandleGraph(
 		graph,
@@ -236,7 +247,9 @@ func TestDisruptorHandleGraphNodeExceptionHandlerOverridesGraphHandler(t *testin
 			disruptor.WithNodeExceptionHandler(
 				disruptor.NewFatalExceptionHandler[longEvent](),
 			),
-		)
+		).
+		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge("A", disruptor.GraphEndNode)
 
 	processors, err := d.HandleGraph(
 		graph,
@@ -335,7 +348,9 @@ func TestGraphProcessorsLookupAndSnapshot(t *testing.T) {
 		MustNode("A", graphHandlerFunc(func(request disruptor.EventRequest[longEvent]) error {
 			return nil
 		})).
-		MustEdge("A", "B")
+		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge("A", "B").
+		MustEdge("B", disruptor.GraphEndNode)
 
 	processors, err := d.HandleGraph(graph)
 	if err != nil {
@@ -428,7 +443,9 @@ func singleNodeGraph() *disruptor.Graph[longEvent] {
 			request disruptor.EventRequest[longEvent],
 		) error {
 			return nil
-		}))
+		})).
+		MustEdge(disruptor.GraphStartNode, "only").
+		MustEdge("only", disruptor.GraphEndNode)
 }
 
 func graphSnapshotHasNode(snapshot disruptor.GraphSnapshot, name string) bool {

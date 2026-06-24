@@ -62,7 +62,9 @@ func main() {
 	graph := disruptor.MustGraph[quickEvent]("quickstart").
 		MustNode("validate", quickGraphHandler{steps: steps}).
 		MustNode("persist", quickGraphHandler{steps: steps}).
-		MustEdge("validate", "persist")
+		MustEdge(disruptor.GraphStartNode, "validate").
+		MustEdge("validate", "persist").
+		MustEdge("persist", disruptor.GraphEndNode)
 
 	if _, err := d.HandleGraph(graph); err != nil {
 		panic(err)

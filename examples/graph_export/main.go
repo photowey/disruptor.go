@@ -32,14 +32,18 @@ func main() {
 	graph := disruptor.MustGraph[exportEvent]("export").
 		MustNode("validate", exportHandler{}).
 		MustNode("persist", exportHandler{}).
-		MustEdge("validate", "persist")
+		MustEdge(disruptor.GraphStartNode, "validate").
+		MustEdge("validate", "persist").
+		MustEdge("persist", disruptor.GraphEndNode)
 
 	snapshot := graph.Snapshot()
 	fmt.Printf(
-		"graph=%s sources=%s leaves=%s nodes=%d edges=%d\n",
+		"graph=%s source=%s entry=%s leaf=%s exit=%s nodes=%d edges=%d\n",
 		snapshot.Name,
 		snapshot.Sources[0],
+		snapshot.Entries[0],
 		snapshot.Leaves[0],
+		snapshot.Exits[0],
 		len(snapshot.Nodes),
 		len(snapshot.Edges),
 	)

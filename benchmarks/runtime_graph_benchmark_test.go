@@ -23,15 +23,15 @@ import (
 	"github.com/photowey/disruptor.go/pkg/disruptor"
 )
 
-func BenchmarkGraphTopology(b *testing.B) {
-	for _, shape := range []string{"single_node", "pipeline", "fan_in", "diamond"} {
+func BenchmarkRuntimeGraphRouting(b *testing.B) {
+	for _, shape := range []string{"single_path", "expression_branch", "active_join"} {
 		b.Run(shape, func(b *testing.B) {
-			benchmarkGraphTopology(b, shape)
+			benchmarkRuntimeGraphRouting(b, shape)
 		})
 	}
 }
 
-func benchmarkGraphTopology(b *testing.B, shape string) {
+func benchmarkRuntimeGraphRouting(b *testing.B, shape string) {
 	b.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -46,9 +46,9 @@ func benchmarkGraphTopology(b *testing.B, shape string) {
 	}
 
 	var processed atomic.Int64
-	graph, handlerCount := newBenchmarkGraph(shape, &processed)
-	if _, err := d.HandleGraph(graph); err != nil {
-		b.Fatalf("handle graph: %v", err)
+	graph, handlerCount := newBenchmarkRuntimeGraph(shape, &processed)
+	if _, err := d.HandleRuntimeGraph(graph); err != nil {
+		b.Fatalf("handle runtime graph: %v", err)
 	}
 	if err := d.Start(ctx); err != nil {
 		b.Fatalf("start disruptor: %v", err)
@@ -83,59 +83,55 @@ func benchmarkGraphTopology(b *testing.B, shape string) {
 	}
 }
 
-func newBenchmarkGraph(
+func newBenchmarkRuntimeGraph(
 	shape string,
 	processed *atomic.Int64,
-) (*disruptor.Graph[benchEvent], int) {
+) (*disruptor.RuntimeGraph[benchEvent], int) {
 	handler := graphBenchHandler{processed: processed}
 	switch shape {
-	case "single_node":
-		return disruptor.MustGraph[benchEvent]("single-node").
+	case "single_path":
+		return disruptor.MustRuntimeGraph[benchEvent]("runtime-single").
 			MustNode("A", handler).
 			MustEdge(disruptor.GraphStartNode, "A").
 			MustEdge("A", disruptor.GraphEndNode), 1
-	case "pipeline":
-		return disruptor.MustGraph[benchEvent]("pipeline").
+	case "expression_branch":
+		return disruptor.MustRuntimeGraph[benchEvent]("runtime-expression").
+			MustNode("route", handler).
+			MustNode("fast", handler).
+			MustNode("audit", handler).
+			MustEdge(disruptor.GraphStartNode, "route").
+			MustEdge("route", "fast", disruptor.WhenExpression[benchEvent](`${value} >= 0`)).
+			MustEdge("route", "audit", disruptor.WhenExpression[benchEvent](`${value} < 0`)).
+			MustEdge("fast", disruptor.GraphEndNode).
+			MustEdge("audit", disruptor.GraphEndNode), 2
+	case "active_join":
+		graph := disruptor.MustRuntimeGraph[benchEvent]("runtime-join").
 			MustNode("A", handler).
 			MustNode("B", handler).
 			MustNode("C", handler).
-			MustEdge(disruptor.GraphStartNode, "A").
-			MustEdge("A", "B").
+			MustEdge(
+				disruptor.GraphStartNode,
+				"A",
+				disruptor.WhenCondition[benchEvent](benchRuntimeCondition(true)),
+			).
+			MustEdge(
+				disruptor.GraphStartNode,
+				"B",
+				disruptor.WhenCondition[benchEvent](benchRuntimeCondition(false)),
+			).
+			MustEdge("A", "C").
 			MustEdge("B", "C").
-			MustEdge("C", disruptor.GraphEndNode), 3
-	case "fan_in":
-		graph := disruptor.MustGraph[benchEvent]("fan-in").
-			MustNode("A", handler).
-			MustNode("B", handler).
-			MustNode("C", handler).
-			MustEdge(disruptor.GraphStartNode, "A").
-			MustEdge(disruptor.GraphStartNode, "B").
 			MustEdge("C", disruptor.GraphEndNode)
-		graph.Join("A", "B").MustTo("C")
-		return graph, 3
-	case "diamond":
-		graph := disruptor.MustGraph[benchEvent]("diamond").
-			MustNode("A", handler).
-			MustNode("B", handler).
-			MustNode("C", handler).
-			MustNode("D", handler).
-			MustEdge(disruptor.GraphStartNode, "A").
-			MustEdge("A", "B").
-			MustEdge("A", "C")
-		graph.Join("B", "C").MustTo("D")
-		graph.MustEdge("D", disruptor.GraphEndNode)
-		return graph, 4
+		return graph, 2
 	default:
-		panic("unknown graph benchmark shape: " + shape)
+		panic("unknown runtime graph benchmark shape: " + shape)
 	}
 }
 
-type graphBenchHandler struct {
-	processed *atomic.Int64
-}
+type benchRuntimeCondition bool
 
-func (h graphBenchHandler) OnEvent(request disruptor.EventRequest[benchEvent]) error {
-	benchmarkValueSink.Store(request.Event.Value)
-	h.processed.Add(1)
-	return nil
+func (c benchRuntimeCondition) Evaluate(
+	request disruptor.EdgeConditionRequest[benchEvent],
+) (bool, error) {
+	return bool(c), nil
 }

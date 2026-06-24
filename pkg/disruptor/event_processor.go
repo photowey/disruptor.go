@@ -223,6 +223,7 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 				Sequence:   nextSequence,
 				EndOfBatch: nextSequence == availableSequence,
 				Node:       p.node,
+				Runtime:    noopRuntimeContext{},
 			}
 
 			var started time.Time

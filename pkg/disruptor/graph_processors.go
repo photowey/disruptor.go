@@ -175,8 +175,7 @@ func (d *Disruptor[T]) HandleGraph(
 	}
 
 	graph.freezeHandledLocked()
-	publicSnapshot := withGraphVirtualTerminals(processingSnapshot)
-	publicSnapshot.Frozen = true
+	publicSnapshot := graph.snapshotLocked()
 	d.mode = consumerModeGraph
 	d.processors = append(d.processors, createdProcessors...)
 

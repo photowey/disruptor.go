@@ -124,7 +124,9 @@ steps := make(chan string, 2)
 graph := disruptor.MustGraph[LongEvent]("quickstart").
     MustNode("validate", GraphStepHandler{Steps: steps}).
     MustNode("persist", GraphStepHandler{Steps: steps}).
-    MustEdge("validate", "persist")
+    MustEdge(disruptor.GraphStartNode, "validate").
+    MustEdge("validate", "persist").
+    MustEdge("persist", disruptor.GraphEndNode)
 
 graphDisruptor, err := disruptor.New(LongEventFactory{}, 1024)
 if err != nil {
@@ -147,6 +149,8 @@ if err != nil {
   every event.
 - `Graph[T]` and `HandleGraph` wire V1.1 dependency topologies such as
   pipelines, fan-in, fan-out, and diamond graphs.
+- `RuntimeGraph[T]` and `HandleRuntimeGraph` wire V1.2 conditional routing
+  graphs where each event may activate a different path.
 - `EventFactory[T]`, `EventTranslator[T]`, `EventHandler[T]`,
   `ExceptionHandler[T]`, `WaitStrategy`, and `MetricsSink` are interfaces.
 - `XxxFunc` adapters are available where callbacks are useful without exposing
@@ -215,9 +219,46 @@ flowchart LR
 
 Graph processors still consume from the same ring buffer. Source nodes wait on
 the cursor; downstream nodes wait on their upstream sequences. Producer
-backpressure is attached to leaf nodes only. `Snapshot`, `Mermaid`, and `DOT`
-include virtual `START` and `END` terminals so exported graphs are complete;
+backpressure is attached to leaf nodes only. `START` and `END` are built-in
+terminal nodes, but terminal edges must be declared explicitly. `Snapshot`,
+`Mermaid`, and `DOT` include the virtual terminals and declared terminal edges;
 processor registration still creates processors for real handler nodes only.
+
+## Runtime Graphs
+
+`RuntimeGraph[T]` is separate from static `Graph[T]`. It evaluates edge
+conditions for each event and executes only selected handler paths. Handlers can
+write event-scoped runtime variables; expression edges read those variables.
+
+```go
+type RouteHandler struct {
+    Steps chan<- string
+}
+
+func (h RouteHandler) OnEvent(
+    request disruptor.EventRequest[LongEvent],
+) error {
+    request.Runtime.Set("route.fast", true)
+    request.Runtime.Set("route.audit", false)
+    h.Steps <- "route"
+    return nil
+}
+
+runtimeGraph := disruptor.MustRuntimeGraph[LongEvent]("runtime-route").
+    MustNode("route", RouteHandler{Steps: steps}).
+    MustNode("fast", GraphStepHandler{Steps: steps}).
+    MustNode("audit", GraphStepHandler{Steps: steps}).
+    MustEdge(disruptor.GraphStartNode, "route").
+    MustEdge("route", "fast", disruptor.WhenExpression[LongEvent](`${route.fast}`)).
+    MustEdge("route", "audit", disruptor.WhenExpression[LongEvent](`${route.audit}`)).
+    MustEdge("fast", disruptor.GraphEndNode).
+    MustEdge("audit", disruptor.GraphEndNode)
+
+_, err = d.HandleRuntimeGraph(runtimeGraph)
+```
+
+Runtime expressions support bools, strings, numeric comparisons, grouping,
+logical operators, and integer bitwise operators such as `${flags} & 1`.
 
 ## Backpressure
 
@@ -323,6 +364,7 @@ Runnable examples live under `examples/`:
 - `examples/pipeline`
 - `examples/diamond`
 - `examples/graph_export`
+- `examples/runtime_graph`
 
 Run one with:
 
@@ -344,7 +386,8 @@ benchstat benchmarks/baseline/baseline.txt /tmp/disruptor-new.txt
 ```
 
 See `benchmarks/README.md` for end-to-end, M/N producer-consumer, graph
-topology, channel, `sync.Cond`, baseline, and tail-latency groups.
+topology, runtime graph routing, channel, `sync.Cond`, baseline, and
+tail-latency groups.
 
 Channels remain the right default for ordinary ownership transfer and simple
 synchronization. Use this library when benchmarks show that you need high

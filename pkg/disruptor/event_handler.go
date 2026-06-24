@@ -40,6 +40,7 @@ type EventRequest[T any] struct {
 	Sequence   int64
 	EndOfBatch bool
 	Node       NodeContext
+	Runtime    RuntimeContext
 }
 
 // BatchStartHandler is notified before a batch of events is processed.

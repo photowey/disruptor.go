@@ -39,4 +39,8 @@ var (
 	ErrGraphHandled = errors.New("disruptor: graph already handled")
 	// ErrConsumerModeConflict reports incompatible consumer registration APIs.
 	ErrConsumerModeConflict = errors.New("disruptor: consumer mode conflict")
+	// ErrRuntimeNoRoute reports that a runtime graph event has no selected route.
+	ErrRuntimeNoRoute = errors.New("disruptor: runtime graph no route")
+	// ErrInvalidRuntimeExpression reports that a runtime expression is invalid.
+	ErrInvalidRuntimeExpression = errors.New("disruptor: invalid runtime expression")
 )

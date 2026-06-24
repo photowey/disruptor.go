@@ -38,7 +38,8 @@ func TestExamplesRun(t *testing.T) {
 		{name: "graph quickstart", dir: "graph_quickstart", expected: "validate:42,persist:42\n"},
 		{name: "pipeline", dir: "pipeline", expected: "validate:7,enrich:7,persist:7\n"},
 		{name: "diamond", dir: "diamond", expected: "diamond:D after B+C for 9\n"},
-		{name: "graph export", dir: "graph_export", expected: "graph=export sources=validate leaves=persist nodes=4 edges=3\n"},
+		{name: "graph export", dir: "graph_export", expected: "graph=export source=validate entry=validate leaf=persist exit=persist nodes=4 edges=3\n"},
+		{name: "runtime graph", dir: "runtime_graph", expected: "route:11,fast:11\n"},
 	}
 
 	for _, tt := range tests {

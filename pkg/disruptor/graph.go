@@ -195,24 +195,6 @@ func (g *Graph[T]) Edge(from string, to string) error {
 	if err != nil {
 		return err
 	}
-	if isGraphVirtualNodeName(normalizedFrom) || isGraphVirtualNodeName(normalizedTo) {
-		return fmt.Errorf(
-			"%w: graph %s: edge %s -> %s references a reserved virtual node",
-			ErrInvalidGraph,
-			g.Name(),
-			normalizedFrom,
-			normalizedTo,
-		)
-	}
-	if normalizedFrom == normalizedTo {
-		return fmt.Errorf(
-			"%w: graph %s: self edge %s -> %s",
-			ErrInvalidGraph,
-			g.Name(),
-			normalizedFrom,
-			normalizedTo,
-		)
-	}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -220,28 +202,91 @@ func (g *Graph[T]) Edge(from string, to string) error {
 	if g.frozen {
 		return ErrGraphFrozen
 	}
-	if _, exists := g.nodes[normalizedFrom]; !exists {
-		return fmt.Errorf(
-			"%w: graph %s: edge %s -> %s references unknown node %s",
-			ErrInvalidGraph,
-			g.name,
-			normalizedFrom,
-			normalizedTo,
-			normalizedFrom,
-		)
-	}
-	if _, exists := g.nodes[normalizedTo]; !exists {
-		return fmt.Errorf(
-			"%w: graph %s: edge %s -> %s references unknown node %s",
-			ErrInvalidGraph,
-			g.name,
-			normalizedFrom,
-			normalizedTo,
-			normalizedTo,
-		)
+	if err := g.validateEdgeLocked(normalizedFrom, normalizedTo); err != nil {
+		return err
 	}
 
 	g.edges[GraphEdgeSnapshot{From: normalizedFrom, To: normalizedTo}] = struct{}{}
+
+	return nil
+}
+
+func (g *Graph[T]) validateEdgeLocked(from string, to string) error {
+	if isGraphStartNodeName(from) {
+		if isGraphVirtualNodeName(to) {
+			return fmt.Errorf(
+				"%w: graph %s: invalid terminal edge %s -> %s",
+				ErrInvalidGraph,
+				g.name,
+				from,
+				to,
+			)
+		}
+		if _, exists := g.nodes[to]; !exists {
+			return fmt.Errorf(
+				"%w: graph %s: edge %s -> %s references unknown node %s",
+				ErrInvalidGraph,
+				g.name,
+				from,
+				to,
+				to,
+			)
+		}
+
+		return nil
+	}
+	if isGraphEndNodeName(from) || isGraphStartNodeName(to) {
+		return fmt.Errorf(
+			"%w: graph %s: invalid terminal edge %s -> %s",
+			ErrInvalidGraph,
+			g.name,
+			from,
+			to,
+		)
+	}
+	if isGraphEndNodeName(to) {
+		if _, exists := g.nodes[from]; !exists {
+			return fmt.Errorf(
+				"%w: graph %s: edge %s -> %s references unknown node %s",
+				ErrInvalidGraph,
+				g.name,
+				from,
+				to,
+				from,
+			)
+		}
+
+		return nil
+	}
+	if from == to {
+		return fmt.Errorf(
+			"%w: graph %s: self edge %s -> %s",
+			ErrInvalidGraph,
+			g.name,
+			from,
+			to,
+		)
+	}
+	if _, exists := g.nodes[from]; !exists {
+		return fmt.Errorf(
+			"%w: graph %s: edge %s -> %s references unknown node %s",
+			ErrInvalidGraph,
+			g.name,
+			from,
+			to,
+			from,
+		)
+	}
+	if _, exists := g.nodes[to]; !exists {
+		return fmt.Errorf(
+			"%w: graph %s: edge %s -> %s references unknown node %s",
+			ErrInvalidGraph,
+			g.name,
+			from,
+			to,
+			to,
+		)
+	}
 
 	return nil
 }
@@ -272,31 +317,55 @@ func (g *Graph[T]) validateLocked() error {
 		return fmt.Errorf("%w: graph %s: no nodes", ErrInvalidGraph, g.name)
 	}
 
-	if len(g.nodes) > 1 {
-		snapshot := g.processingSnapshotLocked()
-		connected := make(map[string]struct{}, len(g.nodes))
-		for _, edge := range snapshot.Edges {
-			connected[edge.From] = struct{}{}
-			connected[edge.To] = struct{}{}
-		}
-		for _, node := range snapshot.Nodes {
-			if _, ok := connected[node.Name]; !ok {
-				return fmt.Errorf(
-					"%w: graph %s: node %s is isolated",
-					ErrInvalidGraph,
-					g.name,
-					node.Name,
-				)
-			}
-		}
-	}
-
 	if cycle := g.findCycleLocked(); len(cycle) > 0 {
 		return fmt.Errorf(
 			"%w: graph %s: cycle detected: %s",
 			ErrInvalidGraph,
 			g.name,
 			strings.Join(cycle, " -> "),
+		)
+	}
+
+	publicSnapshot := g.snapshotLocked()
+	processingSnapshot := g.processingSnapshotLocked()
+	if len(publicSnapshot.Entries) == 0 {
+		return fmt.Errorf("%w: graph %s: no explicit entry edges", ErrInvalidGraph, g.name)
+	}
+	if len(publicSnapshot.Exits) == 0 {
+		return fmt.Errorf("%w: graph %s: no explicit exit edges", ErrInvalidGraph, g.name)
+	}
+	if !sameStringSet(publicSnapshot.Entries, publicSnapshot.Sources) {
+		return fmt.Errorf(
+			"%w: graph %s: entries must match sources: entries=%v sources=%v",
+			ErrInvalidGraph,
+			g.name,
+			publicSnapshot.Entries,
+			publicSnapshot.Sources,
+		)
+	}
+	if !sameStringSet(publicSnapshot.Exits, publicSnapshot.Leaves) {
+		return fmt.Errorf(
+			"%w: graph %s: exits must match leaves: exits=%v leaves=%v",
+			ErrInvalidGraph,
+			g.name,
+			publicSnapshot.Exits,
+			publicSnapshot.Leaves,
+		)
+	}
+	if unreachable := graphUnreachableNodes(processingSnapshot, publicSnapshot.Entries); len(unreachable) > 0 {
+		return fmt.Errorf(
+			"%w: graph %s: nodes are not reachable from START: %s",
+			ErrInvalidGraph,
+			g.name,
+			strings.Join(unreachable, ", "),
+		)
+	}
+	if blocked := graphNodesCannotReachExits(processingSnapshot, publicSnapshot.Exits); len(blocked) > 0 {
+		return fmt.Errorf(
+			"%w: graph %s: nodes cannot reach END: %s",
+			ErrInvalidGraph,
+			g.name,
+			strings.Join(blocked, ", "),
 		)
 	}
 
@@ -380,6 +449,18 @@ func normalizeGraphName(kind string, name string) (string, error) {
 
 func isGraphVirtualNodeName(name string) bool {
 	return name == GraphStartNode || name == GraphEndNode
+}
+
+func isGraphStartNodeName(name string) bool {
+	return name == GraphStartNode
+}
+
+func isGraphEndNodeName(name string) bool {
+	return name == GraphEndNode
+}
+
+func isGraphTerminalEdge(edge GraphEdgeSnapshot) bool {
+	return edge.From == GraphStartNode || edge.To == GraphEndNode
 }
 
 func copyStringMap(input map[string]string) map[string]string {

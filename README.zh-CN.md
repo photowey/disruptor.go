@@ -120,7 +120,9 @@ steps := make(chan string, 2)
 graph := disruptor.MustGraph[LongEvent]("quickstart").
     MustNode("validate", GraphStepHandler{Steps: steps}).
     MustNode("persist", GraphStepHandler{Steps: steps}).
-    MustEdge("validate", "persist")
+    MustEdge(disruptor.GraphStartNode, "validate").
+    MustEdge("validate", "persist").
+    MustEdge("persist", disruptor.GraphEndNode)
 
 graphDisruptor, err := disruptor.New(LongEventFactory{}, 1024)
 if err != nil {
@@ -139,6 +141,7 @@ if err != nil {
 - `Disruptor[T]` 是高层门面，围绕一个 Ring Buffer 管理 processor。
 - `HandleEventsWith` 负责 V1 fan-out 模式，每个消费者都会收到全部事件。
 - `Graph[T]` 和 `HandleGraph` 负责 V1.1 依赖拓扑，例如 pipeline、fan-in、fan-out 和 diamond graph。
+- `RuntimeGraph[T]` 和 `HandleRuntimeGraph` 负责 V1.2 条件路由图，每个事件可以激活不同路径。
 - `EventFactory[T]`、`EventTranslator[T]`、`EventHandler[T]`、`ExceptionHandler[T]`、`WaitStrategy` 和 `MetricsSink` 都是接口。
 - `XxxFunc` 适配器仍然可用，适合快速桥接回调；正式示例优先展示命名类型，避免公开用法过度依赖匿名函数。
 - 阻塞生产者和处理器路径都接受 `context.Context`，等待过程可以被取消。
@@ -202,9 +205,46 @@ flowchart LR
 ```
 
 Graph processor 仍然消费同一个 Ring Buffer。source 节点等待 cursor，
-下游节点等待上游 sequence。生产者背压只挂在 leaf 节点上。`Snapshot`、
-`Mermaid` 和 `DOT` 会包含虚拟 `START` 与 `END` 终端节点，保证导出的
-拓扑是完整图；processor 注册仍然只为真实 handler 节点创建 processor。
+下游节点等待上游 sequence。生产者背压只挂在 leaf 节点上。`START` 和
+`END` 是内置虚拟终端节点，但终端边必须由开发者显式声明。`Snapshot`、
+`Mermaid` 和 `DOT` 会包含虚拟终端节点以及显式终端边；processor 注册仍然
+只为真实 handler 节点创建 processor。
+
+## Runtime Graph
+
+`RuntimeGraph[T]` 和静态 `Graph[T]` 是两套 API。它会针对每个事件计算边
+条件，只执行被选中的 handler 路径。handler 可以写入事件级 runtime
+variables，表达式边再读取这些变量。
+
+```go
+type RouteHandler struct {
+    Steps chan<- string
+}
+
+func (h RouteHandler) OnEvent(
+    request disruptor.EventRequest[LongEvent],
+) error {
+    request.Runtime.Set("route.fast", true)
+    request.Runtime.Set("route.audit", false)
+    h.Steps <- "route"
+    return nil
+}
+
+runtimeGraph := disruptor.MustRuntimeGraph[LongEvent]("runtime-route").
+    MustNode("route", RouteHandler{Steps: steps}).
+    MustNode("fast", GraphStepHandler{Steps: steps}).
+    MustNode("audit", GraphStepHandler{Steps: steps}).
+    MustEdge(disruptor.GraphStartNode, "route").
+    MustEdge("route", "fast", disruptor.WhenExpression[LongEvent](`${route.fast}`)).
+    MustEdge("route", "audit", disruptor.WhenExpression[LongEvent](`${route.audit}`)).
+    MustEdge("fast", disruptor.GraphEndNode).
+    MustEdge("audit", disruptor.GraphEndNode)
+
+_, err = d.HandleRuntimeGraph(runtimeGraph)
+```
+
+runtime 表达式支持 bool、字符串、数值比较、分组、逻辑运算，以及
+`${flags} & 1` 这类整数位运算。
 
 ## 背压
 
@@ -300,6 +340,7 @@ func (CountingMetricsSink) OnProcessorState(metric disruptor.ProcessorMetric) {}
 - `examples/pipeline`
 - `examples/diamond`
 - `examples/graph_export`
+- `examples/runtime_graph`
 
 运行示例：
 
@@ -320,7 +361,7 @@ go test -run '^$' -bench=BenchmarkE2ELatencyQuantiles -benchmem -count=10 ./benc
 benchstat benchmarks/baseline/baseline.txt /tmp/disruptor-new.txt
 ```
 
-更多端到端、M/N 生产消费、graph topology、channel、`sync.Cond`、
-baseline 和尾延迟分组见 `benchmarks/README.md`。
+更多端到端、M/N 生产消费、graph topology、runtime graph routing、
+channel、`sync.Cond`、baseline 和尾延迟分组见 `benchmarks/README.md`。
 
 普通所有权转移和简单同步仍然优先使用 channel。只有当 benchmark 证明你需要高吞吐、低分配、广播给多个消费者或可控背压时，再使用这个库。
