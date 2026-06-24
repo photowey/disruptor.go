@@ -92,6 +92,9 @@ but freeze and handled-once guarantees require internal graph state that an
 arbitrary external implementation cannot provide safely.
 
 ```go
+const GraphStartNode = "START"
+const GraphEndNode = "END"
+
 func NewGraph[T any](name string) (*Graph[T], error)
 func MustGraph[T any](name string) *Graph[T]
 
@@ -124,6 +127,9 @@ func (d *Disruptor[T]) HandleGraph(
     opts ...GraphHandleOption[T],
 ) (GraphProcessors, error)
 ```
+
+`GraphStartNode` and `GraphEndNode` are reserved virtual topology nodes used by
+snapshot and export output. They are not valid real handler node names.
 
 `Join` is syntax sugar over edges:
 
@@ -551,7 +557,14 @@ Rules:
 
 - `Snapshot()` works before and after freeze.
 - `Snapshot()` returns the structure currently built, even if validation fails.
-- Nodes, edges, sources, and leaves use stable sorting.
+- `GraphStartNode` is the reserved virtual entry node with value `START`.
+- `GraphEndNode` is the reserved virtual exit node with value `END`.
+- `Nodes` and `Edges` include virtual `START` and `END` terminals.
+- Virtual entries are identified by the reserved `GraphStartNode` and
+  `GraphEndNode` names instead of extra struct fields, preserving existing
+  snapshot struct compatibility.
+- `Sources` and `Leaves` list real handler nodes only.
+- Real nodes, real edges, sources, and leaves use stable sorting.
 - Metadata maps are copied.
 - `Mermaid()` and `DOT()` use the same snapshot ordering.
 - Export functions must not include handler values.
@@ -565,11 +578,16 @@ Example Mermaid for `(A+B)+C`:
 
 ```mermaid
 flowchart LR
+    START["START"]
     A["A"]
     B["B"]
     C["C"]
+    END["END"]
+    START --> A
+    START --> B
     A --> C
     B --> C
+    C --> END
 ```
 
 ## Package Layout

@@ -361,8 +361,17 @@ func TestGraphProcessorsLookupAndSnapshot(t *testing.T) {
 	if !snapshot.Frozen {
 		t.Fatal("snapshot should be frozen after HandleGraph")
 	}
+	if names := processors.Names(); len(names) != 2 || names[0] != "A" || names[1] != "B" {
+		t.Fatalf("processor names = %v, want only real nodes [A B]", names)
+	}
+	if !graphSnapshotHasNode(snapshot, disruptor.GraphStartNode) {
+		t.Fatalf("snapshot nodes = %+v, want virtual START", snapshot.Nodes)
+	}
+	if !graphSnapshotHasNode(snapshot, disruptor.GraphEndNode) {
+		t.Fatalf("snapshot nodes = %+v, want virtual END", snapshot.Nodes)
+	}
 	snapshot.Nodes[0].Name = "changed"
-	if fresh := processors.Snapshot(); fresh.Nodes[0].Name != "A" {
+	if fresh := processors.Snapshot(); fresh.Nodes[0].Name != disruptor.GraphStartNode {
 		t.Fatalf("snapshot mutation leaked, got %q", fresh.Nodes[0].Name)
 	}
 }
@@ -420,6 +429,16 @@ func singleNodeGraph() *disruptor.Graph[longEvent] {
 		) error {
 			return nil
 		}))
+}
+
+func graphSnapshotHasNode(snapshot disruptor.GraphSnapshot, name string) bool {
+	for _, node := range snapshot.Nodes {
+		if node.Name == name {
+			return true
+		}
+	}
+
+	return false
 }
 
 type graphHandlerFunc func(disruptor.EventRequest[longEvent]) error

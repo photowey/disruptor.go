@@ -109,10 +109,10 @@ func (d *Disruptor[T]) HandleGraph(
 		return nil, err
 	}
 
-	snapshot := graph.snapshotLocked()
-	order := graphTopologicalOrder(snapshot)
-	upstream := graphUpstream(snapshot.Edges)
-	leafSet := graphNameSet(snapshot.Leaves)
+	processingSnapshot := graph.processingSnapshotLocked()
+	order := graphTopologicalOrder(processingSnapshot)
+	upstream := graphUpstream(processingSnapshot.Edges)
+	leafSet := graphNameSet(processingSnapshot.Leaves)
 	nodeByName := make(map[string]*graphNode[T], len(graph.nodes))
 	for name, node := range graph.nodes {
 		nodeByName[name] = node
@@ -175,11 +175,12 @@ func (d *Disruptor[T]) HandleGraph(
 	}
 
 	graph.freezeHandledLocked()
-	snapshot.Frozen = true
+	publicSnapshot := withGraphVirtualTerminals(processingSnapshot)
+	publicSnapshot.Frozen = true
 	d.mode = consumerModeGraph
 	d.processors = append(d.processors, createdProcessors...)
 
-	return newHandledGraphProcessors(snapshot, processorByName), nil
+	return newHandledGraphProcessors(publicSnapshot, processorByName), nil
 }
 
 func newHandledGraphProcessors(

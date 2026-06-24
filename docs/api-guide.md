@@ -227,6 +227,18 @@ _ = processors
 graph.Join("validate", "enrich").MustTo("persist")
 ```
 
+`Snapshot`, `Mermaid`, and `DOT` include reserved virtual terminals:
+
+- `GraphStartNode` has the value `START`.
+- `GraphEndNode` has the value `END`.
+
+The virtual terminals make exported graphs complete. They are not real handler
+nodes, cannot be registered through `Node`, and cannot be wired manually through
+`Edge`. `GraphSnapshot.Nodes` and `GraphSnapshot.Edges` include them; identify
+virtual entries by the reserved `GraphStartNode` and `GraphEndNode` names.
+`GraphSnapshot.Sources` and `GraphSnapshot.Leaves` still list real handler
+nodes only.
+
 The graph API exposes named processors after registration:
 
 ```go

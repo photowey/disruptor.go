@@ -191,16 +191,20 @@ sequenceDiagram
 flowchart LR
     App["应用程序"] --> G["Graph[T]"]
     G --> D["Disruptor[T].HandleGraph"]
-    D --> A["validate"]
+    D --> Start["START"]
+    Start --> A["validate"]
     A --> B["enrich"]
     A --> C["audit"]
     B --> J["persist"]
     C --> J
-    J --> Leaf["leaf processor 对生产者施加背压"]
+    J --> End["END"]
+    End --> Leaf["leaf processor 对生产者施加背压"]
 ```
 
 Graph processor 仍然消费同一个 Ring Buffer。source 节点等待 cursor，
-下游节点等待上游 sequence。生产者背压只挂在 leaf 节点上。
+下游节点等待上游 sequence。生产者背压只挂在 leaf 节点上。`Snapshot`、
+`Mermaid` 和 `DOT` 会包含虚拟 `START` 与 `END` 终端节点，保证导出的
+拓扑是完整图；processor 注册仍然只为真实 handler 节点创建 processor。
 
 ## 背压
 

@@ -203,17 +203,21 @@ topology remains inspectable.
 flowchart LR
     App["Application"] --> G["Graph[T]"]
     G --> D["Disruptor[T].HandleGraph"]
-    D --> A["validate"]
+    D --> Start["START"]
+    Start --> A["validate"]
     A --> B["enrich"]
     A --> C["audit"]
     B --> J["persist"]
     C --> J
-    J --> Leaf["leaf processor gates producer"]
+    J --> End["END"]
+    End --> Leaf["leaf processor gates producer"]
 ```
 
 Graph processors still consume from the same ring buffer. Source nodes wait on
 the cursor; downstream nodes wait on their upstream sequences. Producer
-backpressure is attached to leaf nodes only.
+backpressure is attached to leaf nodes only. `Snapshot`, `Mermaid`, and `DOT`
+include virtual `START` and `END` terminals so exported graphs are complete;
+processor registration still creates processors for real handler nodes only.
 
 ## Backpressure
 

@@ -21,6 +21,8 @@ import (
 )
 
 // GraphSnapshot is a handler-free view of a graph.
+// Nodes and Edges include virtual START and END terminals for export.
+// Sources and Leaves list real handler nodes only.
 type GraphSnapshot struct {
 	Name    string
 	Frozen  bool
@@ -56,6 +58,10 @@ func (g *Graph[T]) Snapshot() GraphSnapshot {
 }
 
 func (g *Graph[T]) snapshotLocked() GraphSnapshot {
+	return withGraphVirtualTerminals(g.processingSnapshotLocked())
+}
+
+func (g *Graph[T]) processingSnapshotLocked() GraphSnapshot {
 	nodes := make([]GraphNodeSnapshot, 0, len(g.nodes))
 	for _, node := range g.nodes {
 		nodes = append(nodes, GraphNodeSnapshot{
@@ -143,7 +149,7 @@ func (g *Graph[T]) DOT() string {
 }
 
 func (g *Graph[T]) findCycleLocked() []string {
-	snapshot := g.snapshotLocked()
+	snapshot := g.processingSnapshotLocked()
 	adjacency := make(map[string][]string, len(snapshot.Nodes))
 	for _, edge := range snapshot.Edges {
 		adjacency[edge.From] = append(adjacency[edge.From], edge.To)
@@ -188,6 +194,51 @@ func (g *Graph[T]) findCycleLocked() []string {
 	}
 
 	return nil
+}
+
+func withGraphVirtualTerminals(snapshot GraphSnapshot) GraphSnapshot {
+	if len(snapshot.Nodes) == 0 {
+		return snapshot
+	}
+
+	nodes := make([]GraphNodeSnapshot, 0, len(snapshot.Nodes)+2)
+	nodes = append(nodes, GraphNodeSnapshot{
+		Name:  GraphStartNode,
+		Label: GraphStartNode,
+	})
+	nodes = append(nodes, snapshot.Nodes...)
+	nodes = append(nodes, GraphNodeSnapshot{
+		Name:  GraphEndNode,
+		Label: GraphEndNode,
+	})
+
+	edges := make(
+		[]GraphEdgeSnapshot,
+		0,
+		len(snapshot.Edges)+len(snapshot.Sources)+len(snapshot.Leaves),
+	)
+	for _, source := range snapshot.Sources {
+		edges = append(edges, GraphEdgeSnapshot{
+			From: GraphStartNode,
+			To:   source,
+		})
+	}
+	edges = append(edges, snapshot.Edges...)
+	for _, leaf := range snapshot.Leaves {
+		edges = append(edges, GraphEdgeSnapshot{
+			From: leaf,
+			To:   GraphEndNode,
+		})
+	}
+
+	return GraphSnapshot{
+		Name:    snapshot.Name,
+		Frozen:  snapshot.Frozen,
+		Nodes:   nodes,
+		Edges:   edges,
+		Sources: append([]string(nil), snapshot.Sources...),
+		Leaves:  append([]string(nil), snapshot.Leaves...),
+	}
 }
 
 func graphTerminals(

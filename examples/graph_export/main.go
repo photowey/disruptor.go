@@ -36,10 +36,11 @@ func main() {
 
 	snapshot := graph.Snapshot()
 	fmt.Printf(
-		"graph=%s sources=%s leaves=%s edges=%d\n",
+		"graph=%s sources=%s leaves=%s nodes=%d edges=%d\n",
 		snapshot.Name,
 		snapshot.Sources[0],
 		snapshot.Leaves[0],
+		len(snapshot.Nodes),
 		len(snapshot.Edges),
 	)
 }

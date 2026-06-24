@@ -18,5 +18,5 @@ func Example() {
 	main()
 
 	// Output:
-	// graph=export sources=validate leaves=persist edges=1
+	// graph=export sources=validate leaves=persist nodes=4 edges=3
 }

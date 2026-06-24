@@ -64,11 +64,23 @@ func TestGraphNodeValidatesNameAndHandler(t *testing.T) {
 	}
 
 	snapshot := graph.Snapshot()
-	if len(snapshot.Nodes) != 1 {
-		t.Fatalf("node count = %d, want 1", len(snapshot.Nodes))
+	if len(snapshot.Nodes) != 3 {
+		t.Fatalf("node count = %d, want 3", len(snapshot.Nodes))
 	}
-	if got := snapshot.Nodes[0].Name; got != "validate" {
+	if got := snapshot.Nodes[1].Name; got != "validate" {
 		t.Fatalf("node name = %q, want validate", got)
+	}
+}
+
+func TestGraphNodeRejectsReservedVirtualNames(t *testing.T) {
+	graph := mustTestGraph(t, "orders")
+	handler := graphNoopHandler{}
+
+	if err := graph.Node(disruptor.GraphStartNode, handler); !errors.Is(err, disruptor.ErrInvalidGraph) {
+		t.Fatalf("start node error = %v, want ErrInvalidGraph", err)
+	}
+	if err := graph.Node(disruptor.GraphEndNode, handler); !errors.Is(err, disruptor.ErrInvalidGraph) {
+		t.Fatalf("end node error = %v, want ErrInvalidGraph", err)
 	}
 }
 
@@ -91,11 +103,11 @@ func TestGraphEdgeValidatesEndpoints(t *testing.T) {
 	}
 
 	snapshot := graph.Snapshot()
-	if len(snapshot.Edges) != 1 {
-		t.Fatalf("edge count = %d, want 1", len(snapshot.Edges))
+	if got := realGraphEdges(snapshot.Edges); len(got) != 1 {
+		t.Fatalf("real edge count = %d, want 1", len(got))
 	}
-	if snapshot.Edges[0].From != "A" || snapshot.Edges[0].To != "B" {
-		t.Fatalf("edge = %+v, want A -> B", snapshot.Edges[0])
+	if got := realGraphEdges(snapshot.Edges)[0]; got.From != "A" || got.To != "B" {
+		t.Fatalf("edge = %+v, want A -> B", got)
 	}
 }
 
@@ -116,7 +128,7 @@ func TestGraphJoinExpandsEdges(t *testing.T) {
 		t.Fatalf("empty join targets error = %v, want ErrInvalidGraph", err)
 	}
 
-	got := graph.Snapshot().Edges
+	got := realGraphEdges(graph.Snapshot().Edges)
 	want := []disruptor.GraphEdgeSnapshot{
 		{From: "A", To: "C"},
 		{From: "A", To: "D"},
@@ -188,14 +200,52 @@ func TestGraphSnapshotIsDeterministicAndDefensive(t *testing.T) {
 	if got := snapshot.Leaves; len(got) != 1 || got[0] != "C" {
 		t.Fatalf("leaves = %v, want [C]", got)
 	}
-	if got := snapshot.Nodes[0].Name; got != "A" {
-		t.Fatalf("first node = %q, want A", got)
+	if got := snapshot.Nodes[1].Name; got != "A" {
+		t.Fatalf("first real node = %q, want A", got)
 	}
 
-	snapshot.Nodes[1].Metadata["role"] = "changed"
+	snapshot.Nodes[2].Metadata["role"] = "changed"
 	fresh := graph.Snapshot()
-	if got := fresh.Nodes[1].Metadata["role"]; got != "middle" {
+	if got := fresh.Nodes[2].Metadata["role"]; got != "middle" {
 		t.Fatalf("metadata after external mutation = %q, want middle", got)
+	}
+}
+
+func TestGraphSnapshotIncludesVirtualTerminals(t *testing.T) {
+	graph := mustTestGraph(t, "orders")
+	graph.MustNode("A", graphNoopHandler{}).
+		MustNode("B", graphNoopHandler{}).
+		MustEdge("A", "B")
+
+	snapshot := graph.Snapshot()
+	wantNodes := []string{disruptor.GraphStartNode, "A", "B", disruptor.GraphEndNode}
+	if len(snapshot.Nodes) != len(wantNodes) {
+		t.Fatalf("node count = %d, want %d: %+v", len(snapshot.Nodes), len(wantNodes), snapshot.Nodes)
+	}
+	for i, want := range wantNodes {
+		if snapshot.Nodes[i].Name != want {
+			t.Fatalf("node[%d] = %+v, want %q", i, snapshot.Nodes[i], want)
+		}
+	}
+
+	wantEdges := []disruptor.GraphEdgeSnapshot{
+		{From: disruptor.GraphStartNode, To: "A"},
+		{From: "A", To: "B"},
+		{From: "B", To: disruptor.GraphEndNode},
+	}
+	if len(snapshot.Edges) != len(wantEdges) {
+		t.Fatalf("edge count = %d, want %d: %+v", len(snapshot.Edges), len(wantEdges), snapshot.Edges)
+	}
+	for i, want := range wantEdges {
+		if snapshot.Edges[i] != want {
+			t.Fatalf("edge[%d] = %+v, want %+v", i, snapshot.Edges[i], want)
+		}
+	}
+	if got := snapshot.Sources; len(got) != 1 || got[0] != "A" {
+		t.Fatalf("sources = %v, want real source [A]", got)
+	}
+	if got := snapshot.Leaves; len(got) != 1 || got[0] != "B" {
+		t.Fatalf("leaves = %v, want real leaf [B]", got)
 	}
 }
 
@@ -222,6 +272,21 @@ func TestGraphMermaidAndDOTUseGeneratedIDs(t *testing.T) {
 	}
 }
 
+func TestGraphMermaidAndDOTIncludeVirtualTerminals(t *testing.T) {
+	graph := mustTestGraph(t, "orders")
+	graph.MustNode("A", graphNoopHandler{})
+
+	mermaid := graph.Mermaid()
+	if !strings.Contains(mermaid, `["START"]`) || !strings.Contains(mermaid, `["END"]`) {
+		t.Fatalf("mermaid = %q, want START and END virtual nodes", mermaid)
+	}
+
+	dot := graph.DOT()
+	if !strings.Contains(dot, `label="START"`) || !strings.Contains(dot, `label="END"`) {
+		t.Fatalf("dot = %q, want START and END virtual nodes", dot)
+	}
+}
+
 func mustTestGraph(t *testing.T, name string) *disruptor.Graph[longEvent] {
 	t.Helper()
 
@@ -231,6 +296,18 @@ func mustTestGraph(t *testing.T, name string) *disruptor.Graph[longEvent] {
 	}
 
 	return graph
+}
+
+func realGraphEdges(edges []disruptor.GraphEdgeSnapshot) []disruptor.GraphEdgeSnapshot {
+	real := make([]disruptor.GraphEdgeSnapshot, 0, len(edges))
+	for _, edge := range edges {
+		if edge.From == disruptor.GraphStartNode || edge.To == disruptor.GraphEndNode {
+			continue
+		}
+		real = append(real, edge)
+	}
+
+	return real
 }
 
 type graphNoopHandler struct{}

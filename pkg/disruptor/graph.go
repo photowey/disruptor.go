@@ -21,6 +21,13 @@ import (
 	"unicode"
 )
 
+const (
+	// GraphStartNode is the reserved virtual node name for graph entry points.
+	GraphStartNode = "START"
+	// GraphEndNode is the reserved virtual node name for graph exit points.
+	GraphEndNode = "END"
+)
+
 // Graph defines a named event processor dependency topology.
 type Graph[T any] struct {
 	mu sync.RWMutex
@@ -113,6 +120,14 @@ func (g *Graph[T]) Node(
 	if err != nil {
 		return err
 	}
+	if isGraphVirtualNodeName(normalized) {
+		return fmt.Errorf(
+			"%w: graph %s: node name %s is reserved",
+			ErrInvalidGraph,
+			g.Name(),
+			normalized,
+		)
+	}
 
 	config := nodeConfig[T]{
 		label:    normalized,
@@ -179,6 +194,15 @@ func (g *Graph[T]) Edge(from string, to string) error {
 	normalizedTo, err := normalizeGraphName("node", to)
 	if err != nil {
 		return err
+	}
+	if isGraphVirtualNodeName(normalizedFrom) || isGraphVirtualNodeName(normalizedTo) {
+		return fmt.Errorf(
+			"%w: graph %s: edge %s -> %s references a reserved virtual node",
+			ErrInvalidGraph,
+			g.Name(),
+			normalizedFrom,
+			normalizedTo,
+		)
 	}
 	if normalizedFrom == normalizedTo {
 		return fmt.Errorf(
@@ -249,7 +273,7 @@ func (g *Graph[T]) validateLocked() error {
 	}
 
 	if len(g.nodes) > 1 {
-		snapshot := g.snapshotLocked()
+		snapshot := g.processingSnapshotLocked()
 		connected := make(map[string]struct{}, len(g.nodes))
 		for _, edge := range snapshot.Edges {
 			connected[edge.From] = struct{}{}
@@ -352,6 +376,10 @@ func normalizeGraphName(kind string, name string) (string, error) {
 	}
 
 	return normalized, nil
+}
+
+func isGraphVirtualNodeName(name string) bool {
+	return name == GraphStartNode || name == GraphEndNode
 }
 
 func copyStringMap(input map[string]string) map[string]string {
