@@ -17,9 +17,8 @@ package disruptor
 import (
 	"context"
 	"fmt"
-	"reflect"
-	"strings"
-	"sync"
+
+	runtimevars "github.com/photowey/disruptor.go/internal/runtimevars"
 )
 
 // RuntimeVariables exposes read-only runtime variable lookup.
@@ -28,16 +27,7 @@ type RuntimeVariables interface {
 }
 
 // RuntimeVariablesFunc adapts a function to RuntimeVariables.
-type RuntimeVariablesFunc func(path string) (any, bool)
-
-// Lookup calls the wrapped lookup function.
-func (fn RuntimeVariablesFunc) Lookup(path string) (any, bool) {
-	if fn == nil {
-		return nil, false
-	}
-
-	return fn(path)
-}
+type RuntimeVariablesFunc = runtimevars.VariablesFunc
 
 // RuntimeBag stores event-scoped runtime variables.
 type RuntimeBag interface {
@@ -53,8 +43,7 @@ type RuntimeContext interface {
 }
 
 type runtimeVariableBag struct {
-	mu     sync.RWMutex
-	values map[string]any
+	bag *runtimevars.Bag
 }
 
 // NewRuntimeBag creates a concurrency-safe event-scoped runtime bag.
@@ -64,58 +53,46 @@ func NewRuntimeBag() RuntimeBag {
 
 func newRuntimeVariableBag() *runtimeVariableBag {
 	return &runtimeVariableBag{
-		values: make(map[string]any),
+		bag: runtimevars.NewBag(),
 	}
 }
 
 func (b *runtimeVariableBag) Lookup(path string) (any, bool) {
-	if b == nil {
+	if b == nil || b.bag == nil {
 		return nil, false
 	}
 
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	value, ok := b.values[path]
-	return value, ok
+	return b.bag.Lookup(path)
 }
 
 func (b *runtimeVariableBag) Set(path string, value any) error {
 	if err := validateRuntimePath(path); err != nil {
 		return err
 	}
-	if b == nil {
+	if b == nil || b.bag == nil {
 		return fmt.Errorf("%w: runtime bag is nil", ErrInvalidGraph)
 	}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	b.values[path] = value
-	return nil
+	return wrapRuntimePathError(b.bag.Set(path, value))
 }
 
 func (b *runtimeVariableBag) Delete(path string) error {
 	if err := validateRuntimePath(path); err != nil {
 		return err
 	}
-	if b == nil {
+	if b == nil || b.bag == nil {
 		return fmt.Errorf("%w: runtime bag is nil", ErrInvalidGraph)
 	}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	delete(b.values, path)
-	return nil
+	return wrapRuntimePathError(b.bag.Delete(path))
 }
 
 func (b *runtimeVariableBag) Variables() RuntimeVariables {
-	if b == nil {
+	if b == nil || b.bag == nil {
 		return noopRuntimeContext{}
 	}
 
-	return b
+	return b.bag.Variables()
 }
 
 // RuntimeVariablesProvider supplies read-only variables for a runtime event.
@@ -178,8 +155,7 @@ type EventValueResolveRequest[T any] struct {
 }
 
 type runtimeContext[T any] struct {
-	bag       *runtimeVariableBag
-	variables RuntimeVariables
+	inner *runtimevars.Context[T]
 }
 
 func newRuntimeContextWithResolver[T any](
@@ -188,88 +164,50 @@ func newRuntimeContextWithResolver[T any](
 	providerVariables RuntimeVariables,
 	resolver EventValueResolver[T],
 ) *runtimeContext[T] {
-	bag := newRuntimeVariableBag()
 	return &runtimeContext[T]{
-		bag: bag,
-		variables: runtimeVariablesView[T]{
-			bag:               bag,
-			providerVariables: providerVariables,
-			resolver:          resolver,
-			context:           request.Context,
-			event:             request.Event,
-			sequence:          request.Sequence,
-			graphName:         graphName,
-		},
+		inner: runtimevars.NewContext(
+			runtimevars.Request[T]{
+				Context:  request.Context,
+				Event:    request.Event,
+				Sequence: request.Sequence,
+			},
+			graphName,
+			providerVariables,
+			newRuntimeResolverAdapter(resolver),
+		),
 	}
 }
 
 func (c *runtimeContext[T]) Lookup(path string) (any, bool) {
-	if c == nil || c.bag == nil {
+	if c == nil || c.inner == nil {
 		return nil, false
 	}
 
-	return c.bag.Lookup(path)
+	return c.inner.Lookup(path)
 }
 
 func (c *runtimeContext[T]) Set(path string, value any) error {
-	if c == nil || c.bag == nil {
+	if c == nil || c.inner == nil {
 		return fmt.Errorf("%w: runtime context is nil", ErrInvalidGraph)
 	}
 
-	return c.bag.Set(path, value)
+	return wrapRuntimePathError(c.inner.Set(path, value))
 }
 
 func (c *runtimeContext[T]) Delete(path string) error {
-	if c == nil || c.bag == nil {
+	if c == nil || c.inner == nil {
 		return fmt.Errorf("%w: runtime context is nil", ErrInvalidGraph)
 	}
 
-	return c.bag.Delete(path)
+	return wrapRuntimePathError(c.inner.Delete(path))
 }
 
 func (c *runtimeContext[T]) Variables() RuntimeVariables {
-	if c == nil || c.variables == nil {
+	if c == nil || c.inner == nil {
 		return noopRuntimeContext{}
 	}
 
-	return c.variables
-}
-
-type runtimeVariablesView[T any] struct {
-	bag               RuntimeVariables
-	providerVariables RuntimeVariables
-	resolver          EventValueResolver[T]
-	context           context.Context
-	event             *T
-	sequence          int64
-	graphName         string
-}
-
-func (v runtimeVariablesView[T]) Lookup(path string) (any, bool) {
-	if v.bag != nil {
-		if value, ok := v.bag.Lookup(path); ok {
-			return value, true
-		}
-	}
-	if v.providerVariables != nil {
-		if value, ok := v.providerVariables.Lookup(path); ok {
-			return value, true
-		}
-	}
-	if v.resolver != nil {
-		value, ok, err := v.resolver.ResolveEventValue(EventValueResolveRequest[T]{
-			Context:   v.context,
-			Event:     v.event,
-			Sequence:  v.sequence,
-			GraphName: v.graphName,
-			Path:      path,
-		})
-		if err == nil && ok {
-			return value, true
-		}
-	}
-
-	return nil, false
+	return c.inner.Variables()
 }
 
 type noopRuntimeContext struct{}
@@ -290,98 +228,75 @@ func (c noopRuntimeContext) Variables() RuntimeVariables {
 	return c
 }
 
-type reflectionEventValueResolver[T any] struct{}
+type runtimeResolverAdapter[T any] struct {
+	resolver EventValueResolver[T]
+}
+
+func newRuntimeResolverAdapter[T any](
+	resolver EventValueResolver[T],
+) runtimevars.Resolver[T] {
+	if resolver == nil {
+		return nil
+	}
+
+	return runtimeResolverAdapter[T]{resolver: resolver}
+}
+
+func (r runtimeResolverAdapter[T]) Resolve(
+	request runtimevars.ResolveRequest[T],
+) (any, bool, error) {
+	if r.resolver == nil {
+		return nil, false, nil
+	}
+
+	return r.resolver.ResolveEventValue(EventValueResolveRequest[T]{
+		Context:   request.Context,
+		Event:     request.Event,
+		Sequence:  request.Sequence,
+		GraphName: request.GraphName,
+		Path:      request.Path,
+	})
+}
+
+type reflectionEventValueResolver[T any] struct {
+	inner runtimevars.Resolver[T]
+}
 
 func newReflectionEventValueResolver[T any]() EventValueResolver[T] {
-	return reflectionEventValueResolver[T]{}
+	return reflectionEventValueResolver[T]{
+		inner: runtimevars.NewReflectionResolver[T](),
+	}
 }
 
-func (reflectionEventValueResolver[T]) ResolveEventValue(
+func (r reflectionEventValueResolver[T]) ResolveEventValue(
 	request EventValueResolveRequest[T],
 ) (any, bool, error) {
-	if request.Event == nil {
+	if r.inner == nil {
 		return nil, false, nil
 	}
-	if err := validateRuntimePath(request.Path); err != nil {
-		return nil, false, err
+
+	value, ok, err := r.inner.Resolve(runtimevars.ResolveRequest[T]{
+		Context:   request.Context,
+		Event:     request.Event,
+		Sequence:  request.Sequence,
+		GraphName: request.GraphName,
+		Path:      request.Path,
+	})
+	if err != nil {
+		return nil, false, wrapRuntimePathError(err)
 	}
 
-	return resolveReflectPath(reflect.ValueOf(request.Event), strings.Split(request.Path, "."))
-}
-
-func resolveReflectPath(value reflect.Value, parts []string) (any, bool, error) {
-	value = indirectReflectValue(value)
-	if !value.IsValid() {
-		return nil, false, nil
-	}
-	if len(parts) == 0 {
-		return value.Interface(), true, nil
-	}
-
-	head := parts[0]
-	switch value.Kind() {
-	case reflect.Map:
-		key := reflect.ValueOf(head)
-		if key.Type().AssignableTo(value.Type().Key()) {
-			item := value.MapIndex(key)
-			if !item.IsValid() {
-				return nil, false, nil
-			}
-
-			return resolveReflectPath(item, parts[1:])
-		}
-	case reflect.Struct:
-		field := findStructField(value, head)
-		if field.IsValid() {
-			return resolveReflectPath(field, parts[1:])
-		}
-	}
-
-	return nil, false, nil
-}
-
-func indirectReflectValue(value reflect.Value) reflect.Value {
-	for value.IsValid() && (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface) {
-		if value.IsNil() {
-			return reflect.Value{}
-		}
-		value = value.Elem()
-	}
-
-	return value
-}
-
-func findStructField(value reflect.Value, name string) reflect.Value {
-	valueType := value.Type()
-	for i := 0; i < value.NumField(); i++ {
-		fieldType := valueType.Field(i)
-		if fieldType.PkgPath != "" {
-			continue
-		}
-		if fieldType.Name == name || strings.EqualFold(fieldType.Name, name) {
-			return value.Field(i)
-		}
-		if tagName := strings.Split(fieldType.Tag.Get("json"), ",")[0]; tagName == name {
-			return value.Field(i)
-		}
-	}
-
-	return reflect.Value{}
+	return value, ok, nil
 }
 
 func validateRuntimePath(path string) error {
-	trimmed := strings.TrimSpace(path)
-	if trimmed == "" {
-		return fmt.Errorf("%w: runtime path is empty", ErrInvalidGraph)
-	}
-	if trimmed != path {
-		return fmt.Errorf("%w: runtime path %q has surrounding whitespace", ErrInvalidGraph, path)
-	}
-	for _, part := range strings.Split(path, ".") {
-		if part == "" {
-			return fmt.Errorf("%w: runtime path %q has an empty segment", ErrInvalidGraph, path)
-		}
+	return wrapRuntimePathError(runtimevars.ValidatePath(path))
+}
+
+func wrapRuntimePathError(err error) error {
+	if err == nil {
+		return nil
 	}
 
-	return nil
+	return fmt.Errorf("%w: %v", ErrInvalidGraph, err)
 }

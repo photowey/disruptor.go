@@ -17,6 +17,7 @@ package disruptor
 import (
 	"errors"
 
+	internalexpr "github.com/photowey/disruptor.go/internal/expression"
 	sequencer "github.com/photowey/disruptor.go/internal/sequencer"
 )
 
@@ -42,5 +43,5 @@ var (
 	// ErrRuntimeNoRoute reports that a runtime graph event has no selected route.
 	ErrRuntimeNoRoute = errors.New("disruptor: runtime graph no route")
 	// ErrInvalidRuntimeExpression reports that a runtime expression is invalid.
-	ErrInvalidRuntimeExpression = errors.New("disruptor: invalid runtime expression")
+	ErrInvalidRuntimeExpression = internalexpr.ErrInvalidRuntimeExpression
 )
