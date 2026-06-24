@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
 )
 
 func TestBatchEventProcessorHandlesPublishedEventsAndAdvancesSequence(t *testing.T) {
@@ -33,7 +34,7 @@ func TestBatchEventProcessorHandlesPublishedEventsAndAdvancesSequence(t *testing
 
 	var mu sync.Mutex
 	handled := make([]int64, 0, 3)
-	handler := disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+	handler := event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 		mu.Lock()
 		handled = append(handled, request.Event.Value)
 		if request.Sequence == 2 {
@@ -90,7 +91,7 @@ func TestBatchEventProcessorContinuesWhenExceptionHandlerRequestsContinue(t *tes
 	handlerErr := errors.New("handler failed")
 	done := make(chan struct{})
 
-	handler := disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+	handler := event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 		if request.Sequence == 0 {
 			return handlerErr
 		}
@@ -101,7 +102,7 @@ func TestBatchEventProcessorContinuesWhenExceptionHandlerRequestsContinue(t *tes
 		return nil
 	})
 
-	exceptions := make(chan disruptor.EventException[longEvent], 1)
+	exceptions := make(chan event.Exception[longEvent], 1)
 	processor, err := disruptor.NewBatchEventProcessor(
 		rb,
 		rb.NewBarrier(),
@@ -149,7 +150,7 @@ func TestBatchEventProcessorDefaultHandlerHaltsOnError(t *testing.T) {
 
 	rb := newTestRingBuffer(t, 4)
 	handlerErr := errors.New("handler failed")
-	handler := disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+	handler := event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 		return handlerErr
 	})
 
@@ -180,7 +181,7 @@ func TestRetryExceptionHandlerRetriesUntilSuccess(t *testing.T) {
 	done := make(chan struct{})
 
 	var attempts int
-	handler := disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+	handler := event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 		attempts++
 		if attempts <= 2 {
 			return handlerErr
@@ -190,7 +191,7 @@ func TestRetryExceptionHandlerRetriesUntilSuccess(t *testing.T) {
 		return nil
 	})
 
-	retryHandler, err := disruptor.NewRetryExceptionHandler[longEvent](2, disruptor.ExceptionActionHalt)
+	retryHandler, err := event.NewRetryExceptionHandler[longEvent](2, event.ExceptionActionHalt)
 	if err != nil {
 		t.Fatalf("new retry exception handler: %v", err)
 	}
@@ -229,12 +230,12 @@ func TestRetryExceptionHandlerHaltsAfterMaxRetries(t *testing.T) {
 	handlerErr := errors.New("handler failed")
 
 	var attempts int
-	handler := disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+	handler := event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 		attempts++
 		return handlerErr
 	})
 
-	retryHandler, err := disruptor.NewRetryExceptionHandler[longEvent](1, disruptor.ExceptionActionHalt)
+	retryHandler, err := event.NewRetryExceptionHandler[longEvent](1, event.ExceptionActionHalt)
 	if err != nil {
 		t.Fatalf("new retry exception handler: %v", err)
 	}
@@ -265,7 +266,7 @@ func TestBatchEventProcessorRemovesGatingSequenceOnExit(t *testing.T) {
 	defer cancel()
 
 	rb := newTestRingBuffer(t, 1)
-	handler := disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+	handler := event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 		return nil
 	})
 
@@ -300,8 +301,8 @@ func TestBatchEventProcessorSignalsCapacityWaitersAfterAdvancing(t *testing.T) {
 	rb := newTestRingBuffer(t, 1)
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	handler := disruptor.EventHandlerFunc[longEvent](func(
-		request disruptor.EventRequest[longEvent],
+	handler := event.HandlerFunc[longEvent](func(
+		request event.Request[longEvent],
 	) error {
 		close(entered)
 		<-release
@@ -346,7 +347,7 @@ func TestBatchEventProcessorSignalsCapacityWaitersAfterAdvancing(t *testing.T) {
 func TestBatchEventProcessorInvokesBatchStartHandler(t *testing.T) {
 	rb := newTestRingBuffer(t, 8)
 	handler := &batchStartRecordingHandler{
-		batches: make(chan disruptor.BatchStartRequest, 1),
+		batches: make(chan event.BatchStartRequest, 1),
 		events:  make(chan int64, 3),
 	}
 	processor, err := disruptor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
@@ -414,19 +415,19 @@ func TestBatchEventProcessorInvokesLifecycleHandler(t *testing.T) {
 }
 
 type batchStartRecordingHandler struct {
-	batches chan disruptor.BatchStartRequest
+	batches chan event.BatchStartRequest
 	events  chan int64
 }
 
 func (h *batchStartRecordingHandler) OnBatchStart(
-	request disruptor.BatchStartRequest,
+	request event.BatchStartRequest,
 ) error {
 	h.batches <- request
 	return nil
 }
 
 func (h *batchStartRecordingHandler) OnEvent(
-	request disruptor.EventRequest[longEvent],
+	request event.Request[longEvent],
 ) error {
 	h.events <- request.Event.Value
 	return nil
@@ -448,32 +449,32 @@ func (h *lifecycleRecordingHandler) OnShutdown(ctx context.Context) error {
 }
 
 func (h *lifecycleRecordingHandler) OnEvent(
-	request disruptor.EventRequest[longEvent],
+	request event.Request[longEvent],
 ) error {
 	return nil
 }
 
 type continueExceptionHandler[T any] struct {
-	events chan<- disruptor.EventException[T]
+	events chan<- event.Exception[T]
 }
 
 func (h continueExceptionHandler[T]) HandleEventException(
-	request disruptor.EventException[T],
-) disruptor.ExceptionAction {
+	request event.Exception[T],
+) event.ExceptionAction {
 	h.events <- request
-	return disruptor.ExceptionActionContinue
+	return event.ExceptionActionContinue
 }
 
 func (h continueExceptionHandler[T]) HandleStartException(
-	request disruptor.LifecycleException,
-) disruptor.ExceptionAction {
-	return disruptor.ExceptionActionHalt
+	request event.LifecycleException,
+) event.ExceptionAction {
+	return event.ExceptionActionHalt
 }
 
 func (h continueExceptionHandler[T]) HandleShutdownException(
-	request disruptor.LifecycleException,
-) disruptor.ExceptionAction {
-	return disruptor.ExceptionActionHalt
+	request event.LifecycleException,
+) event.ExceptionAction {
+	return event.ExceptionActionHalt
 }
 
 func publishValues(t *testing.T, rb *disruptor.RingBuffer[longEvent], values ...int64) {

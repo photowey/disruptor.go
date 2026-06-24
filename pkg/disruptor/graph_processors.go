@@ -18,6 +18,9 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+
+	"github.com/photowey/disruptor.go/pkg/event"
+	topology "github.com/photowey/disruptor.go/pkg/graph"
 )
 
 // GraphHandleOption configures graph processor registration.
@@ -26,7 +29,7 @@ type GraphHandleOption[T any] interface {
 }
 
 type graphHandleConfig[T any] struct {
-	exceptionHandler ExceptionHandler[T]
+	exceptionHandler event.ExceptionHandler[T]
 }
 
 type graphHandleOptionFunc[T any] struct {
@@ -39,11 +42,11 @@ func (fn graphHandleOptionFunc[T]) applyGraphHandle(config *graphHandleConfig[T]
 }
 
 // WithGraphExceptionHandler sets the default exception handler for graph nodes.
-func WithGraphExceptionHandler[T any](handler ExceptionHandler[T]) GraphHandleOption[T] {
+func WithGraphExceptionHandler[T any](handler event.ExceptionHandler[T]) GraphHandleOption[T] {
 	return graphHandleOptionFunc[T]{
 		applyFunc: func(config *graphHandleConfig[T]) error {
 			if handler == nil {
-				return fmt.Errorf("%w: graph exception handler is nil", ErrInvalidGraph)
+				return fmt.Errorf("%w: graph exception handler is nil", topology.ErrInvalid)
 			}
 
 			config.exceptionHandler = handler
@@ -58,22 +61,22 @@ type GraphProcessors interface {
 	Processors() []EventProcessor
 	Processor(name string) (EventProcessor, bool)
 	Sequence(name string) (*Sequence, bool)
-	Snapshot() GraphSnapshot
+	Snapshot() topology.Snapshot
 }
 
 type handledGraphProcessors struct {
 	names      []string
 	processors map[string]EventProcessor
-	snapshot   GraphSnapshot
+	snapshot   topology.Snapshot
 }
 
 // HandleGraph registers a named dependency graph of event handlers.
 func (d *Disruptor[T]) HandleGraph(
-	graph *Graph[T],
+	topologyGraph *topology.Graph[T],
 	opts ...GraphHandleOption[T],
 ) (GraphProcessors, error) {
-	if graph == nil {
-		return nil, fmt.Errorf("%w: graph is nil", ErrInvalidGraph)
+	if topologyGraph == nil {
+		return nil, fmt.Errorf("%w: graph is nil", topology.ErrInvalid)
 	}
 
 	handleConfig := graphHandleConfig[T]{
@@ -100,26 +103,13 @@ func (d *Disruptor[T]) HandleGraph(
 		)
 	}
 
-	graph.mu.Lock()
-	defer graph.mu.Unlock()
-	if graph.handled {
-		return nil, ErrGraphHandled
-	}
-	if err := graph.validateLocked(); err != nil {
+	plan, err := topologyGraph.BuildPlan()
+	if err != nil {
 		return nil, err
 	}
 
-	processingSnapshot := graph.processingSnapshotLocked()
-	order := graphTopologicalOrder(processingSnapshot)
-	upstream := graphUpstream(processingSnapshot.Edges)
-	leafSet := graphNameSet(processingSnapshot.Leaves)
-	nodeByName := make(map[string]*graphNode[T], len(graph.nodes))
-	for name, node := range graph.nodes {
-		nodeByName[name] = node
-	}
-
 	var stopOnce sync.Once
-	createdProcessors := make([]EventProcessor, 0, len(order))
+	createdProcessors := make([]EventProcessor, 0, len(plan.Order))
 	stopGraph := func() {
 		stopOnce.Do(func() {
 			for _, processor := range createdProcessors {
@@ -128,24 +118,24 @@ func (d *Disruptor[T]) HandleGraph(
 		})
 	}
 
-	processorByName := make(map[string]EventProcessor, len(order))
-	for _, name := range order {
-		node := nodeByName[name]
-		dependencies := make([]*Sequence, 0, len(upstream[name]))
-		for _, upstreamName := range upstream[name] {
+	processorByName := make(map[string]EventProcessor, len(plan.Order))
+	for _, name := range plan.Order {
+		node := plan.Nodes[name]
+		dependencies := make([]*Sequence, 0, len(plan.Upstream[name]))
+		for _, upstreamName := range plan.Upstream[name] {
 			processor, ok := processorByName[upstreamName]
 			if !ok {
 				return nil, fmt.Errorf(
 					"%w: graph %s: missing upstream processor %s",
-					ErrInvalidGraph,
-					graph.name,
+					topology.ErrInvalid,
+					plan.Name,
 					upstreamName,
 				)
 			}
 			dependencies = append(dependencies, processor.Sequence())
 		}
 
-		exceptionHandler := node.exceptionHandler
+		exceptionHandler := node.ExceptionHandler
 		if exceptionHandler == nil {
 			exceptionHandler = handleConfig.exceptionHandler
 		}
@@ -153,15 +143,15 @@ func (d *Disruptor[T]) HandleGraph(
 		processor, err := newBatchEventProcessor(
 			d.ringBuffer,
 			d.ringBuffer.NewBarrier(dependencies...),
-			node.handler,
+			node.Handler,
 			batchEventProcessorConfig[T]{
 				exceptionHandler: exceptionHandler,
-				producerGating:   leafSet[name],
+				producerGating:   plan.Leaves[name],
 				haltAdvances:     false,
-				node: NodeContext{
-					GraphName: graph.name,
-					NodeName:  node.name,
-					NodeLabel: node.label,
+				node: event.Node{
+					GraphName: plan.Name,
+					NodeName:  node.Name,
+					NodeLabel: node.Label,
 				},
 				onHalt: stopGraph,
 			},
@@ -174,16 +164,14 @@ func (d *Disruptor[T]) HandleGraph(
 		createdProcessors = append(createdProcessors, processor)
 	}
 
-	graph.freezeHandledLocked()
-	publicSnapshot := graph.snapshotLocked()
 	d.mode = consumerModeGraph
 	d.processors = append(d.processors, createdProcessors...)
 
-	return newHandledGraphProcessors(publicSnapshot, processorByName), nil
+	return newHandledGraphProcessors(plan.Snapshot, processorByName), nil
 }
 
 func newHandledGraphProcessors(
-	snapshot GraphSnapshot,
+	snapshot topology.Snapshot,
 	processors map[string]EventProcessor,
 ) *handledGraphProcessors {
 	names := make([]string, 0, len(processors))
@@ -197,7 +185,7 @@ func newHandledGraphProcessors(
 	return &handledGraphProcessors{
 		names:      names,
 		processors: copiedProcessors,
-		snapshot:   copyGraphSnapshot(snapshot),
+		snapshot:   snapshot.Copy(),
 	}
 }
 
@@ -228,66 +216,6 @@ func (p *handledGraphProcessors) Sequence(name string) (*Sequence, bool) {
 	return processor.Sequence(), true
 }
 
-func (p *handledGraphProcessors) Snapshot() GraphSnapshot {
-	return copyGraphSnapshot(p.snapshot)
-}
-
-func graphTopologicalOrder(snapshot GraphSnapshot) []string {
-	inDegree := make(map[string]int, len(snapshot.Nodes))
-	adjacency := make(map[string][]string, len(snapshot.Nodes))
-	for _, node := range snapshot.Nodes {
-		inDegree[node.Name] = 0
-	}
-	for _, edge := range snapshot.Edges {
-		adjacency[edge.From] = append(adjacency[edge.From], edge.To)
-		inDegree[edge.To]++
-	}
-	for node := range adjacency {
-		sort.Strings(adjacency[node])
-	}
-
-	ready := make([]string, 0, len(snapshot.Nodes))
-	for _, node := range snapshot.Nodes {
-		if inDegree[node.Name] == 0 {
-			ready = append(ready, node.Name)
-		}
-	}
-	sort.Strings(ready)
-
-	order := make([]string, 0, len(snapshot.Nodes))
-	for len(ready) > 0 {
-		name := ready[0]
-		ready = ready[1:]
-		order = append(order, name)
-		for _, next := range adjacency[name] {
-			inDegree[next]--
-			if inDegree[next] == 0 {
-				ready = append(ready, next)
-				sort.Strings(ready)
-			}
-		}
-	}
-
-	return order
-}
-
-func graphUpstream(edges []GraphEdgeSnapshot) map[string][]string {
-	upstream := make(map[string][]string)
-	for _, edge := range edges {
-		upstream[edge.To] = append(upstream[edge.To], edge.From)
-	}
-	for name := range upstream {
-		sort.Strings(upstream[name])
-	}
-
-	return upstream
-}
-
-func graphNameSet(names []string) map[string]bool {
-	set := make(map[string]bool, len(names))
-	for _, name := range names {
-		set[name] = true
-	}
-
-	return set
+func (p *handledGraphProcessors) Snapshot() topology.Snapshot {
+	return p.snapshot.Copy()
 }

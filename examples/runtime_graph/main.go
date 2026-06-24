@@ -17,6 +17,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/photowey/disruptor.go/pkg/event"
+	topology "github.com/photowey/disruptor.go/pkg/graph"
+	"github.com/photowey/disruptor.go/pkg/runtimegraph"
 	"strings"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
@@ -44,7 +47,7 @@ type decideRouteHandler struct {
 	steps chan<- string
 }
 
-func (h decideRouteHandler) OnEvent(request disruptor.EventRequest[routeEvent]) error {
+func (h decideRouteHandler) OnEvent(request event.Request[routeEvent]) error {
 	if err := request.Runtime.Set("route.fast", true); err != nil {
 		return err
 	}
@@ -61,7 +64,7 @@ type routeStepHandler struct {
 	steps chan<- string
 }
 
-func (h routeStepHandler) OnEvent(request disruptor.EventRequest[routeEvent]) error {
+func (h routeStepHandler) OnEvent(request event.Request[routeEvent]) error {
 	h.steps <- fmt.Sprintf("%s:%d", h.name, request.Event.Value)
 	return nil
 }
@@ -76,15 +79,15 @@ func main() {
 	}
 
 	steps := make(chan string, 2)
-	graph := disruptor.MustRuntimeGraph[routeEvent]("runtime-route").
+	graph := runtimegraph.MustRuntimeGraph[routeEvent]("runtime-route").
 		MustNode("route", decideRouteHandler{steps: steps}).
 		MustNode("fast", routeStepHandler{name: "fast", steps: steps}).
 		MustNode("audit", routeStepHandler{name: "audit", steps: steps}).
-		MustEdge(disruptor.GraphStartNode, "route").
-		MustEdge("route", "fast", disruptor.WhenExpression[routeEvent](`${route.fast}`)).
-		MustEdge("route", "audit", disruptor.WhenExpression[routeEvent](`${route.audit}`)).
-		MustEdge("fast", disruptor.GraphEndNode).
-		MustEdge("audit", disruptor.GraphEndNode)
+		MustEdge(topology.StartNode, "route").
+		MustEdge("route", "fast", runtimegraph.WhenExpression[routeEvent](`${route.fast}`)).
+		MustEdge("route", "audit", runtimegraph.WhenExpression[routeEvent](`${route.audit}`)).
+		MustEdge("fast", topology.EndNode).
+		MustEdge("audit", topology.EndNode)
 
 	if _, err := d.HandleRuntimeGraph(graph); err != nil {
 		panic(err)

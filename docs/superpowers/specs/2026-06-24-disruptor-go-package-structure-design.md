@@ -2,332 +2,203 @@
 
 ## Status
 
-Approved direction, written for implementation planning.
+Revised after implementation review.
 
-Target: pre-v1.2.0 hardening with no public API break.
-
-## Background
-
-`pkg/disruptor` has grown from the original public package into a mixed package
-containing public contracts, facade construction, ring-buffer operations,
-processor lifecycle, static graph topology, runtime graph routing, expression
-evaluation, runtime variables, metrics, and tests.
-
-This is still manageable at the API level because users import one package, but
-the implementation boundaries are becoming harder to reason about. The package
-now contains more than thirty Go files and several large domains that evolve at
-different speeds.
+Target: pre-v1.2.0 hardening with an intentional breaking API cleanup. This
+project is not yet consumed by downstream projects, so the package split should
+optimize clarity instead of preserving compatibility glue.
 
 ## Decision
 
-Keep `pkg/disruptor` as the only public package for v1.x.
+Public APIs are split by responsibility. `pkg/disruptor` is no longer the only
+public facade and must not re-export graph, runtime graph, expression, runtime
+variable, or event contracts.
 
-Move implementation-heavy code behind internal packages. The public package
-remains the facade and owns the stable user-facing names:
+Callers import the package that owns the concept they use:
 
-- constructors
-- option functions
-- interfaces
-- request and metric payloads
-- errors
-- public graph and runtime graph builders
-
-Internal packages own algorithms and state machines. They must not be imported
-by users and must not leak new public import paths.
+| Package | Responsibility |
+| --- | --- |
+| `pkg/disruptor` | Ring buffer, disruptor facade, barriers, processors, wait strategies, metrics |
+| `pkg/event` | Handler requests, node context, lifecycle hooks, exception handlers |
+| `pkg/graph` | Static dependency graph builder, validation, snapshots, Mermaid, DOT |
+| `pkg/runtimegraph` | Conditional routing graph builder, edge conditions, routing snapshots |
+| `pkg/expression` | Bool expression compiler used by runtime graph edges |
+| `pkg/runtimevars` | Concurrent runtime variables and event value resolution |
+| `internal/availability` | Contiguous publication scanning |
+| `internal/padding` | Cache-line padding primitives and build-tag overrides |
+| `internal/sequencer` | Sequence primitive and single/multi producer sequencers |
 
 ## Goals
 
-- Preserve the current import path:
-  `github.com/photowey/disruptor.go/pkg/disruptor`.
-- Keep public API names stable through the v1.x line.
-- Make each implementation area easier to review, test, benchmark, and evolve.
-- Prepare runtime graph and future topic-routing work without making
-  `pkg/disruptor` a catch-all package.
+- Make package boundaries visible in code, examples, benchmarks, and docs.
+- Keep public APIs interface-first and replaceable.
+- Avoid compatibility aliases such as `disruptor.MustGraph` or
+  `disruptor.EventRequest`.
 - Keep package names short, lowercase, and specific.
-- Avoid premature public subpackages.
+- Keep processor and ring-buffer hot paths in `pkg/disruptor` until there is a
+  stronger reason to extract them.
+- Keep low-level algorithms in `internal/` when users should not import them.
 
 ## Non-Goals
 
-- Do not create public packages such as `pkg/disruptor/graph` in v1.x.
-- Do not change examples, benchmarks, or external import paths as part of the
-  package split.
-- Do not redesign the Disruptor runtime semantics.
-- Do not introduce a dependency injection framework.
-- Do not move every file in one large mechanical commit.
+- Preserve the previous single-package facade.
+- Add glue files that only forward old names to new packages.
+- Introduce a dependency injection framework.
+- Move every internal algorithm into a public package.
+- Change Disruptor sequencing, wait strategy, or backpressure semantics.
 
-## Current Responsibility Map
+## Public Package Boundaries
 
-The current root package contains these responsibility groups:
+### `pkg/disruptor`
 
-| Area | Current files |
-| --- | --- |
-| Public facade | `disruptor.go`, `doc.go`, `options.go`, `errors.go` |
-| Ring buffer | `ring_buffer.go`, `sequence.go`, `sequence_reader.go` |
-| Processor runtime | `event_processor.go`, `barrier.go`, `wait_strategy.go` |
-| User contracts | `event_handler.go`, `translator.go`, `metrics.go`, `node_context.go` |
-| Static graph | `graph.go`, `graph_join.go`, `graph_snapshot.go`, `graph_processors.go` |
-| Runtime graph | `runtime_graph.go`, `runtime_graph_processors.go` |
-| Runtime expressions | `runtime_expression.go` |
-| Runtime variables | `runtime_variables.go` |
+Owns runtime orchestration:
 
-Existing root-level `internal/` packages already hold low-level private
-algorithms:
+- `RingBuffer[T]`
+- `Disruptor[T]`
+- `BatchEventProcessor[T]`
+- `WaitStrategy`
+- producer type options
+- metrics payloads and sinks
+- `HandleEventsWith`, `HandleGraph`, and `HandleRuntimeGraph`
 
-- `internal/availability`
-- `internal/padding`
-- `internal/sequencer`
+It may depend on `pkg/event`, `pkg/graph`, `pkg/runtimegraph`, and
+`pkg/runtimevars`, but it must not re-export their primary types.
 
-## Target Layout
+### `pkg/event`
 
-The target keeps one public package and moves engines to module-private
-packages:
+Owns event processing contracts shared by fan-out, static graph, and runtime
+graph scheduling:
 
-```text
-pkg/disruptor/
-  doc.go
-  errors.go
-  options.go
-  disruptor.go
-  ring_buffer.go
-  event_handler.go
-  translator.go
-  metrics.go
-  node_context.go
-  wait_strategy.go
-  graph.go
-  runtime_graph.go
+- `Handler[T]`
+- `HandlerFunc[T]`
+- `Request[T]`
+- `Node`
+- `BatchStartHandler`
+- `LifecycleHandler`
+- `ExceptionHandler[T]`
+- `ExceptionAction`
+- built-in fatal, ignore, and retry exception handlers
 
-internal/
-  availability/
-  padding/
-  sequencer/
-  ring/
-  processor/
-  graph/
-  runtimegraph/
-  expression/
-  runtimevars/
-```
+### `pkg/graph`
 
-`pkg/disruptor` remains the package users import. The internal packages are
-module-private implementation packages. They can be used by `pkg/disruptor`,
-examples, and benchmarks inside this module, but external users cannot import
-them.
+Owns static topology definition and validation:
 
-## Package Boundaries
+- `Graph[T]`
+- `StartNode` and `EndNode`
+- `NodeOption[T]`
+- `Join`
+- `Snapshot`
+- deterministic `Mermaid` and `DOT` export
+- `ErrInvalid`, `ErrFrozen`, and `ErrHandled`
 
-### Public Facade
+Static graph edges are unconditional. Terminal edges are explicit and maintained
+by developers.
 
-`pkg/disruptor` should contain:
+### `pkg/runtimegraph`
 
-- public interfaces such as `EventHandler[T]`, `WaitStrategy`, `MetricsSink`,
-  `RuntimeVariables`, and `EdgeCondition[T]`
-- public request payloads such as `EventRequest[T]`, `WaitRequest`,
-  `GraphSnapshot`, `RuntimeGraphSnapshot`, and `RuntimeGraphMetric`
-- public constructors such as `New`, `NewRingBuffer`, `NewGraph`,
-  `NewRuntimeGraph`, and `NewRuntimeExpressionCompiler`
-- public option functions such as `WithWaitStrategy`,
-  `WithGraphExceptionHandler`, and `WithRuntimeGraphNoRouteAction`
-- thin methods that delegate to internal engines
+Owns conditional topology definition:
 
-The facade may contain small validation helpers when they directly protect the
-public API, but algorithm-heavy code should move out.
+- `RuntimeGraph[T]`
+- `EdgeCondition[T]`
+- `EdgeConditionRequest[T]`
+- `WhenCondition`
+- `WhenExpression`
+- runtime graph node and edge options
+- `RuntimeGraphSnapshot`
+- `ErrInvalid`, `ErrFrozen`, `ErrHandled`, and `ErrNoRoute`
 
-### Internal Ring
+The package owns graph construction and edge evaluation contracts. The scheduler
+that consumes a built plan still lives in `pkg/disruptor`.
 
-`internal/ring` should own ring-buffer state and slot access once extracted.
-The public `RingBuffer[T]` can remain a facade struct that delegates to a ring
-engine.
+### `pkg/expression`
 
-This package can continue to depend on:
+Owns the built-in bool expression engine:
 
-- `internal/sequencer`
-- `internal/availability`
-- `internal/padding`
+- `Expression`
+- `Compiler`
+- `BoolExpression`
+- `Request`
+- `Value`, `ValueKind`, and `ValueConverter`
+- `NewCompiler`
+- `WithValueConverter`
+- `ErrInvalid`
 
-### Internal Processor
+The expression engine has no dependency on `pkg/disruptor`.
 
-`internal/processor` should own processor loops, barrier coordination, lifecycle
-state, batch notification, and gating behavior.
+### `pkg/runtimevars`
 
-This extraction is more sensitive because processor code currently uses public
-payloads and handlers. The package must avoid importing `pkg/disruptor` to
-prevent import cycles. Implementation options:
+Owns runtime variable lookup:
 
-- Keep processor code in `pkg/disruptor` until public payload boundaries are
-  stable enough to extract.
-- Or introduce internal request and handler contracts, then let the facade adapt
-  public handlers to those internal contracts.
+- `Bag`
+- `Context`
+- `ContextView`
+- `Variables`
+- `Provider[T]`
+- `Resolver[T]`
+- path validation
+- merged lookup order used by runtime graph expressions
 
-The first implementation pass should prefer the lower-risk path: extract
-expression, runtime variables, and graph algorithms before extracting the
-processor loop.
-
-### Internal Graph
-
-`internal/graph` should own static graph algorithms:
-
-- node and edge normalization
-- terminal edge validation
-- source, leaf, entry, and exit computation
-- cycle checks
-- deterministic snapshot ordering
-- Mermaid and DOT rendering helpers
-
-It should not know about `EventHandler[T]`. The facade remains responsible for
-binding handler values to graph nodes.
-
-### Internal Runtime Graph
-
-`internal/runtimegraph` should own runtime routing plans and route-state
-execution:
-
-- compiled plan shape
-- start and end terminal handling
-- selected and skipped edge accounting
-- active join semantics
-- no-route state transitions
-- scheduler state
-
-The facade remains responsible for public builder methods, option processing,
-exception handler contracts, and metrics payload names.
-
-### Internal Expression
-
-`internal/expression` should own the runtime expression engine:
-
-- scanner
-- parser
-- AST nodes
-- compiled expression
-- bool conversion
-- numeric and bitwise evaluation
-- converter chain
-
-`pkg/disruptor.NewRuntimeExpressionCompiler` remains public and wraps this
-internal compiler.
-
-### Internal Runtime Variables
-
-`internal/runtimevars` should own:
-
-- concurrent runtime bag implementation
-- lookup helpers
-- default struct, JSON-tag, and string-map event resolvers
-- merged variable lookup order
-
-`pkg/disruptor` keeps the public `RuntimeVariables`, `RuntimeBag`,
-`RuntimeContext`, `RuntimeVariablesProvider[T]`, and `EventValueResolver[T]`
-contracts.
+Variables are concurrency-safe and use last-write-wins semantics.
 
 ## Import-Cycle Rule
 
-Internal packages must not import `pkg/disruptor`.
+Public leaf packages must not import `pkg/disruptor`.
 
-The root public package may import internal packages. Internal packages can
-share small contracts with each other, but those contracts must not require the
-public package.
-
-This rule is the main reason the migration must be incremental rather than a
-single file move.
-
-## Migration Phases
-
-### Phase 0: Public Surface Snapshot
-
-Capture the current public API before moving code:
-
-- list exported names
-- run `go test ./...`
-- run `make lint`
-- run graph and runtime graph benchmark smoke tests
-- verify examples still compile
-
-This creates a baseline for detecting accidental API drift.
-
-### Phase 1: Low-Cycle Extractions
-
-Move implementation code that has the fewest ties to public handlers:
-
-1. `runtime_expression.go` internals to `internal/expression`
-2. `runtime_variables.go` internals to `internal/runtimevars`
-3. graph validation and rendering helpers to `internal/graph`
-
-Keep public types and constructors in `pkg/disruptor`.
-
-### Phase 2: Runtime Graph Engine
-
-Move route-plan and run-state implementation to `internal/runtimegraph`.
-
-Keep public `RuntimeGraph[T]`, `RuntimeGraphProcessors`,
-`RuntimeGraphMetric`, and option functions in `pkg/disruptor`.
-
-The facade should adapt public handlers, conditions, variables, exception
-handlers, and metrics into internal engine contracts.
-
-### Phase 3: Processor and Ring Review
-
-Only after Phase 1 and Phase 2 are stable, review whether moving
-`event_processor.go`, `barrier.go`, and `ring_buffer.go` brings enough value.
-
-If extracted, the public package should still expose the same concrete public
-types. Any internal engine type should remain unexported or exported only inside
-an internal package.
-
-## Testing Strategy
-
-Tests should follow the package boundary:
-
-- Public behavior tests remain in `pkg/disruptor`.
-- Internal algorithm tests move beside the internal package they validate.
-- Examples remain black-box through `pkg/disruptor`.
-- Benchmarks keep using public APIs unless the benchmark is specifically for an
-  internal algorithm.
-
-Required regression checks for every phase:
+Allowed dependency direction:
 
 ```text
-go test ./... -count=1
-make lint
-go test ./benchmarks -run '^$' -bench='Benchmark(GraphTopology|RuntimeGraphRouting)' -benchmem -benchtime=100ms -count=1
+pkg/disruptor
+  -> pkg/event
+  -> pkg/graph
+  -> pkg/runtimegraph
+  -> pkg/runtimevars
+
+pkg/runtimegraph
+  -> pkg/event
+  -> pkg/expression
+  -> pkg/graph
+  -> pkg/runtimevars
+
+pkg/expression
+  -> pkg/runtimevars
 ```
 
-For processor or ring changes, also run:
+`pkg/event`, `pkg/graph`, `pkg/expression`, and `pkg/runtimevars` must remain
+usable without importing `pkg/disruptor`.
 
-```text
-go test ./... -race -count=1
-make ci
-```
+## Examples And Benchmarks
+
+Examples and benchmarks should demonstrate the package split directly:
+
+- handler request types use `event.Request[T]`
+- handler slices use `[]event.Handler[T]`
+- static graphs use `topology "github.com/photowey/disruptor.go/pkg/graph"`
+- runtime graphs use `runtimegraph`
+- retry/fatal/ignore exception handlers use `pkg/event`
+- no example should depend on old `disruptor.*` graph or event aliases
 
 ## Documentation Updates
 
-After implementation, update:
+Required docs:
 
-- `README.md` architecture diagram if internal boundaries are shown
-- `README.zh-CN.md` architecture diagram
-- `docs/api-guide.md` only if public APIs change, which is not expected
-- benchmark notes only if benchmark names or scenarios change, which is not
-  expected
+- `README.md`
+- `README.zh-CN.md`
+- `docs/api-guide.md`
+- V1.2 runtime graph design
+- benchmark notes if benchmark scenarios or imports change
 
-Examples should not need code changes because the public import path remains the
-same.
+Architecture diagrams must show the public package split instead of a single
+catch-all `pkg/disruptor` package.
 
 ## Acceptance Criteria
 
-- External users still import only `pkg/disruptor`.
-- No public subpackages are introduced.
-- No public API is removed or renamed.
-- `pkg/disruptor` has thinner facade files and fewer algorithm-heavy files.
-- Internal packages have clear, testable responsibilities.
-- No import cycles are introduced.
-- Full tests, lint, race tests, and benchmark smoke checks pass.
-
-## Open Implementation Notes
-
-- Generic type aliases should be avoided unless they are proven necessary and
-  compatible with the module's supported Go version.
-- Package names should stay specific and lowercase: `runtimegraph`,
-  `runtimevars`, and `expression` are acceptable; `utils` and `helper` are not.
-- The first implementation PR should be small enough to review by domain.
-- A purely mechanical move is not enough. The goal is clearer ownership, not
-  only a different directory tree.
+- `pkg/disruptor` no longer contains event, graph, runtime graph, expression, or
+  runtime variable builder files.
+- No compatibility re-export files are added for old graph/event APIs.
+- Examples compile against the split packages.
+- Benchmarks compile against the split packages.
+- Current docs and diagrams use the split package names.
+- `go test ./... -count=1` passes.
+- `go test ./... -race -count=1` passes or any failure is explained.
+- `make lint` passes.
+- Runtime graph and static graph benchmark smoke tests pass.

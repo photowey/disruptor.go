@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package runtimegraph
 
 import (
 	"context"
@@ -21,6 +21,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/expression"
+	"github.com/photowey/disruptor.go/pkg/graph"
+	"github.com/photowey/disruptor.go/pkg/runtimevars"
 )
 
 // EdgeCondition decides whether one runtime graph edge is selected.
@@ -36,7 +41,7 @@ func (fn EdgeConditionFunc[T]) Evaluate(
 	request EdgeConditionRequest[T],
 ) (bool, error) {
 	if fn == nil {
-		return false, fmt.Errorf("%w: edge condition is nil", ErrInvalidGraph)
+		return false, fmt.Errorf("%w: edge condition is nil", ErrInvalid)
 	}
 
 	return fn(request)
@@ -50,7 +55,7 @@ type EdgeConditionRequest[T any] struct {
 	GraphName string
 	From      string
 	To        string
-	Runtime   RuntimeContext
+	Runtime   runtimevars.ContextView
 }
 
 // RuntimeGraph defines a conditional event routing topology.
@@ -58,11 +63,25 @@ type RuntimeGraph[T any] struct {
 	mu sync.RWMutex
 
 	name     string
-	nodes    map[string]*graphNode[T]
-	edges    map[GraphEdgeSnapshot]*runtimeGraphEdge[T]
-	compiler ExpressionCompiler
+	nodes    map[string]*runtimeNode[T]
+	edges    map[graph.EdgeSnapshot]*runtimeGraphEdge[T]
+	compiler expression.Compiler
 	frozen   bool
 	handled  bool
+}
+
+type runtimeNode[T any] struct {
+	name             string
+	handler          event.Handler[T]
+	exceptionHandler event.ExceptionHandler[T]
+	label            string
+	metadata         map[string]string
+}
+
+type nodeConfig[T any] struct {
+	exceptionHandler event.ExceptionHandler[T]
+	label            string
+	metadata         map[string]string
 }
 
 type runtimeGraphEdge[T any] struct {
@@ -70,7 +89,7 @@ type runtimeGraphEdge[T any] struct {
 	to                string
 	condition         EdgeCondition[T]
 	conditionLabel    string
-	compiledCondition BoolExpression
+	compiledCondition expression.BoolExpression
 }
 
 // RuntimeGraphOption configures a RuntimeGraph builder.
@@ -79,7 +98,7 @@ type RuntimeGraphOption interface {
 }
 
 type runtimeGraphConfig struct {
-	compiler ExpressionCompiler
+	compiler expression.Compiler
 }
 
 type runtimeGraphOptionFunc struct {
@@ -91,12 +110,12 @@ func (fn runtimeGraphOptionFunc) applyRuntimeGraph(config *runtimeGraphConfig) e
 	return fn.applyFunc(config)
 }
 
-// WithRuntimeGraphExpressionCompiler replaces the graph expression compiler.
-func WithRuntimeGraphExpressionCompiler(compiler ExpressionCompiler) RuntimeGraphOption {
+// WithExpressionCompiler replaces the graph expression compiler.
+func WithExpressionCompiler(compiler expression.Compiler) RuntimeGraphOption {
 	return runtimeGraphOptionFunc{
 		applyFunc: func(config *runtimeGraphConfig) error {
 			if compiler == nil {
-				return fmt.Errorf("%w: runtime expression compiler is nil", ErrInvalidGraph)
+				return fmt.Errorf("%w: runtime expression compiler is nil", ErrInvalid)
 			}
 
 			config.compiler = compiler
@@ -110,6 +129,66 @@ type RuntimeNodeOption[T any] interface {
 	applyNode(config *nodeConfig[T]) error
 }
 
+type runtimeNodeOptionFunc[T any] struct {
+	applyFunc func(*nodeConfig[T]) error
+}
+
+//nolint:unused // The method satisfies RuntimeNodeOption[T] and is called through the interface.
+func (fn runtimeNodeOptionFunc[T]) applyNode(config *nodeConfig[T]) error {
+	return fn.applyFunc(config)
+}
+
+// WithNodeExceptionHandler sets the exception handler for one runtime graph node.
+func WithNodeExceptionHandler[T any](handler event.ExceptionHandler[T]) RuntimeNodeOption[T] {
+	return runtimeNodeOptionFunc[T]{
+		applyFunc: func(config *nodeConfig[T]) error {
+			if handler == nil {
+				return fmt.Errorf("%w: runtime node exception handler is nil", ErrInvalid)
+			}
+
+			config.exceptionHandler = handler
+			return nil
+		},
+	}
+}
+
+// WithNodeLabel sets the display label for one runtime graph node.
+func WithNodeLabel[T any](label string) RuntimeNodeOption[T] {
+	return runtimeNodeOptionFunc[T]{
+		applyFunc: func(config *nodeConfig[T]) error {
+			normalized, err := normalizeGraphName("node label", label)
+			if err != nil {
+				return err
+			}
+
+			config.label = normalized
+			return nil
+		},
+	}
+}
+
+// WithNodeMetadata adds one metadata key-value pair to a runtime graph node.
+func WithNodeMetadata[T any](key string, value string) RuntimeNodeOption[T] {
+	return runtimeNodeOptionFunc[T]{
+		applyFunc: func(config *nodeConfig[T]) error {
+			normalizedKey, err := normalizeGraphName("metadata key", key)
+			if err != nil {
+				return err
+			}
+			normalizedValue, err := normalizeGraphName("metadata value", value)
+			if err != nil {
+				return err
+			}
+
+			if config.metadata == nil {
+				config.metadata = make(map[string]string)
+			}
+			config.metadata[normalizedKey] = normalizedValue
+			return nil
+		},
+	}
+}
+
 // RuntimeEdgeOption configures one runtime graph edge.
 type RuntimeEdgeOption[T any] interface {
 	applyRuntimeEdge(config *runtimeEdgeConfig[T]) error
@@ -118,7 +197,7 @@ type RuntimeEdgeOption[T any] interface {
 type runtimeEdgeConfig[T any] struct {
 	condition      EdgeCondition[T]
 	conditionLabel string
-	expression     RuntimeExpression
+	expression     expression.Expression
 	hasExpression  bool
 }
 
@@ -136,7 +215,7 @@ func WhenCondition[T any](condition EdgeCondition[T]) RuntimeEdgeOption[T] {
 	return runtimeEdgeOptionFunc[T]{
 		applyFunc: func(config *runtimeEdgeConfig[T]) error {
 			if condition == nil {
-				return fmt.Errorf("%w: runtime edge condition is nil", ErrInvalidGraph)
+				return fmt.Errorf("%w: runtime edge condition is nil", ErrInvalid)
 			}
 
 			config.condition = condition
@@ -148,15 +227,15 @@ func WhenCondition[T any](condition EdgeCondition[T]) RuntimeEdgeOption[T] {
 }
 
 // WhenExpression sets an expression runtime graph edge condition.
-func WhenExpression[T any](expression RuntimeExpression) RuntimeEdgeOption[T] {
+func WhenExpression[T any](runtimeExpression expression.Expression) RuntimeEdgeOption[T] {
 	return runtimeEdgeOptionFunc[T]{
 		applyFunc: func(config *runtimeEdgeConfig[T]) error {
-			if strings.TrimSpace(string(expression)) == "" {
-				return fmt.Errorf("%w: runtime edge expression is empty", ErrInvalidGraph)
+			if strings.TrimSpace(string(runtimeExpression)) == "" {
+				return fmt.Errorf("%w: runtime edge expression is empty", ErrInvalid)
 			}
 
-			config.expression = expression
-			config.conditionLabel = string(expression)
+			config.expression = runtimeExpression
+			config.conditionLabel = string(runtimeExpression)
 			config.hasExpression = true
 			config.condition = nil
 			return nil
@@ -172,7 +251,7 @@ func NewRuntimeGraph[T any](name string, opts ...RuntimeGraphOption) (*RuntimeGr
 	}
 
 	config := runtimeGraphConfig{
-		compiler: NewRuntimeExpressionCompiler(),
+		compiler: expression.NewCompiler(),
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -185,8 +264,8 @@ func NewRuntimeGraph[T any](name string, opts ...RuntimeGraphOption) (*RuntimeGr
 
 	return &RuntimeGraph[T]{
 		name:     normalized,
-		nodes:    make(map[string]*graphNode[T]),
-		edges:    make(map[GraphEdgeSnapshot]*runtimeGraphEdge[T]),
+		nodes:    make(map[string]*runtimeNode[T]),
+		edges:    make(map[graph.EdgeSnapshot]*runtimeGraphEdge[T]),
 		compiler: config.compiler,
 	}, nil
 }
@@ -216,14 +295,14 @@ func (g *RuntimeGraph[T]) Name() string {
 // Node registers a runtime graph handler node.
 func (g *RuntimeGraph[T]) Node(
 	name string,
-	handler EventHandler[T],
+	handler event.Handler[T],
 	opts ...RuntimeNodeOption[T],
 ) error {
 	if g == nil {
-		return fmt.Errorf("%w: runtime graph is nil", ErrInvalidGraph)
+		return fmt.Errorf("%w: runtime graph is nil", ErrInvalid)
 	}
 	if handler == nil {
-		return fmt.Errorf("%w: runtime graph %s: node handler is nil", ErrInvalidGraph, g.Name())
+		return fmt.Errorf("%w: runtime graph %s: node handler is nil", ErrInvalid, g.Name())
 	}
 
 	normalized, err := normalizeGraphName("node", name)
@@ -233,7 +312,7 @@ func (g *RuntimeGraph[T]) Node(
 	if isGraphVirtualNodeName(normalized) {
 		return fmt.Errorf(
 			"%w: runtime graph %s: node name %s is reserved",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.Name(),
 			normalized,
 		)
@@ -256,18 +335,18 @@ func (g *RuntimeGraph[T]) Node(
 	defer g.mu.Unlock()
 
 	if g.frozen {
-		return ErrGraphFrozen
+		return ErrFrozen
 	}
 	if _, exists := g.nodes[normalized]; exists {
 		return fmt.Errorf(
 			"%w: runtime graph %s: node %s already exists",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			normalized,
 		)
 	}
 
-	g.nodes[normalized] = &graphNode[T]{
+	g.nodes[normalized] = &runtimeNode[T]{
 		name:             normalized,
 		handler:          handler,
 		exceptionHandler: config.exceptionHandler,
@@ -281,7 +360,7 @@ func (g *RuntimeGraph[T]) Node(
 // MustNode registers a runtime graph node or panics.
 func (g *RuntimeGraph[T]) MustNode(
 	name string,
-	handler EventHandler[T],
+	handler event.Handler[T],
 	opts ...RuntimeNodeOption[T],
 ) *RuntimeGraph[T] {
 	if err := g.Node(name, handler, opts...); err != nil {
@@ -298,7 +377,7 @@ func (g *RuntimeGraph[T]) Edge(
 	opts ...RuntimeEdgeOption[T],
 ) error {
 	if g == nil {
-		return fmt.Errorf("%w: runtime graph is nil", ErrInvalidGraph)
+		return fmt.Errorf("%w: runtime graph is nil", ErrInvalid)
 	}
 
 	normalizedFrom, err := normalizeGraphName("node", from)
@@ -327,13 +406,13 @@ func (g *RuntimeGraph[T]) Edge(
 	defer g.mu.Unlock()
 
 	if g.frozen {
-		return ErrGraphFrozen
+		return ErrFrozen
 	}
 	if err := g.validateEdgeLocked(normalizedFrom, normalizedTo); err != nil {
 		return err
 	}
 
-	var compiled BoolExpression
+	var compiled expression.BoolExpression
 	if config.hasExpression {
 		compiled, err = g.compiler.Compile(config.expression)
 		if err != nil {
@@ -341,7 +420,7 @@ func (g *RuntimeGraph[T]) Edge(
 		}
 	}
 
-	g.edges[GraphEdgeSnapshot{From: normalizedFrom, To: normalizedTo}] = &runtimeGraphEdge[T]{
+	g.edges[graph.EdgeSnapshot{From: normalizedFrom, To: normalizedTo}] = &runtimeGraphEdge[T]{
 		from:              normalizedFrom,
 		to:                normalizedTo,
 		condition:         config.condition,
@@ -370,7 +449,7 @@ func (g *RuntimeGraph[T]) validateEdgeLocked(from string, to string) error {
 		if isGraphVirtualNodeName(to) {
 			return fmt.Errorf(
 				"%w: runtime graph %s: invalid terminal edge %s -> %s",
-				ErrInvalidGraph,
+				ErrInvalid,
 				g.name,
 				from,
 				to,
@@ -379,7 +458,7 @@ func (g *RuntimeGraph[T]) validateEdgeLocked(from string, to string) error {
 		if _, exists := g.nodes[to]; !exists {
 			return fmt.Errorf(
 				"%w: runtime graph %s: edge %s -> %s references unknown node %s",
-				ErrInvalidGraph,
+				ErrInvalid,
 				g.name,
 				from,
 				to,
@@ -392,7 +471,7 @@ func (g *RuntimeGraph[T]) validateEdgeLocked(from string, to string) error {
 	if isGraphEndNodeName(from) || isGraphStartNodeName(to) {
 		return fmt.Errorf(
 			"%w: runtime graph %s: invalid terminal edge %s -> %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			from,
 			to,
@@ -402,7 +481,7 @@ func (g *RuntimeGraph[T]) validateEdgeLocked(from string, to string) error {
 		if _, exists := g.nodes[from]; !exists {
 			return fmt.Errorf(
 				"%w: runtime graph %s: edge %s -> %s references unknown node %s",
-				ErrInvalidGraph,
+				ErrInvalid,
 				g.name,
 				from,
 				to,
@@ -415,7 +494,7 @@ func (g *RuntimeGraph[T]) validateEdgeLocked(from string, to string) error {
 	if from == to {
 		return fmt.Errorf(
 			"%w: runtime graph %s: self edge %s -> %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			from,
 			to,
@@ -424,7 +503,7 @@ func (g *RuntimeGraph[T]) validateEdgeLocked(from string, to string) error {
 	if _, exists := g.nodes[from]; !exists {
 		return fmt.Errorf(
 			"%w: runtime graph %s: edge %s -> %s references unknown node %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			from,
 			to,
@@ -434,7 +513,7 @@ func (g *RuntimeGraph[T]) validateEdgeLocked(from string, to string) error {
 	if _, exists := g.nodes[to]; !exists {
 		return fmt.Errorf(
 			"%w: runtime graph %s: edge %s -> %s references unknown node %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			from,
 			to,
@@ -448,7 +527,7 @@ func (g *RuntimeGraph[T]) validateEdgeLocked(from string, to string) error {
 // Validate checks whether the runtime graph can be scheduled.
 func (g *RuntimeGraph[T]) Validate() error {
 	if g == nil {
-		return fmt.Errorf("%w: runtime graph is nil", ErrInvalidGraph)
+		return fmt.Errorf("%w: runtime graph is nil", ErrInvalid)
 	}
 
 	g.mu.RLock()
@@ -459,12 +538,12 @@ func (g *RuntimeGraph[T]) Validate() error {
 
 func (g *RuntimeGraph[T]) validateLocked() error {
 	if len(g.nodes) == 0 {
-		return fmt.Errorf("%w: runtime graph %s: no nodes", ErrInvalidGraph, g.name)
+		return fmt.Errorf("%w: runtime graph %s: no nodes", ErrInvalid, g.name)
 	}
 	if cycle := g.findCycleLocked(); len(cycle) > 0 {
 		return fmt.Errorf(
 			"%w: runtime graph %s: cycle detected: %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			strings.Join(cycle, " -> "),
 		)
@@ -473,15 +552,15 @@ func (g *RuntimeGraph[T]) validateLocked() error {
 	publicSnapshot := g.snapshotLocked()
 	processingSnapshot := g.processingSnapshotLocked()
 	if len(publicSnapshot.Entries) == 0 {
-		return fmt.Errorf("%w: runtime graph %s: no explicit entry edges", ErrInvalidGraph, g.name)
+		return fmt.Errorf("%w: runtime graph %s: no explicit entry edges", ErrInvalid, g.name)
 	}
 	if len(publicSnapshot.Exits) == 0 {
-		return fmt.Errorf("%w: runtime graph %s: no explicit exit edges", ErrInvalidGraph, g.name)
+		return fmt.Errorf("%w: runtime graph %s: no explicit exit edges", ErrInvalid, g.name)
 	}
 	if !sameStringSet(publicSnapshot.Entries, publicSnapshot.Sources) {
 		return fmt.Errorf(
 			"%w: runtime graph %s: entries must match sources: entries=%v sources=%v",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			publicSnapshot.Entries,
 			publicSnapshot.Sources,
@@ -490,7 +569,7 @@ func (g *RuntimeGraph[T]) validateLocked() error {
 	if !sameStringSet(publicSnapshot.Exits, publicSnapshot.Leaves) {
 		return fmt.Errorf(
 			"%w: runtime graph %s: exits must match leaves: exits=%v leaves=%v",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			publicSnapshot.Exits,
 			publicSnapshot.Leaves,
@@ -499,7 +578,7 @@ func (g *RuntimeGraph[T]) validateLocked() error {
 	if unreachable := graphUnreachableNodes(processingSnapshot, publicSnapshot.Entries); len(unreachable) > 0 {
 		return fmt.Errorf(
 			"%w: runtime graph %s: nodes are not reachable from START: %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			strings.Join(unreachable, ", "),
 		)
@@ -507,7 +586,7 @@ func (g *RuntimeGraph[T]) validateLocked() error {
 	if blocked := graphNodesCannotReachExits(processingSnapshot, publicSnapshot.Exits); len(blocked) > 0 {
 		return fmt.Errorf(
 			"%w: runtime graph %s: nodes cannot reach END: %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			strings.Join(blocked, ", "),
 		)
@@ -566,7 +645,7 @@ func (g *RuntimeGraph[T]) findCycleLocked() []string {
 type RuntimeGraphSnapshot struct {
 	Name    string
 	Frozen  bool
-	Nodes   []GraphNodeSnapshot
+	Nodes   []graph.NodeSnapshot
 	Edges   []RuntimeGraphEdgeSnapshot
 	Sources []string
 	Leaves  []string
@@ -600,10 +679,10 @@ func (g *RuntimeGraph[T]) snapshotLocked() RuntimeGraphSnapshot {
 	}
 
 	startEdges, endEdges, entries, exits := g.terminalEdgeSnapshotsLocked()
-	nodes := make([]GraphNodeSnapshot, 0, len(processing.Nodes)+2)
-	nodes = append(nodes, GraphNodeSnapshot{Name: GraphStartNode, Label: GraphStartNode})
+	nodes := make([]graph.NodeSnapshot, 0, len(processing.Nodes)+2)
+	nodes = append(nodes, graph.NodeSnapshot{Name: graph.StartNode, Label: graph.StartNode})
 	nodes = append(nodes, processing.Nodes...)
-	nodes = append(nodes, GraphNodeSnapshot{Name: GraphEndNode, Label: GraphEndNode})
+	nodes = append(nodes, graph.NodeSnapshot{Name: graph.EndNode, Label: graph.EndNode})
 
 	edges := make([]RuntimeGraphEdgeSnapshot, 0, len(startEdges)+len(processing.Edges)+len(endEdges))
 	edges = append(edges, startEdges...)
@@ -622,10 +701,10 @@ func (g *RuntimeGraph[T]) snapshotLocked() RuntimeGraphSnapshot {
 	}
 }
 
-func (g *RuntimeGraph[T]) processingSnapshotLocked() GraphSnapshot {
-	nodes := make([]GraphNodeSnapshot, 0, len(g.nodes))
+func (g *RuntimeGraph[T]) processingSnapshotLocked() graph.Snapshot {
+	nodes := make([]graph.NodeSnapshot, 0, len(g.nodes))
 	for _, node := range g.nodes {
-		nodes = append(nodes, GraphNodeSnapshot{
+		nodes = append(nodes, graph.NodeSnapshot{
 			Name:     node.name,
 			Label:    node.label,
 			Metadata: copyStringMap(node.metadata),
@@ -635,7 +714,7 @@ func (g *RuntimeGraph[T]) processingSnapshotLocked() GraphSnapshot {
 		return nodes[i].Name < nodes[j].Name
 	})
 
-	edges := make([]GraphEdgeSnapshot, 0, len(g.edges))
+	edges := make([]graph.EdgeSnapshot, 0, len(g.edges))
 	for edge := range g.edges {
 		if isGraphTerminalEdge(edge) {
 			continue
@@ -645,7 +724,7 @@ func (g *RuntimeGraph[T]) processingSnapshotLocked() GraphSnapshot {
 	sortEdges(edges)
 	sources, leaves := graphTerminals(nodes, edges)
 
-	return GraphSnapshot{
+	return graph.Snapshot{
 		Name:    g.name,
 		Frozen:  g.frozen,
 		Nodes:   nodes,
@@ -667,10 +746,10 @@ func (g *RuntimeGraph[T]) terminalEdgeSnapshotsLocked() (
 	exits := make([]string, 0)
 	for key, edge := range g.edges {
 		switch {
-		case key.From == GraphStartNode && !isGraphVirtualNodeName(key.To):
+		case key.From == graph.StartNode && !isGraphVirtualNodeName(key.To):
 			startEdges = append(startEdges, edge.snapshot())
 			entries = append(entries, key.To)
-		case key.To == GraphEndNode && !isGraphVirtualNodeName(key.From):
+		case key.To == graph.EndNode && !isGraphVirtualNodeName(key.From):
 			endEdges = append(endEdges, edge.snapshot())
 			exits = append(exits, key.From)
 		}
@@ -684,8 +763,8 @@ func (g *RuntimeGraph[T]) terminalEdgeSnapshotsLocked() (
 }
 
 func runtimeEdgeSnapshotsFromGraphEdges[T any](
-	edges []GraphEdgeSnapshot,
-	edgeByKey map[GraphEdgeSnapshot]*runtimeGraphEdge[T],
+	edges []graph.EdgeSnapshot,
+	edgeByKey map[graph.EdgeSnapshot]*runtimeGraphEdge[T],
 ) []RuntimeGraphEdgeSnapshot {
 	snapshots := make([]RuntimeGraphEdgeSnapshot, 0, len(edges))
 	for _, edge := range edges {
@@ -696,11 +775,11 @@ func runtimeEdgeSnapshotsFromGraphEdges[T any](
 }
 
 func runtimeSnapshotFromProcessing(
-	processing GraphSnapshot,
+	processing graph.Snapshot,
 	edges []RuntimeGraphEdgeSnapshot,
 	entries []string,
 	exits []string,
-	nodes []GraphNodeSnapshot,
+	nodes []graph.NodeSnapshot,
 ) RuntimeGraphSnapshot {
 	if nodes == nil {
 		nodes = processing.Nodes

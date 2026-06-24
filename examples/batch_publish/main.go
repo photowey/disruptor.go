@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/photowey/disruptor.go/pkg/event"
 	"strings"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
@@ -36,7 +37,7 @@ type batchHandler struct {
 	values chan<- int64
 }
 
-func (h batchHandler) OnEvent(request disruptor.EventRequest[batchEvent]) error {
+func (h batchHandler) OnEvent(request event.Request[batchEvent]) error {
 	h.values <- request.Event.Value
 	return nil
 }

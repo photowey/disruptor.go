@@ -12,55 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package event
 
 import (
 	"context"
 	"fmt"
 	"sync"
 )
-
-// EventHandler consumes events produced by the ring buffer.
-type EventHandler[T any] interface {
-	OnEvent(request EventRequest[T]) error
-}
-
-// EventHandlerFunc adapts a function to the EventHandler interface.
-type EventHandlerFunc[T any] func(request EventRequest[T]) error
-
-// OnEvent calls the wrapped handler function.
-func (fn EventHandlerFunc[T]) OnEvent(request EventRequest[T]) error {
-	return fn(request)
-}
-
-// EventRequest provides the current event, sequence, and batch context.
-type EventRequest[T any] struct {
-	Context    context.Context
-	Event      *T
-	Sequence   int64
-	EndOfBatch bool
-	Node       NodeContext
-	Runtime    RuntimeContext
-}
-
-// BatchStartHandler is notified before a batch of events is processed.
-type BatchStartHandler interface {
-	OnBatchStart(request BatchStartRequest) error
-}
-
-// BatchStartRequest describes the batch that is about to be processed.
-type BatchStartRequest struct {
-	Context    context.Context
-	BatchSize  int64
-	QueueDepth int64
-	Node       NodeContext
-}
-
-// LifecycleHandler observes processor start and shutdown transitions.
-type LifecycleHandler interface {
-	OnStart(ctx context.Context) error
-	OnShutdown(ctx context.Context) error
-}
 
 // ExceptionAction defines how a processor should react to a failure.
 type ExceptionAction uint8
@@ -78,34 +36,34 @@ const (
 
 // ExceptionHandler decides how event and lifecycle failures are handled.
 type ExceptionHandler[T any] interface {
-	HandleEventException(request EventException[T]) ExceptionAction
+	HandleEventException(request Exception[T]) ExceptionAction
 	HandleStartException(request LifecycleException) ExceptionAction
 	HandleShutdownException(request LifecycleException) ExceptionAction
 }
 
-// EventException reports an event handling failure.
-type EventException[T any] struct {
+// Exception reports an event handling failure.
+type Exception[T any] struct {
 	Context  context.Context
 	Event    *T
 	Sequence int64
 	Err      error
-	Node     NodeContext
+	Node     Node
 }
 
 // LifecycleException reports a start or shutdown failure.
 type LifecycleException struct {
 	Context context.Context
 	Err     error
-	Node    NodeContext
+	Node    Node
 }
 
 type exceptionHandlerFunc[T any] struct {
-	handleEvent    func(EventException[T]) ExceptionAction
+	handleEvent    func(Exception[T]) ExceptionAction
 	handleStart    func(LifecycleException) ExceptionAction
 	handleShutdown func(LifecycleException) ExceptionAction
 }
 
-func (f exceptionHandlerFunc[T]) HandleEventException(request EventException[T]) ExceptionAction {
+func (f exceptionHandlerFunc[T]) HandleEventException(request Exception[T]) ExceptionAction {
 	if f.handleEvent == nil {
 		return ExceptionActionHalt
 	}
@@ -129,48 +87,10 @@ func (f exceptionHandlerFunc[T]) HandleShutdownException(request LifecycleExcept
 	return f.handleShutdown(request)
 }
 
-// ProcessorOption configures a batch event processor.
-type ProcessorOption[T any] interface {
-	applyProcessor(config *processorConfig[T]) error
-}
-
-type processorConfig[T any] struct {
-	exceptionHandler ExceptionHandler[T]
-}
-
-type processorOptionFunc[T any] struct {
-	applyFunc func(*processorConfig[T]) error
-}
-
-//nolint:unused // The method satisfies ProcessorOption[T] and is called through the interface.
-func (fn processorOptionFunc[T]) applyProcessor(config *processorConfig[T]) error {
-	return fn.applyFunc(config)
-}
-
-// WithExceptionHandler sets the processor exception handler.
-func WithExceptionHandler[T any](handler ExceptionHandler[T]) ProcessorOption[T] {
-	return processorOptionFunc[T]{
-		applyFunc: func(config *processorConfig[T]) error {
-			if handler == nil {
-				return fmt.Errorf("disruptor: exception handler is nil")
-			}
-
-			config.exceptionHandler = handler
-			return nil
-		},
-	}
-}
-
-func defaultProcessorConfig[T any]() processorConfig[T] {
-	return processorConfig[T]{
-		exceptionHandler: NewFatalExceptionHandler[T](),
-	}
-}
-
 // NewFatalExceptionHandler returns a handler that halts on every failure.
 func NewFatalExceptionHandler[T any]() ExceptionHandler[T] {
 	return exceptionHandlerFunc[T]{
-		handleEvent: func(EventException[T]) ExceptionAction {
+		handleEvent: func(Exception[T]) ExceptionAction {
 			return ExceptionActionHalt
 		},
 		handleStart: func(LifecycleException) ExceptionAction {
@@ -185,7 +105,7 @@ func NewFatalExceptionHandler[T any]() ExceptionHandler[T] {
 // NewIgnoreExceptionHandler returns a handler that continues after failures.
 func NewIgnoreExceptionHandler[T any]() ExceptionHandler[T] {
 	return exceptionHandlerFunc[T]{
-		handleEvent: func(EventException[T]) ExceptionAction {
+		handleEvent: func(Exception[T]) ExceptionAction {
 			return ExceptionActionContinue
 		},
 		handleStart: func(LifecycleException) ExceptionAction {
@@ -211,10 +131,10 @@ func NewRetryExceptionHandler[T any](
 	exhaustedAction ExceptionAction,
 ) (*RetryExceptionHandler[T], error) {
 	if maxRetries < 0 {
-		return nil, fmt.Errorf("disruptor: max retries must be non-negative")
+		return nil, fmt.Errorf("event: max retries must be non-negative")
 	}
 	if exhaustedAction == ExceptionActionUnknown || exhaustedAction == ExceptionActionRetry {
-		return nil, fmt.Errorf("disruptor: invalid exhausted retry action")
+		return nil, fmt.Errorf("event: invalid exhausted retry action")
 	}
 
 	return &RetryExceptionHandler[T]{
@@ -226,7 +146,7 @@ func NewRetryExceptionHandler[T any](
 
 // HandleEventException returns retry until the configured retry budget is exhausted.
 func (h *RetryExceptionHandler[T]) HandleEventException(
-	request EventException[T],
+	request Exception[T],
 ) ExceptionAction {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -255,7 +175,8 @@ func (h *RetryExceptionHandler[T]) HandleShutdownException(
 	return ExceptionActionHalt
 }
 
-func (h *RetryExceptionHandler[T]) resetRetry(sequence int64) {
+// ResetRetry clears retry state after a sequence succeeds.
+func (h *RetryExceptionHandler[T]) ResetRetry(sequence int64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 

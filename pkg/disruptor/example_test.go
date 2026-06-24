@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
 )
 
 type exampleEvent struct {
@@ -36,7 +37,7 @@ type exampleEventHandler struct {
 }
 
 func (h exampleEventHandler) OnEvent(
-	request disruptor.EventRequest[exampleEvent],
+	request event.Request[exampleEvent],
 ) error {
 	h.done <- request.Event.Value
 	return nil

@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/photowey/disruptor.go/pkg/event"
 	"sync/atomic"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
@@ -55,7 +56,7 @@ type signalHandler struct {
 	done chan<- struct{}
 }
 
-func (h signalHandler) OnEvent(request disruptor.EventRequest[metricEvent]) error {
+func (h signalHandler) OnEvent(request event.Request[metricEvent]) error {
 	h.done <- struct{}{}
 	return nil
 }

@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/photowey/disruptor.go/pkg/event"
 	"sort"
 	"strings"
 
@@ -38,7 +39,7 @@ type orderHandler struct {
 	results chan<- string
 }
 
-func (h orderHandler) OnEvent(request disruptor.EventRequest[orderEvent]) error {
+func (h orderHandler) OnEvent(request event.Request[orderEvent]) error {
 	h.results <- fmt.Sprintf("%s:%d", h.name, request.Event.ID)
 	return nil
 }

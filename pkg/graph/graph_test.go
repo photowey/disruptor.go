@@ -12,25 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor_test
+package graph
 
 import (
 	"errors"
 	"strings"
 	"testing"
 
-	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
 )
 
 func TestNewGraphValidatesName(t *testing.T) {
-	if _, err := disruptor.NewGraph[longEvent](" "); !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("empty name error = %v, want ErrInvalidGraph", err)
+	if _, err := New[longEvent](" "); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty name error = %v, want graph.ErrInvalid", err)
 	}
-	if _, err := disruptor.NewGraph[longEvent]("bad\nname"); !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("control character name error = %v, want ErrInvalidGraph", err)
+	if _, err := New[longEvent]("bad\nname"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("control character name error = %v, want graph.ErrInvalid", err)
 	}
 
-	graph, err := disruptor.NewGraph[longEvent](" orders ")
+	graph, err := New[longEvent](" orders ")
 	if err != nil {
 		t.Fatalf("new graph: %v", err)
 	}
@@ -40,10 +40,10 @@ func TestNewGraphValidatesName(t *testing.T) {
 
 	defer func() {
 		if recovered := recover(); recovered == nil {
-			t.Fatal("expected MustGraph to panic")
+			t.Fatal("expected Must to panic")
 		}
 	}()
-	_ = disruptor.MustGraph[longEvent]("")
+	_ = Must[longEvent]("")
 }
 
 func TestGraphNodeValidatesNameAndHandler(t *testing.T) {
@@ -53,14 +53,14 @@ func TestGraphNodeValidatesNameAndHandler(t *testing.T) {
 	if err := graph.Node(" validate ", handler); err != nil {
 		t.Fatalf("node: %v", err)
 	}
-	if err := graph.Node("validate", handler); !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("duplicate node error = %v, want ErrInvalidGraph", err)
+	if err := graph.Node("validate", handler); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("duplicate node error = %v, want graph.ErrInvalid", err)
 	}
-	if err := graph.Node("bad\nnode", handler); !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("control character node error = %v, want ErrInvalidGraph", err)
+	if err := graph.Node("bad\nnode", handler); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("control character node error = %v, want graph.ErrInvalid", err)
 	}
-	if err := graph.Node("missing-handler", nil); !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("nil handler error = %v, want ErrInvalidGraph", err)
+	if err := graph.Node("missing-handler", nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("nil handler error = %v, want graph.ErrInvalid", err)
 	}
 
 	snapshot := graph.Snapshot()
@@ -76,11 +76,11 @@ func TestGraphNodeRejectsReservedVirtualNames(t *testing.T) {
 	graph := mustTestGraph(t, "orders")
 	handler := graphNoopHandler{}
 
-	if err := graph.Node(disruptor.GraphStartNode, handler); !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("start node error = %v, want ErrInvalidGraph", err)
+	if err := graph.Node(StartNode, handler); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("start node error = %v, want graph.ErrInvalid", err)
 	}
-	if err := graph.Node(disruptor.GraphEndNode, handler); !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("end node error = %v, want ErrInvalidGraph", err)
+	if err := graph.Node(EndNode, handler); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("end node error = %v, want graph.ErrInvalid", err)
 	}
 }
 
@@ -95,11 +95,11 @@ func TestGraphEdgeValidatesEndpoints(t *testing.T) {
 	if err := graph.Edge("A", "B"); err != nil {
 		t.Fatalf("duplicate edge should be idempotent: %v", err)
 	}
-	if err := graph.Edge("A", "A"); !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("self edge error = %v, want ErrInvalidGraph", err)
+	if err := graph.Edge("A", "A"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("self edge error = %v, want graph.ErrInvalid", err)
 	}
-	if err := graph.Edge("A", "missing"); !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("unknown target error = %v, want ErrInvalidGraph", err)
+	if err := graph.Edge("A", "missing"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unknown target error = %v, want graph.ErrInvalid", err)
 	}
 
 	snapshot := graph.Snapshot()
@@ -115,12 +115,12 @@ func TestGraphEdgeAllowsExplicitTerminalEdges(t *testing.T) {
 	graph := mustTestGraph(t, "orders")
 	graph.MustNode("A", graphNoopHandler{}).
 		MustNode("B", graphNoopHandler{}).
-		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge(StartNode, "A").
 		MustEdge("A", "B").
-		MustEdge("B", disruptor.GraphEndNode)
+		MustEdge("B", EndNode)
 
 	snapshot := graph.Snapshot()
-	wantNodes := []string{disruptor.GraphStartNode, "A", "B", disruptor.GraphEndNode}
+	wantNodes := []string{StartNode, "A", "B", EndNode}
 	if len(snapshot.Nodes) != len(wantNodes) {
 		t.Fatalf("node count = %d, want %d: %+v", len(snapshot.Nodes), len(wantNodes), snapshot.Nodes)
 	}
@@ -130,10 +130,10 @@ func TestGraphEdgeAllowsExplicitTerminalEdges(t *testing.T) {
 		}
 	}
 
-	wantEdges := []disruptor.GraphEdgeSnapshot{
-		{From: disruptor.GraphStartNode, To: "A"},
+	wantEdges := []EdgeSnapshot{
+		{From: StartNode, To: "A"},
 		{From: "A", To: "B"},
-		{From: "B", To: disruptor.GraphEndNode},
+		{From: "B", To: EndNode},
 	}
 	if len(snapshot.Edges) != len(wantEdges) {
 		t.Fatalf("edge count = %d, want %d: %+v", len(snapshot.Edges), len(wantEdges), snapshot.Edges)
@@ -160,20 +160,20 @@ func TestGraphEdgeRejectsInvalidTerminalEdges(t *testing.T) {
 		from string
 		to   string
 	}{
-		{name: "start to end", from: disruptor.GraphStartNode, to: disruptor.GraphEndNode},
-		{name: "start to start", from: disruptor.GraphStartNode, to: disruptor.GraphStartNode},
-		{name: "end to end", from: disruptor.GraphEndNode, to: disruptor.GraphEndNode},
-		{name: "real to start", from: "A", to: disruptor.GraphStartNode},
-		{name: "end to real", from: disruptor.GraphEndNode, to: "A"},
-		{name: "end to start", from: disruptor.GraphEndNode, to: disruptor.GraphStartNode},
-		{name: "start to missing", from: disruptor.GraphStartNode, to: "missing"},
-		{name: "missing to end", from: "missing", to: disruptor.GraphEndNode},
+		{name: "start to end", from: StartNode, to: EndNode},
+		{name: "start to start", from: StartNode, to: StartNode},
+		{name: "end to end", from: EndNode, to: EndNode},
+		{name: "real to start", from: "A", to: StartNode},
+		{name: "end to real", from: EndNode, to: "A"},
+		{name: "end to start", from: EndNode, to: StartNode},
+		{name: "start to missing", from: StartNode, to: "missing"},
+		{name: "missing to end", from: "missing", to: EndNode},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := graph.Edge(tc.from, tc.to)
-			if !errors.Is(err, disruptor.ErrInvalidGraph) {
-				t.Fatalf("edge error = %v, want ErrInvalidGraph", err)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("edge error = %v, want graph.ErrInvalid", err)
 			}
 		})
 	}
@@ -189,15 +189,15 @@ func TestGraphJoinExpandsEdges(t *testing.T) {
 	if err := graph.Join("A", "B").To("C", "D"); err != nil {
 		t.Fatalf("join to: %v", err)
 	}
-	if err := graph.Join().To("C"); !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("empty join sources error = %v, want ErrInvalidGraph", err)
+	if err := graph.Join().To("C"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty join sources error = %v, want graph.ErrInvalid", err)
 	}
-	if err := graph.Join("A").To(); !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("empty join targets error = %v, want ErrInvalidGraph", err)
+	if err := graph.Join("A").To(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty join targets error = %v, want graph.ErrInvalid", err)
 	}
 
 	got := realGraphEdges(graph.Snapshot().Edges)
-	want := []disruptor.GraphEdgeSnapshot{
+	want := []EdgeSnapshot{
 		{From: "A", To: "C"},
 		{From: "A", To: "D"},
 		{From: "B", To: "C"},
@@ -223,8 +223,8 @@ func TestGraphValidateRejectsCycles(t *testing.T) {
 		MustEdge("C", "A")
 
 	err := graph.Validate()
-	if !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("validate error = %v, want ErrInvalidGraph", err)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("validate error = %v, want graph.ErrInvalid", err)
 	}
 	if !strings.Contains(err.Error(), "A -> B -> C -> A") {
 		t.Fatalf("cycle error = %q, want cycle path", err)
@@ -238,8 +238,8 @@ func TestGraphValidateRejectsMissingExplicitTerminals(t *testing.T) {
 		MustEdge("A", "B")
 
 	err := graph.Validate()
-	if !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("validate error = %v, want ErrInvalidGraph", err)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("validate error = %v, want graph.ErrInvalid", err)
 	}
 	if !strings.Contains(err.Error(), "entry") {
 		t.Fatalf("validate error = %q, want entry message", err)
@@ -250,13 +250,13 @@ func TestGraphValidateRejectsEntrySourceMismatch(t *testing.T) {
 	graph := mustTestGraph(t, "entry-mismatch")
 	graph.MustNode("A", graphNoopHandler{}).
 		MustNode("B", graphNoopHandler{}).
-		MustEdge(disruptor.GraphStartNode, "B").
+		MustEdge(StartNode, "B").
 		MustEdge("A", "B").
-		MustEdge("B", disruptor.GraphEndNode)
+		MustEdge("B", EndNode)
 
 	err := graph.Validate()
-	if !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("validate error = %v, want ErrInvalidGraph", err)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("validate error = %v, want graph.ErrInvalid", err)
 	}
 	if !strings.Contains(err.Error(), "entries must match sources") {
 		t.Fatalf("validate error = %q, want entry/source mismatch", err)
@@ -267,13 +267,13 @@ func TestGraphValidateRejectsExitLeafMismatch(t *testing.T) {
 	graph := mustTestGraph(t, "exit-mismatch")
 	graph.MustNode("A", graphNoopHandler{}).
 		MustNode("B", graphNoopHandler{}).
-		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge(StartNode, "A").
 		MustEdge("A", "B").
-		MustEdge("A", disruptor.GraphEndNode)
+		MustEdge("A", EndNode)
 
 	err := graph.Validate()
-	if !errors.Is(err, disruptor.ErrInvalidGraph) {
-		t.Fatalf("validate error = %v, want ErrInvalidGraph", err)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("validate error = %v, want graph.ErrInvalid", err)
 	}
 	if !strings.Contains(err.Error(), "exits must match leaves") {
 		t.Fatalf("validate error = %q, want exit/leaf mismatch", err)
@@ -283,8 +283,8 @@ func TestGraphValidateRejectsExitLeafMismatch(t *testing.T) {
 func TestGraphValidateAcceptsSingleExplicitTerminalNode(t *testing.T) {
 	single := mustTestGraph(t, "single")
 	single.MustNode("A", graphNoopHandler{}).
-		MustEdge(disruptor.GraphStartNode, "A").
-		MustEdge("A", disruptor.GraphEndNode)
+		MustEdge(StartNode, "A").
+		MustEdge("A", EndNode)
 	if err := single.Validate(); err != nil {
 		t.Fatalf("single-node graph validate: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestGraphValidateAcceptsSingleExplicitTerminalNode(t *testing.T) {
 
 func TestGraphSnapshotIsDeterministicAndDefensive(t *testing.T) {
 	graph := mustTestGraph(t, "orders")
-	graph.MustNode("B", graphNoopHandler{}, disruptor.WithNodeMetadata[longEvent]("role", "middle")).
+	graph.MustNode("B", graphNoopHandler{}, WithNodeMetadata[longEvent]("role", "middle")).
 		MustNode("A", graphNoopHandler{}).
 		MustNode("C", graphNoopHandler{}).
 		MustEdge("A", "B").
@@ -320,12 +320,12 @@ func TestGraphSnapshotIncludesVirtualTerminals(t *testing.T) {
 	graph := mustTestGraph(t, "orders")
 	graph.MustNode("A", graphNoopHandler{}).
 		MustNode("B", graphNoopHandler{}).
-		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge(StartNode, "A").
 		MustEdge("A", "B").
-		MustEdge("B", disruptor.GraphEndNode)
+		MustEdge("B", EndNode)
 
 	snapshot := graph.Snapshot()
-	wantNodes := []string{disruptor.GraphStartNode, "A", "B", disruptor.GraphEndNode}
+	wantNodes := []string{StartNode, "A", "B", EndNode}
 	if len(snapshot.Nodes) != len(wantNodes) {
 		t.Fatalf("node count = %d, want %d: %+v", len(snapshot.Nodes), len(wantNodes), snapshot.Nodes)
 	}
@@ -335,10 +335,10 @@ func TestGraphSnapshotIncludesVirtualTerminals(t *testing.T) {
 		}
 	}
 
-	wantEdges := []disruptor.GraphEdgeSnapshot{
-		{From: disruptor.GraphStartNode, To: "A"},
+	wantEdges := []EdgeSnapshot{
+		{From: StartNode, To: "A"},
 		{From: "A", To: "B"},
-		{From: "B", To: disruptor.GraphEndNode},
+		{From: "B", To: EndNode},
 	}
 	if len(snapshot.Edges) != len(wantEdges) {
 		t.Fatalf("edge count = %d, want %d: %+v", len(snapshot.Edges), len(wantEdges), snapshot.Edges)
@@ -400,10 +400,10 @@ func TestGraphMermaidAndDOTIncludeVirtualTerminals(t *testing.T) {
 	}
 }
 
-func mustTestGraph(t *testing.T, name string) *disruptor.Graph[longEvent] {
+func mustTestGraph(t *testing.T, name string) *Graph[longEvent] {
 	t.Helper()
 
-	graph, err := disruptor.NewGraph[longEvent](name)
+	graph, err := New[longEvent](name)
 	if err != nil {
 		t.Fatalf("new graph: %v", err)
 	}
@@ -411,10 +411,10 @@ func mustTestGraph(t *testing.T, name string) *disruptor.Graph[longEvent] {
 	return graph
 }
 
-func realGraphEdges(edges []disruptor.GraphEdgeSnapshot) []disruptor.GraphEdgeSnapshot {
-	real := make([]disruptor.GraphEdgeSnapshot, 0, len(edges))
+func realGraphEdges(edges []EdgeSnapshot) []EdgeSnapshot {
+	real := make([]EdgeSnapshot, 0, len(edges))
 	for _, edge := range edges {
-		if edge.From == disruptor.GraphStartNode || edge.To == disruptor.GraphEndNode {
+		if edge.From == StartNode || edge.To == EndNode {
 			continue
 		}
 		real = append(real, edge)
@@ -425,6 +425,10 @@ func realGraphEdges(edges []disruptor.GraphEdgeSnapshot) []disruptor.GraphEdgeSn
 
 type graphNoopHandler struct{}
 
-func (graphNoopHandler) OnEvent(request disruptor.EventRequest[longEvent]) error {
+func (graphNoopHandler) OnEvent(request event.Request[longEvent]) error {
 	return nil
+}
+
+type longEvent struct {
+	Value int64
 }

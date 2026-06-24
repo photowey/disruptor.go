@@ -12,11 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package disruptor provides a Go implementation of the Disruptor pattern for
-// high-throughput in-process event exchange.
-//
-// The package exposes a generic preallocated ring buffer, cancellable producer
-// sequencing, batch event processors, wait strategies, and backend-neutral
-// metrics hooks. Handler contracts live in pkg/event; static and runtime graph
-// builders live in pkg/graph and pkg/runtimegraph.
-package disruptor
+// Package event defines the public handler, request, lifecycle, and exception
+// contracts shared by the ring buffer processors and graph schedulers.
+package event

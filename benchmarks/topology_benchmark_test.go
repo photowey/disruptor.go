@@ -17,6 +17,8 @@ package benchmarks
 import (
 	"context"
 	"errors"
+	"github.com/photowey/disruptor.go/pkg/event"
+	topology "github.com/photowey/disruptor.go/pkg/graph"
 	"sync/atomic"
 	"testing"
 
@@ -86,44 +88,44 @@ func benchmarkGraphTopology(b *testing.B, shape string) {
 func newBenchmarkGraph(
 	shape string,
 	processed *atomic.Int64,
-) (*disruptor.Graph[benchEvent], int) {
+) (*topology.Graph[benchEvent], int) {
 	handler := graphBenchHandler{processed: processed}
 	switch shape {
 	case "single_node":
-		return disruptor.MustGraph[benchEvent]("single-node").
+		return topology.Must[benchEvent]("single-node").
 			MustNode("A", handler).
-			MustEdge(disruptor.GraphStartNode, "A").
-			MustEdge("A", disruptor.GraphEndNode), 1
+			MustEdge(topology.StartNode, "A").
+			MustEdge("A", topology.EndNode), 1
 	case "pipeline":
-		return disruptor.MustGraph[benchEvent]("pipeline").
+		return topology.Must[benchEvent]("pipeline").
 			MustNode("A", handler).
 			MustNode("B", handler).
 			MustNode("C", handler).
-			MustEdge(disruptor.GraphStartNode, "A").
+			MustEdge(topology.StartNode, "A").
 			MustEdge("A", "B").
 			MustEdge("B", "C").
-			MustEdge("C", disruptor.GraphEndNode), 3
+			MustEdge("C", topology.EndNode), 3
 	case "fan_in":
-		graph := disruptor.MustGraph[benchEvent]("fan-in").
+		graph := topology.Must[benchEvent]("fan-in").
 			MustNode("A", handler).
 			MustNode("B", handler).
 			MustNode("C", handler).
-			MustEdge(disruptor.GraphStartNode, "A").
-			MustEdge(disruptor.GraphStartNode, "B").
-			MustEdge("C", disruptor.GraphEndNode)
+			MustEdge(topology.StartNode, "A").
+			MustEdge(topology.StartNode, "B").
+			MustEdge("C", topology.EndNode)
 		graph.Join("A", "B").MustTo("C")
 		return graph, 3
 	case "diamond":
-		graph := disruptor.MustGraph[benchEvent]("diamond").
+		graph := topology.Must[benchEvent]("diamond").
 			MustNode("A", handler).
 			MustNode("B", handler).
 			MustNode("C", handler).
 			MustNode("D", handler).
-			MustEdge(disruptor.GraphStartNode, "A").
+			MustEdge(topology.StartNode, "A").
 			MustEdge("A", "B").
 			MustEdge("A", "C")
 		graph.Join("B", "C").MustTo("D")
-		graph.MustEdge("D", disruptor.GraphEndNode)
+		graph.MustEdge("D", topology.EndNode)
 		return graph, 4
 	default:
 		panic("unknown graph benchmark shape: " + shape)
@@ -134,7 +136,7 @@ type graphBenchHandler struct {
 	processed *atomic.Int64
 }
 
-func (h graphBenchHandler) OnEvent(request disruptor.EventRequest[benchEvent]) error {
+func (h graphBenchHandler) OnEvent(request event.Request[benchEvent]) error {
 	benchmarkValueSink.Store(request.Event.Value)
 	h.processed.Add(1)
 	return nil

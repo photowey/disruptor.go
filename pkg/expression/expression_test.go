@@ -17,7 +17,7 @@ package expression
 import (
 	"testing"
 
-	runtimevars "github.com/photowey/disruptor.go/internal/runtimevars"
+	runtimevars "github.com/photowey/disruptor.go/pkg/runtimevars"
 )
 
 func TestExpressionEvaluatesPathsComparisonsAndBitwise(t *testing.T) {

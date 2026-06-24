@@ -43,7 +43,7 @@ This design extends V1.1 graph support in two phases:
 
 V1.2.0 standardizes graph terminal semantics:
 
-- `GraphStartNode` and `GraphEndNode` remain the exported constants for `START`
+- `graph.StartNode` and `graph.EndNode` are the exported constants for `START`
   and `END`.
 - `START` and `END` are built-in virtual nodes.
 - Developers do not register handlers for `START` or `END`.
@@ -62,14 +62,14 @@ flowchart TB
     D --> StaticGraph["HandleGraph"]
     D --> RuntimeGraphMode["HandleRuntimeGraph"]
     Fanout --> Batch["BatchEventProcessor[T]"]
-    StaticGraph --> Graph["Graph[T]"]
+    StaticGraph --> Graph["graph.Graph[T]"]
     StaticGraph --> GraphProcessors["GraphProcessors"]
-    RuntimeGraphMode --> RG["RuntimeGraph[T]"]
+    RuntimeGraphMode --> RG["runtimegraph.RuntimeGraph[T]"]
     RuntimeGraphMode --> Scheduler["runtime graph scheduler"]
     RG --> Conditions["edge conditions"]
-    Conditions --> Compiler["ExpressionCompiler"]
-    Scheduler --> Runtime["RuntimeContext and RuntimeBag"]
-    Scheduler --> Selected["selected handler paths"]
+    Conditions --> Compiler["expression.Compiler"]
+    Scheduler --> Runtime["runtimevars.Context and Bag"]
+    Scheduler --> Selected["selected event.Handler[T] paths"]
     Scheduler --> RuntimeExceptions["RuntimeGraphExceptionHandler[T]"]
 ```
 
@@ -97,12 +97,12 @@ flowchart LR
 ```
 
 ```go
-graph := disruptor.MustGraph[OrderEvent]("order").
+graph := topology.Must[OrderEvent]("order").
     MustNode("validate", ValidateHandler{}).
     MustNode("persist", PersistHandler{}).
-    MustEdge(disruptor.GraphStartNode, "validate").
+    MustEdge(topology.StartNode, "validate").
     MustEdge("validate", "persist").
-    MustEdge("persist", disruptor.GraphEndNode)
+    MustEdge("persist", topology.EndNode)
 ```
 
 Allowed edges:
@@ -189,7 +189,7 @@ This preserves the V1.1 hot path.
 V1.1 code:
 
 ```go
-graph := disruptor.MustGraph[OrderEvent]("order").
+graph := topology.Must[OrderEvent]("order").
     MustNode("validate", ValidateHandler{}).
     MustNode("persist", PersistHandler{}).
     MustEdge("validate", "persist")
@@ -198,12 +198,12 @@ graph := disruptor.MustGraph[OrderEvent]("order").
 V1.2.0 code:
 
 ```go
-graph := disruptor.MustGraph[OrderEvent]("order").
+graph := topology.Must[OrderEvent]("order").
     MustNode("validate", ValidateHandler{}).
     MustNode("persist", PersistHandler{}).
-    MustEdge(disruptor.GraphStartNode, "validate").
+    MustEdge(topology.StartNode, "validate").
     MustEdge("validate", "persist").
-    MustEdge("persist", disruptor.GraphEndNode)
+    MustEdge("persist", topology.EndNode)
 ```
 
 Documentation and examples must call this out as a behavioral tightening in
@@ -248,23 +248,23 @@ flowchart LR
 ### RuntimeGraph API Sketch
 
 ```go
-runtimeGraph := disruptor.MustRuntimeGraph[OrderEvent]("order").
+runtimeGraph := runtimegraph.MustRuntimeGraph[OrderEvent]("order").
     MustNode("validate", ValidateHandler{}).
     MustNode("payment", PaymentHandler{}).
     MustNode("audit", AuditHandler{}).
-    MustEdge(disruptor.GraphStartNode, "validate").
+    MustEdge(topology.StartNode, "validate").
     MustEdge(
         "validate",
         "payment",
-        disruptor.WhenExpression[OrderEvent](`${flags} & 1`),
+        runtimegraph.WhenExpression[OrderEvent](`${flags} & 1`),
     ).
     MustEdge(
         "validate",
         "audit",
-        disruptor.WhenExpression[OrderEvent](`${risk.score} > 80`),
+        runtimegraph.WhenExpression[OrderEvent](`${risk.score} > 80`),
     ).
-    MustEdge("payment", disruptor.GraphEndNode).
-    MustEdge("audit", disruptor.GraphEndNode)
+    MustEdge("payment", topology.EndNode).
+    MustEdge("audit", topology.EndNode)
 
 processors, err := d.HandleRuntimeGraph(
     runtimeGraph,
@@ -277,16 +277,16 @@ processors, err := d.HandleRuntimeGraph(
 Expected public constructors and registration methods:
 
 ```go
-func NewRuntimeGraph[T any](
+func runtimegraph.NewRuntimeGraph[T any](
     name string,
     opts ...RuntimeGraphOption,
 ) (*RuntimeGraph[T], error)
-func MustRuntimeGraph[T any](
+func runtimegraph.MustRuntimeGraph[T any](
     name string,
     opts ...RuntimeGraphOption,
 ) *RuntimeGraph[T]
-func WithRuntimeGraphExpressionCompiler(
-    compiler ExpressionCompiler,
+func runtimegraph.WithExpressionCompiler(
+    compiler expression.Compiler,
 ) RuntimeGraphOption
 
 func (g *RuntimeGraph[T]) Name() string
@@ -363,7 +363,7 @@ type EdgeConditionRequest[T any] struct {
     GraphName string
     From      string
     To        string
-    Runtime   RuntimeContext
+    Runtime   runtimevars.ContextView
 }
 ```
 
@@ -383,7 +383,7 @@ func WhenCondition[T any](
 ) RuntimeEdgeOption[T]
 
 func WhenExpression[T any](
-    expression RuntimeExpression,
+    expression expression.Expression,
 ) RuntimeEdgeOption[T]
 ```
 
@@ -404,19 +404,19 @@ The built-in expression engine is required for V1.2.0.
 ### Expression Types
 
 ```go
-type RuntimeExpression string
+type Expression string
 
-type ExpressionCompiler interface {
-    Compile(expression RuntimeExpression) (BoolExpression, error)
+type Compiler interface {
+    Compile(expression Expression) (BoolExpression, error)
 }
 
 type BoolExpression interface {
-    EvaluateBool(request ExpressionRequest) (bool, error)
+    EvaluateBool(request Request) (bool, error)
 }
 
-type ExpressionRequest struct {
+type Request struct {
     Context   context.Context
-    Variables RuntimeVariables
+    Variables runtimevars.Variables
 }
 ```
 
@@ -519,7 +519,7 @@ Example:
 
 ```go
 func (h ValidateHandler) OnEvent(
-    request disruptor.EventRequest[OrderEvent],
+    request event.Request[OrderEvent],
 ) error {
     request.Runtime.Set("validated", true)
     request.Runtime.Set("risk.score", 98)
@@ -535,32 +535,40 @@ ${validated} && ${risk.score} > 80
 
 ### Runtime Context on Requests
 
-`EventRequest[T]` needs runtime access for runtime graph handlers. The added
-field must be zero-value safe for existing fan-out and static graph users.
+`event.Request[T]` includes runtime access for runtime graph handlers. The field
+is zero-value safe for fan-out and static graph users.
 
 ```go
-type EventRequest[T any] struct {
+type Request[T any] struct {
     Context    context.Context
     Event      *T
     Sequence   int64
     EndOfBatch bool
-    Node       NodeContext
-    Runtime    RuntimeContext
+    Node       event.Node
+    Runtime    runtimevars.ContextView
 }
 ```
 
-`RuntimeContext` should expose only stable runtime capabilities:
+`runtimevars.ContextView` exposes only stable read capabilities and
+`runtimevars.Context` adds write support:
 
 ```go
-type RuntimeContext interface {
-    RuntimeBag
-    Variables() RuntimeVariables
+type ContextView interface {
+    Variables() Variables
+    Get(path string) (any, bool)
+}
+
+type Context interface {
+    ContextView
+    Set(path string, value any) error
 }
 ```
 
-`RuntimeContext` embeds `RuntimeBag` so handlers can call
-`request.Runtime.Set(...)` directly. `Variables()` returns the merged read-only
-view used by expression evaluation.
+Handlers receive `runtimevars.ContextView` through `event.Request.Runtime`; the
+framework provides a concrete runtime context for runtime graph execution so
+handlers can call `request.Runtime.Set(...)` directly when the request is created
+by the framework. `Variables()` returns the merged read-only view used by
+expression evaluation.
 
 For non-runtime graph processing, `Runtime` should be a no-op context when the
 request is created by the framework. User-created zero-value requests may still
@@ -575,16 +583,16 @@ Expression evaluation uses two layers:
 
 Lookup priority:
 
-1. `RuntimeBag`
-2. `RuntimeVariablesProvider[T]`
-3. `EventValueResolver[T]`
+1. runtime bag
+2. `runtimevars.Provider[T]`
+3. `runtimevars.Resolver[T]`
 
 ```go
-type RuntimeVariablesProvider[T any] interface {
-    Variables(request RuntimeVariablesRequest[T]) (RuntimeVariables, error)
+type Provider[T any] interface {
+    Variables(request ProviderRequest[T]) (Variables, error)
 }
 
-type RuntimeVariablesRequest[T any] struct {
+type ProviderRequest[T any] struct {
     Context   context.Context
     Event     *T
     Sequence  int64
@@ -803,7 +811,7 @@ type RuntimeGraphExceptionRequest[T any] struct {
     EdgeTo    string
     Kind      RuntimeGraphExceptionKind
     Cause     error
-    Runtime   RuntimeContext
+    Runtime   runtimevars.ContextView
 }
 ```
 

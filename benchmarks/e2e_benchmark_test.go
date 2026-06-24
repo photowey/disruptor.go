@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/photowey/disruptor.go/pkg/event"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -167,10 +168,10 @@ func benchmarkDisruptorE2E(
 	}
 
 	var processed atomic.Int64
-	handlers := make([]disruptor.EventHandler[benchEvent], 0, consumerCount)
+	handlers := make([]event.Handler[benchEvent], 0, consumerCount)
 	for range consumerCount {
-		handlers = append(handlers, disruptor.EventHandlerFunc[benchEvent](func(
-			request disruptor.EventRequest[benchEvent],
+		handlers = append(handlers, event.HandlerFunc[benchEvent](func(
+			request event.Request[benchEvent],
 		) error {
 			benchmarkValueSink.Store(request.Event.Value)
 			processed.Add(1)
@@ -235,10 +236,10 @@ func benchmarkDisruptorParallelProducers(
 	}
 
 	var processed atomic.Int64
-	handlers := make([]disruptor.EventHandler[benchEvent], 0, consumerCount)
+	handlers := make([]event.Handler[benchEvent], 0, consumerCount)
 	for range consumerCount {
-		handlers = append(handlers, disruptor.EventHandlerFunc[benchEvent](func(
-			request disruptor.EventRequest[benchEvent],
+		handlers = append(handlers, event.HandlerFunc[benchEvent](func(
+			request event.Request[benchEvent],
 		) error {
 			benchmarkValueSink.Store(request.Event.Value)
 			processed.Add(1)

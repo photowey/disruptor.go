@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+
+	"github.com/photowey/disruptor.go/pkg/event"
 )
 
 // Disruptor coordinates a ring buffer and a set of event processors.
@@ -64,14 +66,14 @@ func (d *Disruptor[T]) RingBuffer() *RingBuffer[T] {
 
 // HandleEventsWith registers handlers that each receive every event.
 func (d *Disruptor[T]) HandleEventsWith(
-	handlers ...EventHandler[T],
+	handlers ...event.Handler[T],
 ) ([]EventProcessor, error) {
 	return d.HandleEventsWithOptions(handlers)
 }
 
 // HandleEventsWithOptions registers handlers with processor-level options.
 func (d *Disruptor[T]) HandleEventsWithOptions(
-	handlers []EventHandler[T],
+	handlers []event.Handler[T],
 	opts ...ProcessorOption[T],
 ) ([]EventProcessor, error) {
 	if len(handlers) == 0 {

@@ -12,20 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package graph
 
 import (
 	"fmt"
 	"strings"
 	"sync"
 	"unicode"
+
+	"github.com/photowey/disruptor.go/pkg/event"
 )
 
 const (
-	// GraphStartNode is the reserved virtual node name for graph entry points.
-	GraphStartNode = "START"
-	// GraphEndNode is the reserved virtual node name for graph exit points.
-	GraphEndNode = "END"
+	// StartNode is the reserved virtual node name for graph entry points.
+	StartNode = "START"
+	// EndNode is the reserved virtual node name for graph exit points.
+	EndNode = "END"
 )
 
 // Graph defines a named event processor dependency topology.
@@ -34,21 +36,21 @@ type Graph[T any] struct {
 
 	name    string
 	nodes   map[string]*graphNode[T]
-	edges   map[GraphEdgeSnapshot]struct{}
+	edges   map[EdgeSnapshot]struct{}
 	frozen  bool
 	handled bool
 }
 
 type graphNode[T any] struct {
 	name             string
-	handler          EventHandler[T]
-	exceptionHandler ExceptionHandler[T]
+	handler          event.Handler[T]
+	exceptionHandler event.ExceptionHandler[T]
 	label            string
 	metadata         map[string]string
 }
 
 type nodeConfig[T any] struct {
-	exceptionHandler ExceptionHandler[T]
+	exceptionHandler event.ExceptionHandler[T]
 	label            string
 	metadata         map[string]string
 }
@@ -67,8 +69,8 @@ func (fn nodeOptionFunc[T]) applyNode(config *nodeConfig[T]) error {
 	return fn.applyFunc(config)
 }
 
-// NewGraph creates a mutable graph builder.
-func NewGraph[T any](name string) (*Graph[T], error) {
+// New creates a mutable graph builder.
+func New[T any](name string) (*Graph[T], error) {
 	normalized, err := normalizeGraphName("graph", name)
 	if err != nil {
 		return nil, err
@@ -77,13 +79,13 @@ func NewGraph[T any](name string) (*Graph[T], error) {
 	return &Graph[T]{
 		name:  normalized,
 		nodes: make(map[string]*graphNode[T]),
-		edges: make(map[GraphEdgeSnapshot]struct{}),
+		edges: make(map[EdgeSnapshot]struct{}),
 	}, nil
 }
 
-// MustGraph creates a graph builder or panics when name is invalid.
-func MustGraph[T any](name string) *Graph[T] {
-	graph, err := NewGraph[T](name)
+// Must creates a graph builder or panics when name is invalid.
+func Must[T any](name string) *Graph[T] {
+	graph, err := New[T](name)
 	if err != nil {
 		panic(err)
 	}
@@ -106,14 +108,14 @@ func (g *Graph[T]) Name() string {
 // Node registers a named event handler in the graph.
 func (g *Graph[T]) Node(
 	name string,
-	handler EventHandler[T],
+	handler event.Handler[T],
 	opts ...NodeOption[T],
 ) error {
 	if g == nil {
-		return fmt.Errorf("%w: graph is nil", ErrInvalidGraph)
+		return fmt.Errorf("%w: graph is nil", ErrInvalid)
 	}
 	if handler == nil {
-		return fmt.Errorf("%w: graph %s: node handler is nil", ErrInvalidGraph, g.Name())
+		return fmt.Errorf("%w: graph %s: node handler is nil", ErrInvalid, g.Name())
 	}
 
 	normalized, err := normalizeGraphName("node", name)
@@ -123,7 +125,7 @@ func (g *Graph[T]) Node(
 	if isGraphVirtualNodeName(normalized) {
 		return fmt.Errorf(
 			"%w: graph %s: node name %s is reserved",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.Name(),
 			normalized,
 		)
@@ -146,12 +148,12 @@ func (g *Graph[T]) Node(
 	defer g.mu.Unlock()
 
 	if g.frozen {
-		return ErrGraphFrozen
+		return ErrFrozen
 	}
 	if _, exists := g.nodes[normalized]; exists {
 		return fmt.Errorf(
 			"%w: graph %s: node %s already exists",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			normalized,
 		)
@@ -171,7 +173,7 @@ func (g *Graph[T]) Node(
 // MustNode registers a node or panics when registration fails.
 func (g *Graph[T]) MustNode(
 	name string,
-	handler EventHandler[T],
+	handler event.Handler[T],
 	opts ...NodeOption[T],
 ) *Graph[T] {
 	if err := g.Node(name, handler, opts...); err != nil {
@@ -184,7 +186,7 @@ func (g *Graph[T]) MustNode(
 // Edge registers a dependency from one node to another.
 func (g *Graph[T]) Edge(from string, to string) error {
 	if g == nil {
-		return fmt.Errorf("%w: graph is nil", ErrInvalidGraph)
+		return fmt.Errorf("%w: graph is nil", ErrInvalid)
 	}
 
 	normalizedFrom, err := normalizeGraphName("node", from)
@@ -200,13 +202,13 @@ func (g *Graph[T]) Edge(from string, to string) error {
 	defer g.mu.Unlock()
 
 	if g.frozen {
-		return ErrGraphFrozen
+		return ErrFrozen
 	}
 	if err := g.validateEdgeLocked(normalizedFrom, normalizedTo); err != nil {
 		return err
 	}
 
-	g.edges[GraphEdgeSnapshot{From: normalizedFrom, To: normalizedTo}] = struct{}{}
+	g.edges[EdgeSnapshot{From: normalizedFrom, To: normalizedTo}] = struct{}{}
 
 	return nil
 }
@@ -216,7 +218,7 @@ func (g *Graph[T]) validateEdgeLocked(from string, to string) error {
 		if isGraphVirtualNodeName(to) {
 			return fmt.Errorf(
 				"%w: graph %s: invalid terminal edge %s -> %s",
-				ErrInvalidGraph,
+				ErrInvalid,
 				g.name,
 				from,
 				to,
@@ -225,7 +227,7 @@ func (g *Graph[T]) validateEdgeLocked(from string, to string) error {
 		if _, exists := g.nodes[to]; !exists {
 			return fmt.Errorf(
 				"%w: graph %s: edge %s -> %s references unknown node %s",
-				ErrInvalidGraph,
+				ErrInvalid,
 				g.name,
 				from,
 				to,
@@ -238,7 +240,7 @@ func (g *Graph[T]) validateEdgeLocked(from string, to string) error {
 	if isGraphEndNodeName(from) || isGraphStartNodeName(to) {
 		return fmt.Errorf(
 			"%w: graph %s: invalid terminal edge %s -> %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			from,
 			to,
@@ -248,7 +250,7 @@ func (g *Graph[T]) validateEdgeLocked(from string, to string) error {
 		if _, exists := g.nodes[from]; !exists {
 			return fmt.Errorf(
 				"%w: graph %s: edge %s -> %s references unknown node %s",
-				ErrInvalidGraph,
+				ErrInvalid,
 				g.name,
 				from,
 				to,
@@ -261,7 +263,7 @@ func (g *Graph[T]) validateEdgeLocked(from string, to string) error {
 	if from == to {
 		return fmt.Errorf(
 			"%w: graph %s: self edge %s -> %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			from,
 			to,
@@ -270,7 +272,7 @@ func (g *Graph[T]) validateEdgeLocked(from string, to string) error {
 	if _, exists := g.nodes[from]; !exists {
 		return fmt.Errorf(
 			"%w: graph %s: edge %s -> %s references unknown node %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			from,
 			to,
@@ -280,7 +282,7 @@ func (g *Graph[T]) validateEdgeLocked(from string, to string) error {
 	if _, exists := g.nodes[to]; !exists {
 		return fmt.Errorf(
 			"%w: graph %s: edge %s -> %s references unknown node %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			from,
 			to,
@@ -303,7 +305,7 @@ func (g *Graph[T]) MustEdge(from string, to string) *Graph[T] {
 // Validate checks whether the graph can be scheduled.
 func (g *Graph[T]) Validate() error {
 	if g == nil {
-		return fmt.Errorf("%w: graph is nil", ErrInvalidGraph)
+		return fmt.Errorf("%w: graph is nil", ErrInvalid)
 	}
 
 	g.mu.RLock()
@@ -314,13 +316,13 @@ func (g *Graph[T]) Validate() error {
 
 func (g *Graph[T]) validateLocked() error {
 	if len(g.nodes) == 0 {
-		return fmt.Errorf("%w: graph %s: no nodes", ErrInvalidGraph, g.name)
+		return fmt.Errorf("%w: graph %s: no nodes", ErrInvalid, g.name)
 	}
 
 	if cycle := g.findCycleLocked(); len(cycle) > 0 {
 		return fmt.Errorf(
 			"%w: graph %s: cycle detected: %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			strings.Join(cycle, " -> "),
 		)
@@ -329,15 +331,15 @@ func (g *Graph[T]) validateLocked() error {
 	publicSnapshot := g.snapshotLocked()
 	processingSnapshot := g.processingSnapshotLocked()
 	if len(publicSnapshot.Entries) == 0 {
-		return fmt.Errorf("%w: graph %s: no explicit entry edges", ErrInvalidGraph, g.name)
+		return fmt.Errorf("%w: graph %s: no explicit entry edges", ErrInvalid, g.name)
 	}
 	if len(publicSnapshot.Exits) == 0 {
-		return fmt.Errorf("%w: graph %s: no explicit exit edges", ErrInvalidGraph, g.name)
+		return fmt.Errorf("%w: graph %s: no explicit exit edges", ErrInvalid, g.name)
 	}
 	if !sameStringSet(publicSnapshot.Entries, publicSnapshot.Sources) {
 		return fmt.Errorf(
 			"%w: graph %s: entries must match sources: entries=%v sources=%v",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			publicSnapshot.Entries,
 			publicSnapshot.Sources,
@@ -346,7 +348,7 @@ func (g *Graph[T]) validateLocked() error {
 	if !sameStringSet(publicSnapshot.Exits, publicSnapshot.Leaves) {
 		return fmt.Errorf(
 			"%w: graph %s: exits must match leaves: exits=%v leaves=%v",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			publicSnapshot.Exits,
 			publicSnapshot.Leaves,
@@ -355,7 +357,7 @@ func (g *Graph[T]) validateLocked() error {
 	if unreachable := graphUnreachableNodes(processingSnapshot, publicSnapshot.Entries); len(unreachable) > 0 {
 		return fmt.Errorf(
 			"%w: graph %s: nodes are not reachable from START: %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			strings.Join(unreachable, ", "),
 		)
@@ -363,7 +365,7 @@ func (g *Graph[T]) validateLocked() error {
 	if blocked := graphNodesCannotReachExits(processingSnapshot, publicSnapshot.Exits); len(blocked) > 0 {
 		return fmt.Errorf(
 			"%w: graph %s: nodes cannot reach END: %s",
-			ErrInvalidGraph,
+			ErrInvalid,
 			g.name,
 			strings.Join(blocked, ", "),
 		)
@@ -378,11 +380,11 @@ func (g *Graph[T]) freezeHandledLocked() {
 }
 
 // WithNodeExceptionHandler sets the exception handler for one graph node.
-func WithNodeExceptionHandler[T any](handler ExceptionHandler[T]) NodeOption[T] {
+func WithNodeExceptionHandler[T any](handler event.ExceptionHandler[T]) NodeOption[T] {
 	return nodeOptionFunc[T]{
 		applyFunc: func(config *nodeConfig[T]) error {
 			if handler == nil {
-				return fmt.Errorf("%w: node exception handler is nil", ErrInvalidGraph)
+				return fmt.Errorf("%w: node exception handler is nil", ErrInvalid)
 			}
 
 			config.exceptionHandler = handler
@@ -431,13 +433,13 @@ func WithNodeMetadata[T any](key string, value string) NodeOption[T] {
 func normalizeGraphName(kind string, name string) (string, error) {
 	normalized := strings.TrimSpace(name)
 	if normalized == "" {
-		return "", fmt.Errorf("%w: %s name is empty", ErrInvalidGraph, kind)
+		return "", fmt.Errorf("%w: %s name is empty", ErrInvalid, kind)
 	}
 	for _, ch := range normalized {
 		if unicode.IsControl(ch) {
 			return "", fmt.Errorf(
 				"%w: %s name %q contains a control character",
-				ErrInvalidGraph,
+				ErrInvalid,
 				kind,
 				normalized,
 			)
@@ -448,19 +450,19 @@ func normalizeGraphName(kind string, name string) (string, error) {
 }
 
 func isGraphVirtualNodeName(name string) bool {
-	return name == GraphStartNode || name == GraphEndNode
+	return name == StartNode || name == EndNode
 }
 
 func isGraphStartNodeName(name string) bool {
-	return name == GraphStartNode
+	return name == StartNode
 }
 
 func isGraphEndNodeName(name string) bool {
-	return name == GraphEndNode
+	return name == EndNode
 }
 
-func isGraphTerminalEdge(edge GraphEdgeSnapshot) bool {
-	return edge.From == GraphStartNode || edge.To == GraphEndNode
+func isGraphTerminalEdge(edge EdgeSnapshot) bool {
+	return edge.From == StartNode || edge.To == EndNode
 }
 
 func copyStringMap(input map[string]string) map[string]string {

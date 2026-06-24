@@ -19,13 +19,15 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/photowey/disruptor.go/pkg/event"
 )
 
 func TestBatchEventProcessorReportsNodeContext(t *testing.T) {
 	rb := newInternalProcessorRingBuffer(t, 4)
-	requests := make(chan EventRequest[internalProcessorEvent], 1)
+	requests := make(chan event.Request[internalProcessorEvent], 1)
 	handler := internalProcessorHandler{
-		handle: func(request EventRequest[internalProcessorEvent]) error {
+		handle: func(request event.Request[internalProcessorEvent]) error {
 			requests <- request
 			return nil
 		},
@@ -36,10 +38,10 @@ func TestBatchEventProcessorReportsNodeContext(t *testing.T) {
 		rb.NewBarrier(),
 		handler,
 		batchEventProcessorConfig[internalProcessorEvent]{
-			exceptionHandler: NewFatalExceptionHandler[internalProcessorEvent](),
+			exceptionHandler: event.NewFatalExceptionHandler[internalProcessorEvent](),
 			producerGating:   true,
 			haltAdvances:     true,
-			node: NodeContext{
+			node: event.Node{
 				GraphName: "orders",
 				NodeName:  "persist",
 				NodeLabel: "Persist",
@@ -77,12 +79,12 @@ func TestBatchEventProcessorReportsNodeContext(t *testing.T) {
 
 func TestBatchEventProcessorReportsNodeContextForBatchStartException(t *testing.T) {
 	rb := newInternalProcessorRingBuffer(t, 4)
-	exceptions := make(chan LifecycleException, 1)
+	exceptions := make(chan event.LifecycleException, 1)
 	handler := internalProcessorBatchStartHandler{
-		batchStart: func(request BatchStartRequest) error {
+		batchStart: func(request event.BatchStartRequest) error {
 			return errInternalProcessorBatchStartHandler
 		},
-		handle: func(request EventRequest[internalProcessorEvent]) error {
+		handle: func(request event.Request[internalProcessorEvent]) error {
 			return nil
 		},
 	}
@@ -92,21 +94,21 @@ func TestBatchEventProcessorReportsNodeContextForBatchStartException(t *testing.
 		rb.NewBarrier(),
 		handler,
 		batchEventProcessorConfig[internalProcessorEvent]{
-			exceptionHandler: exceptionHandlerFunc[internalProcessorEvent]{
-				handleEvent: func(request EventException[internalProcessorEvent]) ExceptionAction {
-					return ExceptionActionHalt
+			exceptionHandler: internalProcessorExceptionHandler{
+				handleEvent: func(request event.Exception[internalProcessorEvent]) event.ExceptionAction {
+					return event.ExceptionActionHalt
 				},
-				handleStart: func(request LifecycleException) ExceptionAction {
+				handleStart: func(request event.LifecycleException) event.ExceptionAction {
 					exceptions <- request
-					return ExceptionActionContinue
+					return event.ExceptionActionContinue
 				},
-				handleShutdown: func(request LifecycleException) ExceptionAction {
-					return ExceptionActionHalt
+				handleShutdown: func(request event.LifecycleException) event.ExceptionAction {
+					return event.ExceptionActionHalt
 				},
 			},
 			producerGating: true,
 			haltAdvances:   true,
-			node: NodeContext{
+			node: event.Node{
 				GraphName: "orders",
 				NodeName:  "validate",
 				NodeLabel: "Validate",
@@ -152,7 +154,7 @@ func TestBatchEventProcessorCanSkipProducerGating(t *testing.T) {
 		rb.NewBarrier(),
 		internalProcessorHandler{},
 		batchEventProcessorConfig[internalProcessorEvent]{
-			exceptionHandler: NewFatalExceptionHandler[internalProcessorEvent](),
+			exceptionHandler: event.NewFatalExceptionHandler[internalProcessorEvent](),
 			producerGating:   false,
 			haltAdvances:     true,
 		},
@@ -176,12 +178,12 @@ func TestBatchEventProcessorGraphHaltDoesNotAdvanceFailedSequence(t *testing.T) 
 		rb,
 		rb.NewBarrier(),
 		internalProcessorHandler{
-			handle: func(request EventRequest[internalProcessorEvent]) error {
+			handle: func(request event.Request[internalProcessorEvent]) error {
 				return handlerErr
 			},
 		},
 		batchEventProcessorConfig[internalProcessorEvent]{
-			exceptionHandler: NewFatalExceptionHandler[internalProcessorEvent](),
+			exceptionHandler: event.NewFatalExceptionHandler[internalProcessorEvent](),
 			producerGating:   false,
 			haltAdvances:     false,
 		},
@@ -210,7 +212,7 @@ func TestBatchEventProcessorPublicConstructorKeepsV1HaltAdvance(t *testing.T) {
 		rb,
 		rb.NewBarrier(),
 		internalProcessorHandler{
-			handle: func(request EventRequest[internalProcessorEvent]) error {
+			handle: func(request event.Request[internalProcessorEvent]) error {
 				return handlerErr
 			},
 		},
@@ -233,12 +235,12 @@ func TestBatchEventProcessorPublicConstructorKeepsV1HaltAdvance(t *testing.T) {
 }
 
 type internalProcessorBatchStartHandler struct {
-	batchStart func(BatchStartRequest) error
-	handle     func(EventRequest[internalProcessorEvent]) error
+	batchStart func(event.BatchStartRequest) error
+	handle     func(event.Request[internalProcessorEvent]) error
 }
 
 func (h internalProcessorBatchStartHandler) OnBatchStart(
-	request BatchStartRequest,
+	request event.BatchStartRequest,
 ) error {
 	if h.batchStart == nil {
 		return nil
@@ -248,7 +250,7 @@ func (h internalProcessorBatchStartHandler) OnBatchStart(
 }
 
 func (h internalProcessorBatchStartHandler) OnEvent(
-	request EventRequest[internalProcessorEvent],
+	request event.Request[internalProcessorEvent],
 ) error {
 	if h.handle == nil {
 		return nil
@@ -301,17 +303,53 @@ type internalProcessorEvent struct {
 }
 
 type internalProcessorHandler struct {
-	handle func(EventRequest[internalProcessorEvent]) error
+	handle func(event.Request[internalProcessorEvent]) error
 }
 
 func (h internalProcessorHandler) OnEvent(
-	request EventRequest[internalProcessorEvent],
+	request event.Request[internalProcessorEvent],
 ) error {
 	if h.handle == nil {
 		return nil
 	}
 
 	return h.handle(request)
+}
+
+type internalProcessorExceptionHandler struct {
+	handleEvent    func(event.Exception[internalProcessorEvent]) event.ExceptionAction
+	handleStart    func(event.LifecycleException) event.ExceptionAction
+	handleShutdown func(event.LifecycleException) event.ExceptionAction
+}
+
+func (h internalProcessorExceptionHandler) HandleEventException(
+	request event.Exception[internalProcessorEvent],
+) event.ExceptionAction {
+	if h.handleEvent == nil {
+		return event.ExceptionActionHalt
+	}
+
+	return h.handleEvent(request)
+}
+
+func (h internalProcessorExceptionHandler) HandleStartException(
+	request event.LifecycleException,
+) event.ExceptionAction {
+	if h.handleStart == nil {
+		return event.ExceptionActionHalt
+	}
+
+	return h.handleStart(request)
+}
+
+func (h internalProcessorExceptionHandler) HandleShutdownException(
+	request event.LifecycleException,
+) event.ExceptionAction {
+	if h.handleShutdown == nil {
+		return event.ExceptionActionHalt
+	}
+
+	return h.handleShutdown(request)
 }
 
 var errInternalProcessorHandler = errors.New("internal processor handler failed")

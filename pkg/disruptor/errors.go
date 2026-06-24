@@ -17,7 +17,6 @@ package disruptor
 import (
 	"errors"
 
-	internalexpr "github.com/photowey/disruptor.go/internal/expression"
 	sequencer "github.com/photowey/disruptor.go/internal/sequencer"
 )
 
@@ -30,18 +29,8 @@ var (
 	ErrInsufficientCapacity = sequencer.ErrInsufficientCapacity
 	// ErrInvalidBufferSize reports that a ring buffer size is not a positive power of two.
 	ErrInvalidBufferSize = errors.New("disruptor: invalid buffer size")
-	// ErrInvalidGraph reports that a graph definition is invalid.
-	ErrInvalidGraph = errors.New("disruptor: invalid graph")
 	// ErrInvalidSequence reports that a sequence request is outside the valid range.
 	ErrInvalidSequence = sequencer.ErrInvalidSequence
-	// ErrGraphFrozen reports that a graph can no longer be modified.
-	ErrGraphFrozen = errors.New("disruptor: graph is frozen")
-	// ErrGraphHandled reports that a graph has already been registered.
-	ErrGraphHandled = errors.New("disruptor: graph already handled")
 	// ErrConsumerModeConflict reports incompatible consumer registration APIs.
 	ErrConsumerModeConflict = errors.New("disruptor: consumer mode conflict")
-	// ErrRuntimeNoRoute reports that a runtime graph event has no selected route.
-	ErrRuntimeNoRoute = errors.New("disruptor: runtime graph no route")
-	// ErrInvalidRuntimeExpression reports that a runtime expression is invalid.
-	ErrInvalidRuntimeExpression = internalexpr.ErrInvalidRuntimeExpression
 )

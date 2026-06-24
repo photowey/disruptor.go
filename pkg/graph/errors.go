@@ -12,11 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package disruptor provides a Go implementation of the Disruptor pattern for
-// high-throughput in-process event exchange.
-//
-// The package exposes a generic preallocated ring buffer, cancellable producer
-// sequencing, batch event processors, wait strategies, and backend-neutral
-// metrics hooks. Handler contracts live in pkg/event; static and runtime graph
-// builders live in pkg/graph and pkg/runtimegraph.
-package disruptor
+package graph
+
+import "errors"
+
+var (
+	// ErrInvalid reports that a graph definition is invalid.
+	ErrInvalid = errors.New("graph: invalid graph")
+	// ErrFrozen reports that a graph can no longer be modified.
+	ErrFrozen = errors.New("graph: graph is frozen")
+	// ErrHandled reports that a graph has already been registered.
+	ErrHandled = errors.New("graph: graph already handled")
+)

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package graph
 
 import (
 	"sort"
@@ -20,37 +20,42 @@ import (
 	"strings"
 )
 
-// GraphSnapshot is a handler-free view of a graph.
+// Snapshot is a handler-free view of a graph.
 // Nodes and Edges include explicit virtual START and END terminals for export.
 // Sources, Leaves, Entries, and Exits list real handler nodes only.
-type GraphSnapshot struct {
+type Snapshot struct {
 	Name    string
 	Frozen  bool
-	Nodes   []GraphNodeSnapshot
-	Edges   []GraphEdgeSnapshot
+	Nodes   []NodeSnapshot
+	Edges   []EdgeSnapshot
 	Sources []string
 	Leaves  []string
 	Entries []string
 	Exits   []string
 }
 
-// GraphNodeSnapshot describes one graph node.
-type GraphNodeSnapshot struct {
+// NodeSnapshot describes one graph node.
+type NodeSnapshot struct {
 	Name     string
 	Label    string
 	Metadata map[string]string
 }
 
-// GraphEdgeSnapshot describes one graph dependency edge.
-type GraphEdgeSnapshot struct {
+// EdgeSnapshot describes one graph dependency edge.
+type EdgeSnapshot struct {
 	From string
 	To   string
 }
 
+// Copy returns a deterministic defensive copy of the snapshot.
+func (s Snapshot) Copy() Snapshot {
+	return copySnapshot(s)
+}
+
 // Snapshot returns a deterministic, defensive graph snapshot.
-func (g *Graph[T]) Snapshot() GraphSnapshot {
+func (g *Graph[T]) Snapshot() Snapshot {
 	if g == nil {
-		return GraphSnapshot{}
+		return Snapshot{}
 	}
 
 	g.mu.RLock()
@@ -59,30 +64,30 @@ func (g *Graph[T]) Snapshot() GraphSnapshot {
 	return g.snapshotLocked()
 }
 
-func (g *Graph[T]) snapshotLocked() GraphSnapshot {
+func (g *Graph[T]) snapshotLocked() Snapshot {
 	processing := g.processingSnapshotLocked()
 	if len(processing.Nodes) == 0 {
 		return processing
 	}
 
 	startEdges, endEdges, entries, exits := g.terminalEdgesLocked()
-	nodes := make([]GraphNodeSnapshot, 0, len(processing.Nodes)+2)
-	nodes = append(nodes, GraphNodeSnapshot{
-		Name:  GraphStartNode,
-		Label: GraphStartNode,
+	nodes := make([]NodeSnapshot, 0, len(processing.Nodes)+2)
+	nodes = append(nodes, NodeSnapshot{
+		Name:  StartNode,
+		Label: StartNode,
 	})
 	nodes = append(nodes, processing.Nodes...)
-	nodes = append(nodes, GraphNodeSnapshot{
-		Name:  GraphEndNode,
-		Label: GraphEndNode,
+	nodes = append(nodes, NodeSnapshot{
+		Name:  EndNode,
+		Label: EndNode,
 	})
 
-	edges := make([]GraphEdgeSnapshot, 0, len(startEdges)+len(processing.Edges)+len(endEdges))
+	edges := make([]EdgeSnapshot, 0, len(startEdges)+len(processing.Edges)+len(endEdges))
 	edges = append(edges, startEdges...)
 	edges = append(edges, processing.Edges...)
 	edges = append(edges, endEdges...)
 
-	return GraphSnapshot{
+	return Snapshot{
 		Name:    processing.Name,
 		Frozen:  processing.Frozen,
 		Nodes:   nodes,
@@ -94,10 +99,10 @@ func (g *Graph[T]) snapshotLocked() GraphSnapshot {
 	}
 }
 
-func (g *Graph[T]) processingSnapshotLocked() GraphSnapshot {
-	nodes := make([]GraphNodeSnapshot, 0, len(g.nodes))
+func (g *Graph[T]) processingSnapshotLocked() Snapshot {
+	nodes := make([]NodeSnapshot, 0, len(g.nodes))
 	for _, node := range g.nodes {
-		nodes = append(nodes, GraphNodeSnapshot{
+		nodes = append(nodes, NodeSnapshot{
 			Name:     node.name,
 			Label:    node.label,
 			Metadata: copyStringMap(node.metadata),
@@ -107,7 +112,7 @@ func (g *Graph[T]) processingSnapshotLocked() GraphSnapshot {
 		return nodes[i].Name < nodes[j].Name
 	})
 
-	edges := make([]GraphEdgeSnapshot, 0, len(g.edges))
+	edges := make([]EdgeSnapshot, 0, len(g.edges))
 	for edge := range g.edges {
 		if isGraphTerminalEdge(edge) {
 			continue
@@ -118,7 +123,7 @@ func (g *Graph[T]) processingSnapshotLocked() GraphSnapshot {
 
 	sources, leaves := graphTerminals(nodes, edges)
 
-	return GraphSnapshot{
+	return Snapshot{
 		Name:    g.name,
 		Frozen:  g.frozen,
 		Nodes:   nodes,
@@ -129,21 +134,21 @@ func (g *Graph[T]) processingSnapshotLocked() GraphSnapshot {
 }
 
 func (g *Graph[T]) terminalEdgesLocked() (
-	[]GraphEdgeSnapshot,
-	[]GraphEdgeSnapshot,
+	[]EdgeSnapshot,
+	[]EdgeSnapshot,
 	[]string,
 	[]string,
 ) {
-	startEdges := make([]GraphEdgeSnapshot, 0)
-	endEdges := make([]GraphEdgeSnapshot, 0)
+	startEdges := make([]EdgeSnapshot, 0)
+	endEdges := make([]EdgeSnapshot, 0)
 	entries := make([]string, 0)
 	exits := make([]string, 0)
 	for edge := range g.edges {
 		switch {
-		case edge.From == GraphStartNode && !isGraphVirtualNodeName(edge.To):
+		case edge.From == StartNode && !isGraphVirtualNodeName(edge.To):
 			startEdges = append(startEdges, edge)
 			entries = append(entries, edge.To)
-		case edge.To == GraphEndNode && !isGraphVirtualNodeName(edge.From):
+		case edge.To == EndNode && !isGraphVirtualNodeName(edge.From):
 			endEdges = append(endEdges, edge)
 			exits = append(exits, edge.From)
 		}
@@ -261,8 +266,8 @@ func (g *Graph[T]) findCycleLocked() []string {
 }
 
 func graphTerminals(
-	nodes []GraphNodeSnapshot,
-	edges []GraphEdgeSnapshot,
+	nodes []NodeSnapshot,
+	edges []EdgeSnapshot,
 ) ([]string, []string) {
 	incoming := make(map[string]int, len(nodes))
 	outgoing := make(map[string]int, len(nodes))
@@ -289,7 +294,7 @@ func graphTerminals(
 	return sources, leaves
 }
 
-func graphUnreachableNodes(snapshot GraphSnapshot, entries []string) []string {
+func graphUnreachableNodes(snapshot Snapshot, entries []string) []string {
 	adjacency := graphAdjacency(snapshot.Edges)
 	reachable := graphReachable(entries, adjacency)
 
@@ -303,7 +308,7 @@ func graphUnreachableNodes(snapshot GraphSnapshot, entries []string) []string {
 	return missing
 }
 
-func graphNodesCannotReachExits(snapshot GraphSnapshot, exits []string) []string {
+func graphNodesCannotReachExits(snapshot Snapshot, exits []string) []string {
 	reverse := make(map[string][]string, len(snapshot.Nodes))
 	for _, edge := range snapshot.Edges {
 		reverse[edge.To] = append(reverse[edge.To], edge.From)
@@ -323,7 +328,7 @@ func graphNodesCannotReachExits(snapshot GraphSnapshot, exits []string) []string
 	return missing
 }
 
-func graphAdjacency(edges []GraphEdgeSnapshot) map[string][]string {
+func graphAdjacency(edges []EdgeSnapshot) map[string][]string {
 	adjacency := make(map[string][]string)
 	for _, edge := range edges {
 		adjacency[edge.From] = append(adjacency[edge.From], edge.To)
@@ -364,7 +369,7 @@ func sameStringSet(left []string, right []string) bool {
 	return true
 }
 
-func graphNodeIDs(nodes []GraphNodeSnapshot) map[string]string {
+func graphNodeIDs(nodes []NodeSnapshot) map[string]string {
 	ids := make(map[string]string, len(nodes))
 	for i, node := range nodes {
 		ids[node.Name] = "n" + strconv.Itoa(i)
@@ -373,7 +378,7 @@ func graphNodeIDs(nodes []GraphNodeSnapshot) map[string]string {
 	return ids
 }
 
-func nodeLabel(node GraphNodeSnapshot) string {
+func nodeLabel(node NodeSnapshot) string {
 	if node.Label != "" {
 		return node.Label
 	}
@@ -381,7 +386,7 @@ func nodeLabel(node GraphNodeSnapshot) string {
 	return node.Name
 }
 
-func sortEdges(edges []GraphEdgeSnapshot) {
+func sortEdges(edges []EdgeSnapshot) {
 	sort.Slice(edges, func(i, j int) bool {
 		if edges[i].From == edges[j].From {
 			return edges[i].To < edges[j].To
@@ -401,23 +406,23 @@ func escapeMermaidLabel(label string) string {
 	return label
 }
 
-func copyGraphSnapshot(snapshot GraphSnapshot) GraphSnapshot {
-	nodes := make([]GraphNodeSnapshot, len(snapshot.Nodes))
+func copySnapshot(snapshot Snapshot) Snapshot {
+	nodes := make([]NodeSnapshot, len(snapshot.Nodes))
 	for i, node := range snapshot.Nodes {
-		nodes[i] = GraphNodeSnapshot{
+		nodes[i] = NodeSnapshot{
 			Name:     node.Name,
 			Label:    node.Label,
 			Metadata: copyStringMap(node.Metadata),
 		}
 	}
 
-	edges := append([]GraphEdgeSnapshot(nil), snapshot.Edges...)
+	edges := append([]EdgeSnapshot(nil), snapshot.Edges...)
 	sources := append([]string(nil), snapshot.Sources...)
 	leaves := append([]string(nil), snapshot.Leaves...)
 	entries := append([]string(nil), snapshot.Entries...)
 	exits := append([]string(nil), snapshot.Exits...)
 
-	return GraphSnapshot{
+	return Snapshot{
 		Name:    snapshot.Name,
 		Frozen:  snapshot.Frozen,
 		Nodes:   nodes,

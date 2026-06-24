@@ -17,6 +17,7 @@ package benchmarks
 import (
 	"context"
 	"errors"
+	"github.com/photowey/disruptor.go/pkg/event"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -76,8 +77,8 @@ func benchmarkE2ELatencyQuantiles(
 	sampleEvery := latencySampleEvery(b.N)
 	latencies := make([]int64, 0, latencySampleLimit)
 	var latenciesMu sync.Mutex
-	handler := disruptor.EventHandlerFunc[latencyEvent](func(
-		request disruptor.EventRequest[latencyEvent],
+	handler := event.HandlerFunc[latencyEvent](func(
+		request event.Request[latencyEvent],
 	) error {
 		count := processed.Add(1)
 		if (count-1)%sampleEvery == 0 {

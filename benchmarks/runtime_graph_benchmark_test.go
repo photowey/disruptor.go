@@ -17,6 +17,8 @@ package benchmarks
 import (
 	"context"
 	"errors"
+	topology "github.com/photowey/disruptor.go/pkg/graph"
+	"github.com/photowey/disruptor.go/pkg/runtimegraph"
 	"sync/atomic"
 	"testing"
 
@@ -86,42 +88,42 @@ func benchmarkRuntimeGraphRouting(b *testing.B, shape string) {
 func newBenchmarkRuntimeGraph(
 	shape string,
 	processed *atomic.Int64,
-) (*disruptor.RuntimeGraph[benchEvent], int) {
+) (*runtimegraph.RuntimeGraph[benchEvent], int) {
 	handler := graphBenchHandler{processed: processed}
 	switch shape {
 	case "single_path":
-		return disruptor.MustRuntimeGraph[benchEvent]("runtime-single").
+		return runtimegraph.MustRuntimeGraph[benchEvent]("runtime-single").
 			MustNode("A", handler).
-			MustEdge(disruptor.GraphStartNode, "A").
-			MustEdge("A", disruptor.GraphEndNode), 1
+			MustEdge(topology.StartNode, "A").
+			MustEdge("A", topology.EndNode), 1
 	case "expression_branch":
-		return disruptor.MustRuntimeGraph[benchEvent]("runtime-expression").
+		return runtimegraph.MustRuntimeGraph[benchEvent]("runtime-expression").
 			MustNode("route", handler).
 			MustNode("fast", handler).
 			MustNode("audit", handler).
-			MustEdge(disruptor.GraphStartNode, "route").
-			MustEdge("route", "fast", disruptor.WhenExpression[benchEvent](`${value} >= 0`)).
-			MustEdge("route", "audit", disruptor.WhenExpression[benchEvent](`${value} < 0`)).
-			MustEdge("fast", disruptor.GraphEndNode).
-			MustEdge("audit", disruptor.GraphEndNode), 2
+			MustEdge(topology.StartNode, "route").
+			MustEdge("route", "fast", runtimegraph.WhenExpression[benchEvent](`${value} >= 0`)).
+			MustEdge("route", "audit", runtimegraph.WhenExpression[benchEvent](`${value} < 0`)).
+			MustEdge("fast", topology.EndNode).
+			MustEdge("audit", topology.EndNode), 2
 	case "active_join":
-		graph := disruptor.MustRuntimeGraph[benchEvent]("runtime-join").
+		graph := runtimegraph.MustRuntimeGraph[benchEvent]("runtime-join").
 			MustNode("A", handler).
 			MustNode("B", handler).
 			MustNode("C", handler).
 			MustEdge(
-				disruptor.GraphStartNode,
+				topology.StartNode,
 				"A",
-				disruptor.WhenCondition[benchEvent](benchRuntimeCondition(true)),
+				runtimegraph.WhenCondition[benchEvent](benchRuntimeCondition(true)),
 			).
 			MustEdge(
-				disruptor.GraphStartNode,
+				topology.StartNode,
 				"B",
-				disruptor.WhenCondition[benchEvent](benchRuntimeCondition(false)),
+				runtimegraph.WhenCondition[benchEvent](benchRuntimeCondition(false)),
 			).
 			MustEdge("A", "C").
 			MustEdge("B", "C").
-			MustEdge("C", disruptor.GraphEndNode)
+			MustEdge("C", topology.EndNode)
 		return graph, 2
 	default:
 		panic("unknown runtime graph benchmark shape: " + shape)
@@ -131,7 +133,7 @@ func newBenchmarkRuntimeGraph(
 type benchRuntimeCondition bool
 
 func (c benchRuntimeCondition) Evaluate(
-	request disruptor.EdgeConditionRequest[benchEvent],
+	request runtimegraph.EdgeConditionRequest[benchEvent],
 ) (bool, error) {
 	return bool(c), nil
 }

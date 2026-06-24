@@ -16,25 +16,25 @@ package main
 
 import (
 	"fmt"
-
-	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
+	topology "github.com/photowey/disruptor.go/pkg/graph"
 )
 
 type exportEvent struct{}
 
 type exportHandler struct{}
 
-func (exportHandler) OnEvent(request disruptor.EventRequest[exportEvent]) error {
+func (exportHandler) OnEvent(request event.Request[exportEvent]) error {
 	return nil
 }
 
 func main() {
-	graph := disruptor.MustGraph[exportEvent]("export").
+	graph := topology.Must[exportEvent]("export").
 		MustNode("validate", exportHandler{}).
 		MustNode("persist", exportHandler{}).
-		MustEdge(disruptor.GraphStartNode, "validate").
+		MustEdge(topology.StartNode, "validate").
 		MustEdge("validate", "persist").
-		MustEdge("persist", disruptor.GraphEndNode)
+		MustEdge("persist", topology.EndNode)
 
 	snapshot := graph.Snapshot()
 	fmt.Printf(

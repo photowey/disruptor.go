@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
 )
 
 func TestRingBufferReportsPublishMetricWhenSinkConfigured(t *testing.T) {
@@ -131,7 +132,7 @@ func TestBatchEventProcessorReportsEventHandledMetric(t *testing.T) {
 		t.Fatalf("new ring buffer: %v", err)
 	}
 
-	handler := disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+	handler := event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 		return nil
 	})
 	processor, err := disruptor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
@@ -179,7 +180,7 @@ func TestBatchEventProcessorReportsBatchStartMetric(t *testing.T) {
 	processor, err := disruptor.NewBatchEventProcessor(
 		rb,
 		rb.NewBarrier(),
-		disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+		event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 			return nil
 		}),
 	)
@@ -233,7 +234,7 @@ func TestBatchEventProcessorReportsProcessorStateMetrics(t *testing.T) {
 	processor, err := disruptor.NewBatchEventProcessor(
 		rb,
 		rb.NewBarrier(),
-		disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+		event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 			return nil
 		}),
 	)

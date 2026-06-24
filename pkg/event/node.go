@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package event
 
-// NodeContext identifies the graph and node that are handling a request.
-type NodeContext struct {
+// Node identifies the graph and node that are handling a request.
+type Node struct {
 	GraphName string
 	NodeName  string
 	NodeLabel string

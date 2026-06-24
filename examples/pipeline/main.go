@@ -17,6 +17,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/photowey/disruptor.go/pkg/event"
+	topology "github.com/photowey/disruptor.go/pkg/graph"
 	"strings"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
@@ -44,7 +46,7 @@ type pipelineHandler struct {
 	steps chan<- string
 }
 
-func (h pipelineHandler) OnEvent(request disruptor.EventRequest[orderEvent]) error {
+func (h pipelineHandler) OnEvent(request event.Request[orderEvent]) error {
 	h.steps <- fmt.Sprintf("%s:%d", request.Node.NodeName, request.Event.ID)
 	return nil
 }
@@ -59,14 +61,14 @@ func main() {
 	}
 
 	steps := make(chan string, 3)
-	graph := disruptor.MustGraph[orderEvent]("order-pipeline").
+	graph := topology.Must[orderEvent]("order-pipeline").
 		MustNode("validate", pipelineHandler{steps: steps}).
 		MustNode("enrich", pipelineHandler{steps: steps}).
 		MustNode("persist", pipelineHandler{steps: steps}).
-		MustEdge(disruptor.GraphStartNode, "validate").
+		MustEdge(topology.StartNode, "validate").
 		MustEdge("validate", "enrich").
 		MustEdge("enrich", "persist").
-		MustEdge("persist", disruptor.GraphEndNode)
+		MustEdge("persist", topology.EndNode)
 
 	if _, err := d.HandleGraph(graph); err != nil {
 		panic(err)

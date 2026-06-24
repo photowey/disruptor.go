@@ -22,15 +22,18 @@ import (
 	"time"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
+	topology "github.com/photowey/disruptor.go/pkg/graph"
+	"github.com/photowey/disruptor.go/pkg/runtimegraph"
 )
 
 func TestRuntimeGraphSnapshotAndValidationUseExplicitTerminals(t *testing.T) {
-	graph := disruptor.MustRuntimeGraph[longEvent]("runtime").
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime").
 		MustNode("A", runtimeRecordingHandler{}).
 		MustNode("B", runtimeRecordingHandler{}).
-		MustEdge(disruptor.GraphStartNode, "A").
-		MustEdge("A", "B", disruptor.WhenExpression[longEvent](`${enabled}`)).
-		MustEdge("B", disruptor.GraphEndNode)
+		MustEdge(topology.StartNode, "A").
+		MustEdge("A", "B", runtimegraph.WhenExpression[longEvent](`${enabled}`)).
+		MustEdge("B", topology.EndNode)
 
 	if err := graph.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)
@@ -52,7 +55,7 @@ func TestDisruptorHandleRuntimeGraphRoutesExpressionPaths(t *testing.T) {
 	defer cancel()
 
 	handled := make(chan string, 4)
-	graph := disruptor.MustRuntimeGraph[longEvent]("runtime-route").
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-route").
 		MustNode("validate", runtimeRecordingHandler{
 			name:    "validate",
 			handled: handled,
@@ -63,11 +66,11 @@ func TestDisruptorHandleRuntimeGraphRoutesExpressionPaths(t *testing.T) {
 		}).
 		MustNode("even", runtimeRecordingHandler{name: "even", handled: handled}).
 		MustNode("odd", runtimeRecordingHandler{name: "odd", handled: handled}).
-		MustEdge(disruptor.GraphStartNode, "validate").
-		MustEdge("validate", "even", disruptor.WhenExpression[longEvent](`${route.even}`)).
-		MustEdge("validate", "odd", disruptor.WhenExpression[longEvent](`${route.odd}`)).
-		MustEdge("even", disruptor.GraphEndNode).
-		MustEdge("odd", disruptor.GraphEndNode)
+		MustEdge(topology.StartNode, "validate").
+		MustEdge("validate", "even", runtimegraph.WhenExpression[longEvent](`${route.even}`)).
+		MustEdge("validate", "odd", runtimegraph.WhenExpression[longEvent](`${route.odd}`)).
+		MustEdge("even", topology.EndNode).
+		MustEdge("odd", topology.EndNode)
 
 	d := newRuntimeGraphTestDisruptor(t, 8)
 	if _, err := d.HandleRuntimeGraph(graph); err != nil {
@@ -88,15 +91,15 @@ func TestRuntimeGraphActiveJoinExecutesNodeOnceWhenOneInboundSelected(t *testing
 	defer cancel()
 
 	handled := make(chan string, 4)
-	graph := disruptor.MustRuntimeGraph[longEvent]("runtime-join").
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-join").
 		MustNode("A", runtimeRecordingHandler{name: "A", handled: handled}).
 		MustNode("B", runtimeRecordingHandler{name: "B", handled: handled}).
 		MustNode("C", runtimeRecordingHandler{name: "C", handled: handled}).
-		MustEdge(disruptor.GraphStartNode, "A", disruptor.WhenCondition[longEvent](runtimeBoolCondition(true))).
-		MustEdge(disruptor.GraphStartNode, "B", disruptor.WhenCondition[longEvent](runtimeBoolCondition(false))).
+		MustEdge(topology.StartNode, "A", runtimegraph.WhenCondition[longEvent](runtimeBoolCondition(true))).
+		MustEdge(topology.StartNode, "B", runtimegraph.WhenCondition[longEvent](runtimeBoolCondition(false))).
 		MustEdge("A", "C").
 		MustEdge("B", "C").
-		MustEdge("C", disruptor.GraphEndNode)
+		MustEdge("C", topology.EndNode)
 
 	d := newRuntimeGraphTestDisruptor(t, 8)
 	if _, err := d.HandleRuntimeGraph(graph); err != nil {
@@ -114,10 +117,10 @@ func TestRuntimeGraphActiveJoinExecutesNodeOnceWhenOneInboundSelected(t *testing
 
 func TestRuntimeGraphNoRouteDefaultHalts(t *testing.T) {
 	handled := make(chan string, 1)
-	graph := disruptor.MustRuntimeGraph[longEvent]("runtime-no-route").
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-no-route").
 		MustNode("A", runtimeRecordingHandler{name: "A", handled: handled}).
-		MustEdge(disruptor.GraphStartNode, "A", disruptor.WhenCondition[longEvent](runtimeBoolCondition(false))).
-		MustEdge("A", disruptor.GraphEndNode)
+		MustEdge(topology.StartNode, "A", runtimegraph.WhenCondition[longEvent](runtimeBoolCondition(false))).
+		MustEdge("A", topology.EndNode)
 
 	d := newRuntimeGraphTestDisruptor(t, 8)
 	if _, err := d.HandleRuntimeGraph(graph); err != nil {
@@ -129,16 +132,16 @@ func TestRuntimeGraphNoRouteDefaultHalts(t *testing.T) {
 
 	publishValues(t, d.RingBuffer(), 1)
 	err := d.Wait()
-	if !errors.Is(err, disruptor.ErrRuntimeNoRoute) {
-		t.Fatalf("wait error = %v, want ErrRuntimeNoRoute", err)
+	if !errors.Is(err, runtimegraph.ErrNoRoute) {
+		t.Fatalf("wait error = %v, want runtimegraph.ErrNoRoute", err)
 	}
 }
 
 func TestRuntimeGraphNoRouteCompleteAdvancesSequence(t *testing.T) {
-	graph := disruptor.MustRuntimeGraph[longEvent]("runtime-no-route-complete").
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-no-route-complete").
 		MustNode("A", runtimeRecordingHandler{name: "A"}).
-		MustEdge(disruptor.GraphStartNode, "A", disruptor.WhenCondition[longEvent](runtimeBoolCondition(false))).
-		MustEdge("A", disruptor.GraphEndNode)
+		MustEdge(topology.StartNode, "A", runtimegraph.WhenCondition[longEvent](runtimeBoolCondition(false))).
+		MustEdge("A", topology.EndNode)
 
 	d := newRuntimeGraphTestDisruptor(t, 1)
 	processors, err := d.HandleRuntimeGraph(
@@ -164,10 +167,10 @@ func TestRuntimeGraphNoRouteCompleteAdvancesSequence(t *testing.T) {
 }
 
 func TestRuntimeGraphMetricsSinkReceivesRoutingSignals(t *testing.T) {
-	graph := disruptor.MustRuntimeGraph[longEvent]("runtime-metrics").
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-metrics").
 		MustNode("A", runtimeRecordingHandler{}).
-		MustEdge(disruptor.GraphStartNode, "A").
-		MustEdge("A", disruptor.GraphEndNode)
+		MustEdge(topology.StartNode, "A").
+		MustEdge("A", topology.EndNode)
 
 	sink := newRuntimeGraphMetricRecorder()
 	d := newRuntimeGraphTestDisruptor(t, 8)
@@ -197,10 +200,10 @@ func TestRuntimeGraphExceptionHandlerReceivesFailures(t *testing.T) {
 	t.Run("handler", func(t *testing.T) {
 		handlerErr := errors.New("runtime handler failed")
 		recorder := newRuntimeExceptionRecorder()
-		graph := disruptor.MustRuntimeGraph[longEvent]("runtime-handler-error").
+		graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-handler-error").
 			MustNode("A", runtimeRecordingHandler{err: handlerErr}).
-			MustEdge(disruptor.GraphStartNode, "A").
-			MustEdge("A", disruptor.GraphEndNode)
+			MustEdge(topology.StartNode, "A").
+			MustEdge("A", topology.EndNode)
 
 		d := newRuntimeGraphTestDisruptor(t, 8)
 		if _, err := d.HandleRuntimeGraph(
@@ -229,14 +232,14 @@ func TestRuntimeGraphExceptionHandlerReceivesFailures(t *testing.T) {
 	t.Run("condition", func(t *testing.T) {
 		conditionErr := errors.New("runtime condition failed")
 		recorder := newRuntimeExceptionRecorder()
-		graph := disruptor.MustRuntimeGraph[longEvent]("runtime-condition-error").
+		graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-condition-error").
 			MustNode("A", runtimeRecordingHandler{}).
 			MustNode("B", runtimeRecordingHandler{}).
-			MustEdge(disruptor.GraphStartNode, "A").
-			MustEdge("A", "B", disruptor.WhenCondition[longEvent](
+			MustEdge(topology.StartNode, "A").
+			MustEdge("A", "B", runtimegraph.WhenCondition[longEvent](
 				runtimeErrorCondition{err: conditionErr},
 			)).
-			MustEdge("B", disruptor.GraphEndNode)
+			MustEdge("B", topology.EndNode)
 
 		d := newRuntimeGraphTestDisruptor(t, 8)
 		if _, err := d.HandleRuntimeGraph(
@@ -312,7 +315,7 @@ type runtimeRecordingHandler struct {
 	err     error
 }
 
-func (h runtimeRecordingHandler) OnEvent(request disruptor.EventRequest[longEvent]) error {
+func (h runtimeRecordingHandler) OnEvent(request event.Request[longEvent]) error {
 	if h.err != nil {
 		return h.err
 	}
@@ -331,7 +334,7 @@ func (h runtimeRecordingHandler) OnEvent(request disruptor.EventRequest[longEven
 type runtimeBoolCondition bool
 
 func (c runtimeBoolCondition) Evaluate(
-	request disruptor.EdgeConditionRequest[longEvent],
+	request runtimegraph.EdgeConditionRequest[longEvent],
 ) (bool, error) {
 	return bool(c), nil
 }
@@ -341,7 +344,7 @@ type runtimeErrorCondition struct {
 }
 
 func (c runtimeErrorCondition) Evaluate(
-	request disruptor.EdgeConditionRequest[longEvent],
+	request runtimegraph.EdgeConditionRequest[longEvent],
 ) (bool, error) {
 	return false, c.err
 }
@@ -358,10 +361,10 @@ func newRuntimeExceptionRecorder() runtimeExceptionRecorder {
 
 func (r runtimeExceptionRecorder) HandleRuntimeGraphException(
 	request disruptor.RuntimeGraphExceptionRequest[longEvent],
-) disruptor.ExceptionAction {
+) event.ExceptionAction {
 	r.requests <- request
 
-	return disruptor.ExceptionActionHalt
+	return event.ExceptionActionHalt
 }
 
 func (r runtimeExceptionRecorder) wait(

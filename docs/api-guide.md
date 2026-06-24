@@ -1,7 +1,14 @@
 # API Guide
 
-This guide documents the public V1 and V1.1 surface of
-`github.com/photowey/disruptor.go/pkg/disruptor`.
+This guide documents the public V1 through V1.2 surface. The API is split by
+responsibility:
+
+- `pkg/disruptor`: ring buffer, facade, processors, wait strategies, metrics
+- `pkg/event`: handler requests, lifecycle hooks, exception handlers
+- `pkg/graph`: static dependency graph builder, validation, snapshots, export
+- `pkg/runtimegraph`: conditional graph builder and edge conditions
+- `pkg/expression`: bool expression compiler
+- `pkg/runtimevars`: runtime variables and event value resolution
 
 ## Event Storage
 
@@ -29,9 +36,10 @@ event := rb.Get(0)
 event.Value = 42
 ```
 
-For quick adapters, the package also exposes `EventFactoryFunc[T]`,
-`EventTranslatorFunc[T]`, and `EventHandlerFunc[T]`. Public examples use named
-types so production code can keep dependencies explicit and replaceable.
+For quick adapters, `pkg/disruptor` exposes `EventFactoryFunc[T]` and
+`EventTranslatorFunc[T]`; `pkg/event` exposes `HandlerFunc[T]`. Public examples
+use named types so production code can keep dependencies explicit and
+replaceable.
 
 ## Low-Level Ring Buffer
 
@@ -121,7 +129,7 @@ type LongEventHandler struct {
 }
 
 func (h LongEventHandler) OnEvent(
-    request disruptor.EventRequest[LongEvent],
+    request event.Request[LongEvent],
 ) error {
     h.Done <- request.Event.Value
     return nil
@@ -143,24 +151,24 @@ if err := d.Start(ctx); err != nil {
 defer d.Stop()
 ```
 
-`HandleEventsWith` and `HandleGraph` are mutually exclusive on one
-`Disruptor[T]` instance. Create a new disruptor when an application needs a
-separate fan-out stream and a graph stream.
+`HandleEventsWith`, `HandleGraph`, and `HandleRuntimeGraph` are mutually
+exclusive on one `Disruptor[T]` instance. Create a new disruptor when an
+application needs separate fan-out, static graph, and runtime graph streams.
 
 `HandleEventsWithOptions` attaches processor-specific options, currently
 `WithExceptionHandler[T](handler)`.
 
 ```go
-retryHandler, err := disruptor.NewRetryExceptionHandler[LongEvent](
+retryHandler, err := event.NewRetryExceptionHandler[LongEvent](
     2,
-    disruptor.ExceptionActionHalt,
+    event.ExceptionActionHalt,
 )
 if err != nil {
     return err
 }
 
 _, err = d.HandleEventsWithOptions(
-    []disruptor.EventHandler[LongEvent]{LongEventHandler{Done: done}},
+    []event.Handler[LongEvent]{LongEventHandler{Done: done}},
     disruptor.WithExceptionHandler[LongEvent](retryHandler),
 )
 ```
@@ -209,14 +217,14 @@ flowchart LR
 ```
 
 ```go
-graph := disruptor.MustGraph[LongEvent]("order-pipeline").
+graph := topology.Must[LongEvent]("order-pipeline").
     MustNode("validate", validateHandler).
     MustNode("enrich", enrichHandler).
     MustNode("persist", persistHandler).
-    MustEdge(disruptor.GraphStartNode, "validate").
+    MustEdge(topology.StartNode, "validate").
     MustEdge("validate", "enrich").
     MustEdge("enrich", "persist").
-    MustEdge("persist", disruptor.GraphEndNode)
+    MustEdge("persist", topology.EndNode)
 
 processors, err := d.HandleGraph(graph)
 if err != nil {
@@ -239,20 +247,20 @@ graph.Join("validate", "enrich").MustTo("persist")
 
 `Snapshot`, `Mermaid`, and `DOT` include reserved virtual terminals:
 
-- `GraphStartNode` has the value `START`.
-- `GraphEndNode` has the value `END`.
+- `graph.StartNode` has the value `START`.
+- `graph.EndNode` has the value `END`.
 
 The virtual terminals make exported graphs complete. They are not real handler
 nodes and cannot be registered through `Node`. In V1.2, terminal edges are
 explicit and must be declared manually through `Edge`:
 
 ```go
-graph.MustEdge(disruptor.GraphStartNode, "validate").
-    MustEdge("persist", disruptor.GraphEndNode)
+graph.MustEdge(topology.StartNode, "validate").
+    MustEdge("persist", topology.EndNode)
 ```
 
-`GraphSnapshot.Nodes` includes virtual `START` and `END` when the graph has
-real nodes. `GraphSnapshot.Edges` includes only developer-declared edges.
+`graph.Snapshot.Nodes` includes virtual `START` and `END` when the graph has
+real nodes. `graph.Snapshot.Edges` includes only developer-declared edges.
 `Sources` and `Leaves` list real handler nodes by real-node dependencies.
 `Entries` lists real nodes targeted by `START -> node`; `Exits` lists real
 nodes connected through `node -> END`. `Validate` requires `Entries` to match
@@ -272,22 +280,23 @@ stop, and wait.
 Graph handlers receive lightweight node context on each request:
 
 ```go
-type NodeContext struct {
+type Node struct {
     GraphName string
     NodeName  string
     NodeLabel string
 }
 ```
 
-`EventRequest`, `BatchStartRequest`, `EventException`, `LifecycleException`,
-`BatchMetric`, `EventMetric`, and `ProcessorMetric` also carry `NodeContext`
-when they originate from graph processors.
+`event.Request`, `event.BatchStartRequest`, `event.Exception`,
+`event.LifecycleException`, `disruptor.BatchMetric`, `disruptor.EventMetric`,
+and `disruptor.ProcessorMetric` also carry `event.Node` when they originate
+from graph processors.
 
 Graph mode uses its own exception semantics:
 
-- `ExceptionActionContinue` advances the sequence and keeps the graph moving.
-- `ExceptionActionRetry` retries the same sequence.
-- `ExceptionActionHalt` is graph-terminal and does not advance the failed
+- `event.ExceptionActionContinue` advances the sequence and keeps the graph moving.
+- `event.ExceptionActionRetry` retries the same sequence.
+- `event.ExceptionActionHalt` is graph-terminal and does not advance the failed
   sequence.
 
 Graph mode keeps producer backpressure on leaf processors only. Intermediate
@@ -314,15 +323,15 @@ flowchart LR
 ```
 
 ```go
-runtimeGraph := disruptor.MustRuntimeGraph[LongEvent]("runtime-route").
+runtimeGraph := runtimegraph.MustRuntimeGraph[LongEvent]("runtime-route").
     MustNode("route", routeHandler).
     MustNode("fast", fastHandler).
     MustNode("audit", auditHandler).
-    MustEdge(disruptor.GraphStartNode, "route").
-    MustEdge("route", "fast", disruptor.WhenExpression[LongEvent](`${route.fast}`)).
-    MustEdge("route", "audit", disruptor.WhenExpression[LongEvent](`${route.audit}`)).
-    MustEdge("fast", disruptor.GraphEndNode).
-    MustEdge("audit", disruptor.GraphEndNode)
+    MustEdge(topology.StartNode, "route").
+    MustEdge("route", "fast", runtimegraph.WhenExpression[LongEvent](`${route.fast}`)).
+    MustEdge("route", "audit", runtimegraph.WhenExpression[LongEvent](`${route.audit}`)).
+    MustEdge("fast", topology.EndNode).
+    MustEdge("audit", topology.EndNode)
 
 processors, err := d.HandleRuntimeGraph(runtimeGraph)
 if err != nil {
@@ -332,7 +341,7 @@ if err != nil {
 _ = processors
 ```
 
-Handlers receive `EventRequest.Runtime`, a per-event runtime context. Handlers
+Handlers receive `event.Request.Runtime`, a per-event runtime context. Handlers
 can set variables:
 
 ```go
@@ -341,9 +350,9 @@ request.Runtime.Set("risk.score", 91)
 ```
 
 Expression edges read the merged variable view. Lookup order is runtime bag,
-configured `RuntimeVariablesProvider[T]`, then configured event value resolver.
-The default event resolver uses reflection and supports struct fields, JSON
-tags, and string-keyed maps.
+configured `runtimevars.Provider[T]`, then configured event value resolver. The
+default event resolver uses reflection and supports struct fields, JSON tags,
+and string-keyed maps.
 
 Runtime expressions support:
 
@@ -392,8 +401,8 @@ Graph options:
 
 Runtime graph options:
 
-- `WithRuntimeGraphExpressionCompiler(compiler)`
-- `NewRuntimeExpressionCompiler(WithExpressionValueConverter(converter))`
+- `runtimegraph.WithExpressionCompiler(compiler)`
+- `expression.NewCompiler(expression.WithValueConverter(converter))`
 
 Runtime graph handle options:
 
@@ -410,9 +419,12 @@ runtime graph scheduler processor.
 
 Node options:
 
-- `WithNodeExceptionHandler[T](handler)`
-- `WithNodeLabel[T](label)`
-- `WithNodeMetadata[T](key, value)`
+- `graph.WithNodeExceptionHandler[T](handler)`
+- `graph.WithNodeLabel[T](label)`
+- `graph.WithNodeMetadata[T](key, value)`
+- `runtimegraph.WithNodeExceptionHandler[T](handler)`
+- `runtimegraph.WithNodeLabel[T](label)`
+- `runtimegraph.WithNodeMetadata[T](key, value)`
 
 Options are separated by lifecycle stage so a processor option cannot be passed
 to ring-buffer construction.
@@ -460,7 +472,7 @@ Required:
 
 ```go
 type EventHandler[T any] interface {
-    OnEvent(request disruptor.EventRequest[T]) error
+    OnEvent(request event.Request[T]) error
 }
 ```
 
@@ -468,7 +480,7 @@ Optional:
 
 ```go
 type BatchStartHandler interface {
-    OnBatchStart(request disruptor.BatchStartRequest) error
+    OnBatchStart(request event.BatchStartRequest) error
 }
 
 type LifecycleHandler interface {
@@ -486,24 +498,25 @@ and routed through the configured exception policy.
 Default behavior is fail-fast:
 
 ```go
-handler := disruptor.NewFatalExceptionHandler[LongEvent]()
+handler := event.NewFatalExceptionHandler[LongEvent]()
 ```
 
 Built-ins:
 
-- `NewFatalExceptionHandler[T]()` returns `ExceptionActionHalt`.
-- `NewIgnoreExceptionHandler[T]()` returns `ExceptionActionContinue`.
-- `NewRetryExceptionHandler[T](maxRetries, exhaustedAction)` retries a failed
-  event up to `maxRetries` times before returning the exhausted action.
+- `event.NewFatalExceptionHandler[T]()` returns `event.ExceptionActionHalt`.
+- `event.NewIgnoreExceptionHandler[T]()` returns `event.ExceptionActionContinue`.
+- `event.NewRetryExceptionHandler[T](maxRetries, exhaustedAction)` retries a
+  failed event up to `maxRetries` times before returning the exhausted action.
 
 Actions:
 
-- `ExceptionActionHalt`: stop the processor and return the error from `Wait`.
-- `ExceptionActionContinue`: advance the failed sequence and continue.
-- `ExceptionActionRetry`: retry the same sequence without advancing.
+- `event.ExceptionActionHalt`: stop the processor and return the error from `Wait`.
+- `event.ExceptionActionContinue`: advance the failed sequence and continue.
+- `event.ExceptionActionRetry`: retry the same sequence without advancing.
 
-`NewRetryExceptionHandler` rejects negative retry counts. Its exhausted action
-must be either `ExceptionActionHalt` or `ExceptionActionContinue`.
+`event.NewRetryExceptionHandler` rejects negative retry counts. Its exhausted
+action must be either `event.ExceptionActionHalt` or
+`event.ExceptionActionContinue`.
 
 ## Metrics
 

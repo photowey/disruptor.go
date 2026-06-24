@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/photowey/disruptor.go/pkg/event"
 	"sync/atomic"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
@@ -38,7 +39,7 @@ type retryingHandler struct {
 	done     chan<- int64
 }
 
-func (h retryingHandler) OnEvent(request disruptor.EventRequest[recoveryEvent]) error {
+func (h retryingHandler) OnEvent(request event.Request[recoveryEvent]) error {
 	attempt := h.attempts.Add(1)
 	if attempt <= 2 {
 		return errors.New("temporary failure")
@@ -72,15 +73,15 @@ func main() {
 	done := make(chan int64, 1)
 	handler := retryingHandler{attempts: &attempts, done: done}
 
-	retryHandler, err := disruptor.NewRetryExceptionHandler[recoveryEvent](
+	retryHandler, err := event.NewRetryExceptionHandler[recoveryEvent](
 		2,
-		disruptor.ExceptionActionHalt,
+		event.ExceptionActionHalt,
 	)
 	if err != nil {
 		panic(err)
 	}
 	_, err = d.HandleEventsWithOptions(
-		[]disruptor.EventHandler[recoveryEvent]{handler},
+		[]event.Handler[recoveryEvent]{handler},
 		disruptor.WithExceptionHandler[recoveryEvent](retryHandler),
 	)
 	if err != nil {

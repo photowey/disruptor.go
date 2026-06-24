@@ -17,6 +17,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/photowey/disruptor.go/pkg/event"
+	topology "github.com/photowey/disruptor.go/pkg/graph"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
 )
@@ -41,7 +43,7 @@ func (t diamondTranslator) Translate(request disruptor.TranslateRequest[diamondE
 
 type branchHandler struct{}
 
-func (branchHandler) OnEvent(request disruptor.EventRequest[diamondEvent]) error {
+func (branchHandler) OnEvent(request event.Request[diamondEvent]) error {
 	return nil
 }
 
@@ -49,7 +51,7 @@ type finalHandler struct {
 	done chan<- string
 }
 
-func (h finalHandler) OnEvent(request disruptor.EventRequest[diamondEvent]) error {
+func (h finalHandler) OnEvent(request event.Request[diamondEvent]) error {
 	h.done <- fmt.Sprintf("diamond:%s after B+C for %d", request.Node.NodeName, request.Event.ID)
 	return nil
 }
@@ -64,16 +66,16 @@ func main() {
 	}
 
 	done := make(chan string, 1)
-	graph := disruptor.MustGraph[diamondEvent]("diamond").
+	graph := topology.Must[diamondEvent]("diamond").
 		MustNode("A", branchHandler{}).
 		MustNode("B", branchHandler{}).
 		MustNode("C", branchHandler{}).
 		MustNode("D", finalHandler{done: done}).
-		MustEdge(disruptor.GraphStartNode, "A").
+		MustEdge(topology.StartNode, "A").
 		MustEdge("A", "B").
 		MustEdge("A", "C")
 	graph.Join("B", "C").MustTo("D")
-	graph.MustEdge("D", disruptor.GraphEndNode)
+	graph.MustEdge("D", topology.EndNode)
 
 	if _, err := d.HandleGraph(graph); err != nil {
 		panic(err)

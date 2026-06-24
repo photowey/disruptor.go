@@ -23,6 +23,39 @@ type Request[T any] struct {
 	Sequence int64
 }
 
+// Provider supplies read-only variables for one runtime event.
+type Provider[T any] interface {
+	Variables(request ProviderRequest[T]) (Variables, error)
+}
+
+// ProviderFunc adapts a function to Provider.
+type ProviderFunc[T any] func(request ProviderRequest[T]) (Variables, error)
+
+// Variables calls the wrapped provider function.
+func (fn ProviderFunc[T]) Variables(request ProviderRequest[T]) (Variables, error) {
+	if fn == nil {
+		return nil, nil
+	}
+
+	return fn(request)
+}
+
+// ProviderRequest describes a runtime variable provider request.
+type ProviderRequest[T any] struct {
+	Context   context.Context
+	Event     *T
+	Sequence  int64
+	GraphName string
+}
+
+// ContextView exposes mutable event-scoped runtime variables.
+type ContextView interface {
+	Variables
+	Set(path string, value any) error
+	Delete(path string) error
+	Variables() Variables
+}
+
 // Context exposes event-scoped runtime variables to handlers.
 type Context[T any] struct {
 	bag       *Bag

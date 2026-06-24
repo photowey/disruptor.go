@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/photowey/disruptor.go/pkg/event"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
 )
@@ -35,7 +36,7 @@ type singleHandler struct {
 	done chan<- int64
 }
 
-func (h singleHandler) OnEvent(request disruptor.EventRequest[singleEvent]) error {
+func (h singleHandler) OnEvent(request event.Request[singleEvent]) error {
 	h.done <- request.Event.Value
 	return nil
 }

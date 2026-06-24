@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
 )
 
 func TestDisruptorFacadeStartsParallelConsumers(t *testing.T) {
@@ -43,8 +44,8 @@ func TestDisruptorFacadeStartsParallelConsumers(t *testing.T) {
 	}
 	done := make(chan struct{})
 
-	handler := func(name string) disruptor.EventHandler[longEvent] {
-		return disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+	handler := func(name string) event.Handler[longEvent] {
+		return event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -115,8 +116,8 @@ func TestDisruptorHandleEventsWithRollsBackAfterNilHandler(t *testing.T) {
 			t.Fatalf("new disruptor: %v", err)
 		}
 
-		handler := disruptor.EventHandlerFunc[longEvent](func(
-			request disruptor.EventRequest[longEvent],
+		handler := event.HandlerFunc[longEvent](func(
+			request event.Request[longEvent],
 		) error {
 			return nil
 		})
@@ -145,8 +146,8 @@ func TestDisruptorHandleEventsWithRollsBackAfterNilHandler(t *testing.T) {
 		}
 
 		stale := make(chan struct{}, 1)
-		staleHandler := disruptor.EventHandlerFunc[longEvent](func(
-			request disruptor.EventRequest[longEvent],
+		staleHandler := event.HandlerFunc[longEvent](func(
+			request event.Request[longEvent],
 		) error {
 			stale <- struct{}{}
 			return nil
@@ -156,8 +157,8 @@ func TestDisruptorHandleEventsWithRollsBackAfterNilHandler(t *testing.T) {
 		}
 
 		active := make(chan struct{}, 1)
-		activeHandler := disruptor.EventHandlerFunc[longEvent](func(
-			request disruptor.EventRequest[longEvent],
+		activeHandler := event.HandlerFunc[longEvent](func(
+			request event.Request[longEvent],
 		) error {
 			active <- struct{}{}
 			return nil
@@ -197,8 +198,8 @@ func TestDisruptorRejectsHandlerRegistrationAfterStart(t *testing.T) {
 	}
 	defer d.Stop()
 
-	_, err = d.HandleEventsWith(disruptor.EventHandlerFunc[longEvent](
-		func(request disruptor.EventRequest[longEvent]) error {
+	_, err = d.HandleEventsWith(event.HandlerFunc[longEvent](
+		func(request event.Request[longEvent]) error {
 			return nil
 		},
 	))
@@ -220,7 +221,7 @@ func TestDisruptorWaitReturnsProcessorError(t *testing.T) {
 	}
 
 	handlerErr := errDisruptorTestHandler
-	_, err = d.HandleEventsWith(disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+	_, err = d.HandleEventsWith(event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 		return handlerErr
 	}))
 	if err != nil {
@@ -250,10 +251,10 @@ func TestDisruptorWaitStopsPeerProcessorsWhenOneFails(t *testing.T) {
 
 	handlerErr := errDisruptorTestHandler
 	_, err = d.HandleEventsWith(
-		disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+		event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 			return handlerErr
 		}),
-		disruptor.EventHandlerFunc[longEvent](func(request disruptor.EventRequest[longEvent]) error {
+		event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 			return nil
 		}),
 	)

@@ -21,6 +21,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/runtimevars"
 )
 
 // EventProcessor controls a processor lifecycle and exposes its sequence.
@@ -35,9 +38,9 @@ type EventProcessor interface {
 type BatchEventProcessor[T any] struct {
 	ringBuffer       *RingBuffer[T]
 	barrier          Barrier
-	handler          EventHandler[T]
-	exceptionHandler ExceptionHandler[T]
-	node             NodeContext
+	handler          event.Handler[T]
+	exceptionHandler event.ExceptionHandler[T]
+	node             event.Node
 	producerGating   bool
 	haltAdvances     bool
 	onHalt           func()
@@ -53,10 +56,10 @@ type BatchEventProcessor[T any] struct {
 }
 
 type batchEventProcessorConfig[T any] struct {
-	exceptionHandler ExceptionHandler[T]
+	exceptionHandler event.ExceptionHandler[T]
 	producerGating   bool
 	haltAdvances     bool
-	node             NodeContext
+	node             event.Node
 	onHalt           func()
 }
 
@@ -64,7 +67,7 @@ type batchEventProcessorConfig[T any] struct {
 func NewBatchEventProcessor[T any](
 	ringBuffer *RingBuffer[T],
 	barrier Barrier,
-	handler EventHandler[T],
+	handler event.Handler[T],
 	opts ...ProcessorOption[T],
 ) (*BatchEventProcessor[T], error) {
 	return newBatchEventProcessor(
@@ -83,7 +86,7 @@ func NewBatchEventProcessor[T any](
 func newBatchEventProcessor[T any](
 	ringBuffer *RingBuffer[T],
 	barrier Barrier,
-	handler EventHandler[T],
+	handler event.Handler[T],
 	config batchEventProcessorConfig[T],
 	opts ...ProcessorOption[T],
 ) (*BatchEventProcessor[T], error) {
@@ -206,7 +209,7 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 			return
 		}
 
-		batchRequest := BatchStartRequest{
+		batchRequest := event.BatchStartRequest{
 			Context:    ctx,
 			BatchSize:  availableSequence - nextSequence + 1,
 			QueueDepth: availableSequence - nextSequence + 1,
@@ -217,13 +220,13 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 		}
 		p.batchStartMetric(batchRequest)
 		for nextSequence <= availableSequence {
-			request := EventRequest[T]{
+			request := event.Request[T]{
 				Context:    ctx,
 				Event:      p.ringBuffer.Get(nextSequence),
 				Sequence:   nextSequence,
 				EndOfBatch: nextSequence == availableSequence,
 				Node:       p.node,
-				Runtime:    noopRuntimeContext{},
+				Runtime:    runtimevars.NoopContext{},
 			}
 
 			var started time.Time
@@ -233,7 +236,7 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 			err := p.invokeHandler(request)
 			p.eventHandledMetric(nextSequence, started, err)
 			if err != nil {
-				action := p.exceptionHandler.HandleEventException(EventException[T]{
+				action := p.exceptionHandler.HandleEventException(event.Exception[T]{
 					Context:  ctx,
 					Event:    request.Event,
 					Sequence: nextSequence,
@@ -242,11 +245,11 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 				})
 
 				switch action {
-				case ExceptionActionContinue:
+				case event.ExceptionActionContinue:
 					p.storeSequence(nextSequence)
 					nextSequence++
 					continue
-				case ExceptionActionRetry:
+				case event.ExceptionActionRetry:
 					continue
 				default:
 					if p.haltAdvances {
@@ -265,7 +268,7 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 	}
 }
 
-func (p *BatchEventProcessor[T]) invokeHandler(request EventRequest[T]) (err error) {
+func (p *BatchEventProcessor[T]) invokeHandler(request event.Request[T]) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("disruptor: handler panic: %v", recovered)
@@ -276,8 +279,8 @@ func (p *BatchEventProcessor[T]) invokeHandler(request EventRequest[T]) (err err
 }
 
 func (p *BatchEventProcessor[T]) invokeBatchStart(
-	handler BatchStartHandler,
-	request BatchStartRequest,
+	handler event.BatchStartHandler,
+	request event.BatchStartRequest,
 ) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -290,7 +293,7 @@ func (p *BatchEventProcessor[T]) invokeBatchStart(
 
 func (p *BatchEventProcessor[T]) invokeLifecycleStart(
 	ctx context.Context,
-	handler LifecycleHandler,
+	handler event.LifecycleHandler,
 ) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -303,7 +306,7 @@ func (p *BatchEventProcessor[T]) invokeLifecycleStart(
 
 func (p *BatchEventProcessor[T]) invokeLifecycleShutdown(
 	ctx context.Context,
-	handler LifecycleHandler,
+	handler event.LifecycleHandler,
 ) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -330,7 +333,7 @@ func (p *BatchEventProcessor[T]) storeTerminalErr(err error) {
 }
 
 func (p *BatchEventProcessor[T]) notifyLifecycleStart(ctx context.Context) bool {
-	handler, ok := p.handler.(LifecycleHandler)
+	handler, ok := p.handler.(event.LifecycleHandler)
 	if !ok {
 		return true
 	}
@@ -341,15 +344,15 @@ func (p *BatchEventProcessor[T]) notifyLifecycleStart(ctx context.Context) bool 
 			return true
 		}
 
-		action := p.exceptionHandler.HandleStartException(LifecycleException{
+		action := p.exceptionHandler.HandleStartException(event.LifecycleException{
 			Context: ctx,
 			Err:     err,
 			Node:    p.node,
 		})
 		switch action {
-		case ExceptionActionContinue:
+		case event.ExceptionActionContinue:
 			return true
-		case ExceptionActionRetry:
+		case event.ExceptionActionRetry:
 			continue
 		default:
 			p.storeTerminalErr(err)
@@ -359,7 +362,7 @@ func (p *BatchEventProcessor[T]) notifyLifecycleStart(ctx context.Context) bool 
 }
 
 func (p *BatchEventProcessor[T]) notifyLifecycleShutdown(ctx context.Context) {
-	handler, ok := p.handler.(LifecycleHandler)
+	handler, ok := p.handler.(event.LifecycleHandler)
 	if !ok {
 		return
 	}
@@ -370,15 +373,15 @@ func (p *BatchEventProcessor[T]) notifyLifecycleShutdown(ctx context.Context) {
 			return
 		}
 
-		action := p.exceptionHandler.HandleShutdownException(LifecycleException{
+		action := p.exceptionHandler.HandleShutdownException(event.LifecycleException{
 			Context: ctx,
 			Err:     err,
 			Node:    p.node,
 		})
 		switch action {
-		case ExceptionActionContinue:
+		case event.ExceptionActionContinue:
 			return
-		case ExceptionActionRetry:
+		case event.ExceptionActionRetry:
 			continue
 		default:
 			p.storeTerminalErr(err)
@@ -387,8 +390,8 @@ func (p *BatchEventProcessor[T]) notifyLifecycleShutdown(ctx context.Context) {
 	}
 }
 
-func (p *BatchEventProcessor[T]) notifyBatchStart(request BatchStartRequest) bool {
-	handler, ok := p.handler.(BatchStartHandler)
+func (p *BatchEventProcessor[T]) notifyBatchStart(request event.BatchStartRequest) bool {
+	handler, ok := p.handler.(event.BatchStartHandler)
 	if !ok {
 		return true
 	}
@@ -399,15 +402,15 @@ func (p *BatchEventProcessor[T]) notifyBatchStart(request BatchStartRequest) boo
 			return true
 		}
 
-		action := p.exceptionHandler.HandleStartException(LifecycleException{
+		action := p.exceptionHandler.HandleStartException(event.LifecycleException{
 			Context: request.Context,
 			Err:     err,
 			Node:    p.node,
 		})
 		switch action {
-		case ExceptionActionContinue:
+		case event.ExceptionActionContinue:
 			return true
-		case ExceptionActionRetry:
+		case event.ExceptionActionRetry:
 			continue
 		default:
 			p.storeTerminalErr(err)
@@ -416,7 +419,7 @@ func (p *BatchEventProcessor[T]) notifyBatchStart(request BatchStartRequest) boo
 	}
 }
 
-func (p *BatchEventProcessor[T]) batchStartMetric(request BatchStartRequest) {
+func (p *BatchEventProcessor[T]) batchStartMetric(request event.BatchStartRequest) {
 	if p.ringBuffer.metrics == nil {
 		return
 	}
@@ -462,12 +465,12 @@ func (p *BatchEventProcessor[T]) notifyHalt() {
 }
 
 func (p *BatchEventProcessor[T]) resetRetryState(sequence int64) {
-	resetter, ok := p.exceptionHandler.(interface{ resetRetry(sequence int64) })
+	resetter, ok := p.exceptionHandler.(interface{ ResetRetry(sequence int64) })
 	if !ok {
 		return
 	}
 
-	resetter.resetRetry(sequence)
+	resetter.ResetRetry(sequence)
 }
 
 func (p *BatchEventProcessor[T]) storeSequence(sequence int64) {

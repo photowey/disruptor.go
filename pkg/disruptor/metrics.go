@@ -14,7 +14,11 @@
 
 package disruptor
 
-import "time"
+import (
+	"time"
+
+	"github.com/photowey/disruptor.go/pkg/event"
+)
 
 // MetricsSink receives backend-neutral runtime metrics.
 type MetricsSink interface {
@@ -116,7 +120,7 @@ type PublishMetric struct {
 type BatchMetric struct {
 	BatchSize  int64
 	QueueDepth int64
-	Node       NodeContext
+	Node       event.Node
 }
 
 // EventMetric describes a handled event.
@@ -124,7 +128,7 @@ type EventMetric struct {
 	Sequence int64
 	Duration time.Duration
 	Err      error
-	Node     NodeContext
+	Node     event.Node
 }
 
 // WaitMetric describes a wait operation.
@@ -140,5 +144,5 @@ type WaitMetric struct {
 type ProcessorMetric struct {
 	State string
 	Err   error
-	Node  NodeContext
+	Node  event.Node
 }

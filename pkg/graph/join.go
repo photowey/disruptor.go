@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package graph
 
 import "fmt"
 
@@ -37,10 +37,10 @@ func (g *Graph[T]) Join(sources ...string) JoinBuilder[T] {
 
 func (b graphJoinBuilder[T]) To(targets ...string) error {
 	if len(b.sources) == 0 {
-		return fmt.Errorf("%w: join sources are empty", ErrInvalidGraph)
+		return fmt.Errorf("%w: join sources are empty", ErrInvalid)
 	}
 	if len(targets) == 0 {
-		return fmt.Errorf("%w: join targets are empty", ErrInvalidGraph)
+		return fmt.Errorf("%w: join targets are empty", ErrInvalid)
 	}
 
 	for _, source := range b.sources {

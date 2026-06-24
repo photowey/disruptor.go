@@ -13,13 +13,18 @@ adapters, or recovery policies.
 ## Install
 
 ```bash
-go get github.com/photowey/disruptor.go/pkg/disruptor
+go get github.com/photowey/disruptor.go
 ```
 
-Import the public package:
+Import the packages you use:
 
 ```go
-import "github.com/photowey/disruptor.go/pkg/disruptor"
+import (
+    "github.com/photowey/disruptor.go/pkg/disruptor"
+    "github.com/photowey/disruptor.go/pkg/event"
+    topology "github.com/photowey/disruptor.go/pkg/graph"
+    "github.com/photowey/disruptor.go/pkg/runtimegraph"
+)
 ```
 
 ## Quick Start
@@ -34,6 +39,7 @@ import (
     "fmt"
 
     "github.com/photowey/disruptor.go/pkg/disruptor"
+    "github.com/photowey/disruptor.go/pkg/event"
 )
 
 type LongEvent struct {
@@ -51,7 +57,7 @@ type LongEventHandler struct {
 }
 
 func (h LongEventHandler) OnEvent(
-    request disruptor.EventRequest[LongEvent],
+    request event.Request[LongEvent],
 ) error {
     h.Done <- request.Event.Value
     return nil
@@ -114,19 +120,19 @@ type GraphStepHandler struct {
 }
 
 func (h GraphStepHandler) OnEvent(
-    request disruptor.EventRequest[LongEvent],
+    request event.Request[LongEvent],
 ) error {
     h.Steps <- fmt.Sprintf("%s:%d", request.Node.NodeName, request.Event.Value)
     return nil
 }
 
 steps := make(chan string, 2)
-graph := disruptor.MustGraph[LongEvent]("quickstart").
+graph := topology.Must[LongEvent]("quickstart").
     MustNode("validate", GraphStepHandler{Steps: steps}).
     MustNode("persist", GraphStepHandler{Steps: steps}).
-    MustEdge(disruptor.GraphStartNode, "validate").
+    MustEdge(topology.StartNode, "validate").
     MustEdge("validate", "persist").
-    MustEdge("persist", disruptor.GraphEndNode)
+    MustEdge("persist", topology.EndNode)
 
 graphDisruptor, err := disruptor.New(LongEventFactory{}, 1024)
 if err != nil {
@@ -147,12 +153,13 @@ if err != nil {
   processors.
 - `HandleEventsWith` wires the V1 fan-out mode where every consumer receives
   every event.
-- `Graph[T]` and `HandleGraph` wire V1.1 dependency topologies such as
+- `graph.Graph[T]` and `HandleGraph` wire V1.1 dependency topologies such as
   pipelines, fan-in, fan-out, and diamond graphs.
-- `RuntimeGraph[T]` and `HandleRuntimeGraph` wire V1.2 conditional routing
-  graphs where each event may activate a different path.
-- `EventFactory[T]`, `EventTranslator[T]`, `EventHandler[T]`,
-  `ExceptionHandler[T]`, `WaitStrategy`, and `MetricsSink` are interfaces.
+- `runtimegraph.RuntimeGraph[T]` and `HandleRuntimeGraph` wire V1.2 conditional
+  routing graphs where each event may activate a different path.
+- `disruptor.EventFactory[T]`, `disruptor.EventTranslator[T]`,
+  `event.Handler[T]`, `event.ExceptionHandler[T]`, `disruptor.WaitStrategy`,
+  and `disruptor.MetricsSink` are interfaces.
 - `XxxFunc` adapters are available where callbacks are useful without exposing
   anonymous function types in public signatures.
 - `context.Context` is accepted by blocking producer and processor operations so
@@ -166,36 +173,35 @@ if err != nil {
 flowchart TB
     App["Application"] --> D["Disruptor[T]"]
     App --> RB["RingBuffer[T]"]
-    D --> RB
+    App --> EventPkg["pkg/event contracts"]
+    App --> GraphPkg["pkg/graph"]
+    App --> RuntimeGraphPkg["pkg/runtimegraph"]
+    RuntimeGraphPkg --> ExprPkg["pkg/expression"]
+    RuntimeGraphPkg --> VarsPkg["pkg/runtimevars"]
 
-    subgraph Core["Core ring"]
+    subgraph DisruptorPkg["pkg/disruptor"]
+        D --> RB
         RB --> S["Sequencer"]
         RB --> W["WaitStrategy"]
         RB --> M["MetricsSink"]
-    end
 
-    subgraph Modes["Processing modes"]
         D --> Fanout["HandleEventsWith"]
         D --> StaticGraph["HandleGraph"]
         D --> RuntimeGraphMode["HandleRuntimeGraph"]
+        Fanout --> P["BatchEventProcessor[T]"]
+        StaticGraph --> GP["GraphProcessors"]
+        RuntimeGraphMode --> RSP["runtime graph scheduler"]
     end
 
-    Fanout --> P["BatchEventProcessor[T]"]
-    StaticGraph --> G["Graph[T]"]
-    StaticGraph --> GP["GraphProcessors"]
-    RuntimeGraphMode --> RG["RuntimeGraph[T]"]
-    RuntimeGraphMode --> RSP["runtime graph scheduler"]
-
     P --> B["Barrier"]
-    P --> H["EventHandler[T]"]
-    P --> E["ExceptionHandler[T]"]
+    P --> EventPkg
     GP --> B
-    GP --> H
-    RG --> EC["edge conditions"]
-    EC --> XC["ExpressionCompiler"]
-    RSP --> RC["RuntimeContext"]
-    RC --> Bag["RuntimeBag"]
-    RSP --> RH["selected EventHandler[T] paths"]
+    StaticGraph --> GraphPkg
+    RuntimeGraphMode --> RuntimeGraphPkg
+    RuntimeGraphPkg --> EC["edge conditions"]
+    EC --> ExprPkg
+    RSP --> VarsPkg
+    RSP --> RH["selected event.Handler[T] paths"]
     RSP --> RE["RuntimeGraphExceptionHandler[T]"]
     P --> M
     RSP --> M
@@ -272,7 +278,7 @@ type RouteHandler struct {
 }
 
 func (h RouteHandler) OnEvent(
-    request disruptor.EventRequest[LongEvent],
+    request event.Request[LongEvent],
 ) error {
     request.Runtime.Set("route.fast", true)
     request.Runtime.Set("route.audit", false)
@@ -280,15 +286,15 @@ func (h RouteHandler) OnEvent(
     return nil
 }
 
-runtimeGraph := disruptor.MustRuntimeGraph[LongEvent]("runtime-route").
+runtimeGraph := runtimegraph.MustRuntimeGraph[LongEvent]("runtime-route").
     MustNode("route", RouteHandler{Steps: steps}).
     MustNode("fast", GraphStepHandler{Steps: steps}).
     MustNode("audit", GraphStepHandler{Steps: steps}).
-    MustEdge(disruptor.GraphStartNode, "route").
-    MustEdge("route", "fast", disruptor.WhenExpression[LongEvent](`${route.fast}`)).
-    MustEdge("route", "audit", disruptor.WhenExpression[LongEvent](`${route.audit}`)).
-    MustEdge("fast", disruptor.GraphEndNode).
-    MustEdge("audit", disruptor.GraphEndNode)
+    MustEdge(topology.StartNode, "route").
+    MustEdge("route", "fast", runtimegraph.WhenExpression[LongEvent](`${route.fast}`)).
+    MustEdge("route", "audit", runtimegraph.WhenExpression[LongEvent](`${route.audit}`)).
+    MustEdge("fast", topology.EndNode).
+    MustEdge("audit", topology.EndNode)
 
 _, err = d.HandleRuntimeGraph(runtimeGraph)
 ```
@@ -336,16 +342,23 @@ flowchart LR
 
 ## Layout
 
-The public package is `pkg/disruptor`. Internal algorithm boundaries live under
-`internal/`:
+Public packages are split by responsibility. `pkg/disruptor` owns ring-buffer
+and processor orchestration; the other packages own replaceable contracts and
+graph-specific builders:
 
 ```text
+pkg/disruptor/    ring buffer, facade, barriers, processors, wait strategies, metrics
+pkg/event/        handler requests, lifecycle hooks, exception handlers
+pkg/graph/        static dependency graph builder, validation, snapshots, export
+pkg/runtimegraph/ conditional routing graph builder and edge conditions
+pkg/expression/   bool expression compiler used by runtime graph edges
+pkg/runtimevars/  concurrent runtime variables and event value resolution
+
 internal/
   availability/   contiguous publication scanning
   padding/        cache-line padding primitives with GOARCH defaults
   sequencer/      sequence primitive plus single/multi producer sequencers
 
-pkg/disruptor/    public API, ring buffer facade, barriers, processors, metrics
 benchmarks/       end-to-end, topology, and comparison benchmarks
 examples/         runnable usage examples
 docs/             API and design documentation
@@ -367,16 +380,16 @@ The default exception handler is fail-fast. You can replace it with ignore or
 bounded retry behavior:
 
 ```go
-retryHandler, err := disruptor.NewRetryExceptionHandler[LongEvent](
+retryHandler, err := event.NewRetryExceptionHandler[LongEvent](
     2,
-    disruptor.ExceptionActionHalt,
+    event.ExceptionActionHalt,
 )
 if err != nil {
     panic(err)
 }
 
 _, err = d.HandleEventsWithOptions(
-    []disruptor.EventHandler[LongEvent]{handler},
+    []event.Handler[LongEvent]{handler},
     disruptor.WithExceptionHandler[LongEvent](retryHandler),
 )
 ```

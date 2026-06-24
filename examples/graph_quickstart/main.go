@@ -17,6 +17,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/photowey/disruptor.go/pkg/event"
+	topology "github.com/photowey/disruptor.go/pkg/graph"
 	"strings"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
@@ -44,7 +46,7 @@ type quickGraphHandler struct {
 	steps chan<- string
 }
 
-func (h quickGraphHandler) OnEvent(request disruptor.EventRequest[quickEvent]) error {
+func (h quickGraphHandler) OnEvent(request event.Request[quickEvent]) error {
 	h.steps <- fmt.Sprintf("%s:%d", request.Node.NodeName, request.Event.Value)
 	return nil
 }
@@ -59,12 +61,12 @@ func main() {
 	}
 
 	steps := make(chan string, 2)
-	graph := disruptor.MustGraph[quickEvent]("quickstart").
+	graph := topology.Must[quickEvent]("quickstart").
 		MustNode("validate", quickGraphHandler{steps: steps}).
 		MustNode("persist", quickGraphHandler{steps: steps}).
-		MustEdge(disruptor.GraphStartNode, "validate").
+		MustEdge(topology.StartNode, "validate").
 		MustEdge("validate", "persist").
-		MustEdge("persist", disruptor.GraphEndNode)
+		MustEdge("persist", topology.EndNode)
 
 	if _, err := d.HandleGraph(graph); err != nil {
 		panic(err)
