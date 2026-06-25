@@ -374,12 +374,30 @@ Runtime expressions support:
 Numeric comparison is optimized for routing decisions. Signed and unsigned
 integers compare exactly, including mixed signed/unsigned comparisons. Float
 operands use Go `float64` semantics. The built-in compiler does not provide
-fixed-point decimal arithmetic by default; applications that require monetary or
-other decimal semantics should provide a custom compiler or value converter so
-that the core event path keeps its low-allocation behavior.
+fixed-point decimal arithmetic by default.
+
+Applications that require monetary, decimal, big-number, or other domain number
+semantics should register `expression.WithNumberAdapter(adapter)`. A
+`NumberAdapter` combines conversion, comparison, and final bool conversion:
+
+```go
+type NumberAdapter interface {
+    expression.ValueConverter
+    expression.NumericComparator
+    expression.NumberBoolConverter
+}
+```
+
+Adapters can convert ordinary variables or typed object variables into
+`expression.Value{Kind: expression.ValueNumber, Number: number}`. Built-in
+`int`, `uint`, and `float` values stay on the default fast path before adapters
+are consulted. Multiple adapters are deterministic: adapters implementing
+`expression.OrderedNumberAdapter` run by ascending `Order()`, and equal orders
+keep registration order.
 
 The final expression result is converted to bool. Bool values are used directly,
 integers use zero/non-zero truthiness, and strings use `strconv.ParseBool`.
+Custom number-to-bool conversion is only applied to the final expression result.
 Intermediate operands for `&&`, `||`, and `!` must already be bool.
 
 Runtime graph no-route handling defaults to halt:
@@ -419,6 +437,7 @@ Runtime graph options:
 
 - `runtimegraph.WithExpressionCompiler(compiler)`
 - `expression.NewCompiler(expression.WithValueConverter(converter))`
+- `expression.NewCompiler(expression.WithNumberAdapter(adapter))`
 
 Runtime graph handle options:
 

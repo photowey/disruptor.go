@@ -17,10 +17,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
 	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/expression"
 	topology "github.com/photowey/disruptor.go/pkg/graph"
 	"github.com/photowey/disruptor.go/pkg/runtimegraph"
 	"github.com/photowey/disruptor.go/pkg/runtimevars"
@@ -28,6 +30,109 @@ import (
 
 type routeEvent struct {
 	Value int64
+}
+
+type routeAmount struct {
+	cents int64
+}
+
+type routeAmountNumber struct {
+	cents int64
+}
+
+func (n routeAmountNumber) NumberKind() expression.NumberKind {
+	return "example.amount"
+}
+
+type routeAmountAdapter struct{}
+
+func (routeAmountAdapter) Convert(
+	request expression.ValueConvertRequest,
+) (expression.Value, bool, error) {
+	value, ok := request.Value.(routeAmount)
+	if !ok {
+		return expression.Value{}, false, nil
+	}
+
+	return expression.Value{
+		Kind:   expression.ValueNumber,
+		Number: routeAmountNumber(value),
+	}, true, nil
+}
+
+func (routeAmountAdapter) CompareNumber(
+	request expression.NumberCompareRequest,
+) (int, bool, error) {
+	left, ok := routeAmountFromValue(request.Left)
+	if !ok {
+		return 0, false, nil
+	}
+	right, ok := routeAmountFromValue(request.Right)
+	if !ok {
+		return 0, false, nil
+	}
+
+	return compareRouteAmount(left, right), true, nil
+}
+
+func (routeAmountAdapter) ConvertNumberToBool(
+	request expression.NumberBoolRequest,
+) (bool, bool, error) {
+	value, ok := routeAmountFromValue(request.Value)
+	if !ok {
+		return false, false, nil
+	}
+
+	return value.cents != 0, true, nil
+}
+
+func routeAmountFromValue(value expression.Value) (routeAmountNumber, bool) {
+	switch value.Kind {
+	case expression.ValueNumber:
+		number, ok := value.Number.(routeAmountNumber)
+		return number, ok
+	case expression.ValueString:
+		number, err := parseRouteAmount(value.String)
+		return number, err == nil
+	default:
+		return routeAmountNumber{}, false
+	}
+}
+
+func parseRouteAmount(raw string) (routeAmountNumber, error) {
+	whole, fraction, ok := strings.Cut(raw, ".")
+	if !ok {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return routeAmountNumber{}, err
+		}
+
+		return routeAmountNumber{cents: value * 100}, nil
+	}
+	if len(fraction) != 2 {
+		return routeAmountNumber{}, strconv.ErrSyntax
+	}
+	wholeValue, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil {
+		return routeAmountNumber{}, err
+	}
+	fractionValue, err := strconv.ParseInt(fraction, 10, 64)
+	if err != nil {
+		return routeAmountNumber{}, err
+	}
+
+	return routeAmountNumber{cents: wholeValue*100 + fractionValue}, nil
+}
+
+func compareRouteAmount(left routeAmountNumber, right routeAmountNumber) int {
+	switch {
+	case left.cents < right.cents:
+		return -1
+	case left.cents > right.cents:
+		return 1
+	default:
+		return 0
+	}
 }
 
 type routeEventFactory struct{}
@@ -72,20 +177,31 @@ func (h routeStepHandler) OnEvent(request event.Request[routeEvent]) error {
 
 type routeVariablesProvider struct{}
 
-func (routeVariablesProvider) Variables(request runtimevars.ProviderRequest[routeEvent]) (runtimevars.Variables, error) {
+func (routeVariablesProvider) Variables(
+	request runtimevars.ProviderRequest[routeEvent],
+) (runtimevars.Variables, error) {
+	var amount routeAmount
+	if request.Event != nil {
+		amount = routeAmount{cents: request.Event.Value * 100}
+	}
+
 	return routeVariables{
 		premium: request.Event != nil && request.Event.Value > 10,
+		amount:  amount,
 	}, nil
 }
 
 type routeVariables struct {
 	premium bool
+	amount  routeAmount
 }
 
 func (v routeVariables) Lookup(path string) (any, bool) {
 	switch path {
 	case "plan.premium":
 		return v.premium, true
+	case "plan.amount":
+		return v.amount, true
 	default:
 		return nil, false
 	}
@@ -97,6 +213,11 @@ func (v routeVariables) LookupValue(path string) (runtimevars.TypedValue, bool, 
 		return runtimevars.TypedValue{
 			Kind: runtimevars.TypedValueBool,
 			Bool: v.premium,
+		}, true, nil
+	case "plan.amount":
+		return runtimevars.TypedValue{
+			Kind:  runtimevars.TypedValueObject,
+			Value: v.amount,
 		}, true, nil
 	default:
 		return runtimevars.TypedValue{}, false, nil
@@ -113,12 +234,24 @@ func main() {
 	}
 
 	steps := make(chan string, 2)
-	graph := runtimegraph.MustRuntimeGraph[routeEvent]("runtime-route").
+	compiler := expression.NewCompiler(
+		expression.WithNumberAdapter(routeAmountAdapter{}),
+	)
+	graph := runtimegraph.MustRuntimeGraph[routeEvent](
+		"runtime-route",
+		runtimegraph.WithExpressionCompiler(compiler),
+	).
 		MustNode("route", decideRouteHandler{steps: steps}).
 		MustNode("fast", routeStepHandler{name: "fast", steps: steps}).
 		MustNode("audit", routeStepHandler{name: "audit", steps: steps}).
 		MustEdge(topology.StartNode, "route").
-		MustEdge("route", "fast", runtimegraph.WhenExpression[routeEvent](`${plan.premium} && ${route.fast}`)).
+		MustEdge(
+			"route",
+			"fast",
+			runtimegraph.WhenExpression[routeEvent](
+				`${plan.premium} && ${plan.amount} > "10.00" && ${route.fast}`,
+			),
+		).
 		MustEdge("route", "audit", runtimegraph.WhenExpression[routeEvent](`${route.audit}`)).
 		MustEdge("fast", topology.EndNode).
 		MustEdge("audit", topology.EndNode)

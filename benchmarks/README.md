@@ -16,6 +16,7 @@ go test -run '^$' -bench=BenchmarkE2EDisruptorParallelProducers -benchmem -count
 go test -run '^$' -bench=BenchmarkChannelComparison -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkGraphTopology -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkRuntimeGraphRouting -benchmem -count=10 ./benchmarks
+go test -run '^$' -bench=BenchmarkExpressionNumberAdapterComparison -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkE2ELatencyQuantiles -benchmem -count=10 ./benchmarks
 ```
 
@@ -48,6 +49,8 @@ Runtime graph allocation gates:
   `0 B/op` and `0 allocs/op`.
 - Expression routes remain tracked separately because custom providers,
   converters, or resolvers can have a different allocation profile.
+- `BenchmarkExpressionNumberAdapterComparison` tracks the fake decimal adapter
+  comparison path separately from default runtime graph allocation gates.
 
 `BenchmarkE2ELatencyQuantiles` reports sampled publish-to-handle `p50_ns`,
 `p95_ns`, and `p99_ns` for blocking and busy-spin wait strategies. Treat these

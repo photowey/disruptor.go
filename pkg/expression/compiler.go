@@ -16,6 +16,7 @@ package expression
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/photowey/disruptor.go/pkg/runtimevars"
 )
@@ -25,7 +26,17 @@ type CompilerOption interface {
 }
 
 type compilerConfig struct {
-	converters []ValueConverter
+	converters           []ValueConverter
+	numericComparators   []NumericComparator
+	numberBoolConverters []NumberBoolConverter
+	numberAdapters       []numberAdapterRegistration
+	nextAdapterIndex     int
+}
+
+type numberAdapterRegistration struct {
+	adapter NumberAdapter
+	order   int
+	index   int
 }
 
 type compilerOptionFunc struct {
@@ -55,6 +66,22 @@ func WithValueConverter(
 	}
 }
 
+// WithNumberAdapter adds a custom number adapter to the expression compiler.
+func WithNumberAdapter(
+	adapter NumberAdapter,
+) CompilerOption {
+	return compilerOptionFunc{
+		applyFunc: func(config *compilerConfig) error {
+			if adapter == nil {
+				return fmt.Errorf("%w: expression number adapter is nil", ErrInvalid)
+			}
+
+			config.addNumberAdapter(adapter)
+			return nil
+		},
+	}
+}
+
 // NewCompiler creates the default runtime expression compiler.
 func NewCompiler(
 	opts ...CompilerOption,
@@ -70,12 +97,19 @@ func NewCompiler(
 			panic(err)
 		}
 	}
+	config.finalizeNumberAdapters()
 
-	return runtimeCompiler(config)
+	return runtimeCompiler{
+		converters:           config.converters,
+		numericComparators:   config.numericComparators,
+		numberBoolConverters: config.numberBoolConverters,
+	}
 }
 
 type runtimeCompiler struct {
-	converters []ValueConverter
+	converters           []ValueConverter
+	numericComparators   []NumericComparator
+	numberBoolConverters []NumberBoolConverter
 }
 
 func (c runtimeCompiler) Compile(
@@ -101,31 +135,37 @@ func (c runtimeCompiler) Compile(
 	}
 
 	return compiledExpression{
-		root:       node,
-		converters: c.converters,
+		root:                 node,
+		converters:           c.converters,
+		numericComparators:   c.numericComparators,
+		numberBoolConverters: c.numberBoolConverters,
 	}, nil
 }
 
 type compiledExpression struct {
-	root       runtimeExpressionNode
-	converters []ValueConverter
+	root                 runtimeExpressionNode
+	converters           []ValueConverter
+	numericComparators   []NumericComparator
+	numberBoolConverters []NumberBoolConverter
 }
 
 func (e compiledExpression) EvaluateBool(request Request) (bool, error) {
 	value, err := e.root.evaluate(runtimeExpressionEvalContext{
-		request:    request,
-		converters: e.converters,
+		request:            request,
+		converters:         e.converters,
+		numericComparators: e.numericComparators,
 	})
 	if err != nil {
 		return false, err
 	}
 
-	return expressionValueToBool(value)
+	return expressionValueToBool(value, e.numberBoolConverters)
 }
 
 type runtimeExpressionEvalContext struct {
-	request    Request
-	converters []ValueConverter
+	request            Request
+	converters         []ValueConverter
+	numericComparators []NumericComparator
 }
 
 func (c runtimeExpressionEvalContext) convert(value any) (Value, error) {
@@ -144,6 +184,17 @@ func (c runtimeExpressionEvalContext) convert(value any) (Value, error) {
 	return Value{Kind: ValueObject, Value: value}, nil
 }
 
+func (c runtimeExpressionEvalContext) convertTypedValue(
+	value runtimevars.TypedValue,
+) (Value, error) {
+	converted := expressionValueFromTypedValue(value)
+	if converted.Kind != ValueObject {
+		return converted, nil
+	}
+
+	return c.convert(converted.Value)
+}
+
 func (c runtimeExpressionEvalContext) lookup(path string) (Value, bool, error) {
 	if c.request.Variables == nil {
 		return Value{}, false, nil
@@ -151,8 +202,12 @@ func (c runtimeExpressionEvalContext) lookup(path string) (Value, bool, error) {
 
 	if typed, ok := c.request.Variables.(runtimevars.TypedVariables); ok {
 		value, found, err := typed.LookupValue(path)
-		if err != nil || found {
-			return expressionValueFromTypedValue(value), found, err
+		if err != nil {
+			return Value{}, false, err
+		}
+		if found {
+			converted, err := c.convertTypedValue(value)
+			return converted, true, err
 		}
 	}
 
@@ -163,4 +218,70 @@ func (c runtimeExpressionEvalContext) lookup(path string) (Value, bool, error) {
 
 	converted, err := c.convert(value)
 	return converted, true, err
+}
+
+func (c runtimeExpressionEvalContext) compareNumber(
+	left Value,
+	right Value,
+) (int, bool, error) {
+	for _, comparator := range c.numericComparators {
+		result, handled, err := comparator.CompareNumber(NumberCompareRequest{
+			Left:  left,
+			Right: right,
+		})
+		if err != nil {
+			return 0, handled, err
+		}
+		if handled {
+			return result, true, nil
+		}
+	}
+
+	return 0, false, nil
+}
+
+func (config *compilerConfig) addNumberAdapter(adapter NumberAdapter) {
+	config.numberAdapters = append(config.numberAdapters, numberAdapterRegistration{
+		adapter: adapter,
+		order:   numberAdapterOrder(adapter),
+		index:   config.nextAdapterIndex,
+	})
+	config.nextAdapterIndex++
+}
+
+func (config *compilerConfig) finalizeNumberAdapters() {
+	if len(config.numberAdapters) == 0 {
+		return
+	}
+
+	sort.SliceStable(config.numberAdapters, func(left int, right int) bool {
+		leftRegistration := config.numberAdapters[left]
+		rightRegistration := config.numberAdapters[right]
+		if leftRegistration.order == rightRegistration.order {
+			return leftRegistration.index < rightRegistration.index
+		}
+
+		return leftRegistration.order < rightRegistration.order
+	})
+
+	for _, registration := range config.numberAdapters {
+		config.converters = append(config.converters, registration.adapter)
+		config.numericComparators = append(
+			config.numericComparators,
+			registration.adapter,
+		)
+		config.numberBoolConverters = append(
+			config.numberBoolConverters,
+			registration.adapter,
+		)
+	}
+}
+
+func numberAdapterOrder(adapter NumberAdapter) int {
+	ordered, ok := adapter.(OrderedNumberAdapter)
+	if !ok {
+		return DefaultNumberAdapterOrder
+	}
+
+	return ordered.Order()
 }

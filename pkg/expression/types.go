@@ -60,14 +60,25 @@ const (
 	ValueString
 	// ValueObject represents an unsupported object value.
 	ValueObject
+	// ValueNumber represents an extension number handled by a NumberAdapter.
+	ValueNumber
 	// ValueNil represents nil.
 	ValueNil
 )
+
+// NumberKind identifies a custom extension number type.
+type NumberKind string
+
+// Number is implemented by custom expression number values.
+type Number interface {
+	NumberKind() NumberKind
+}
 
 // Value is the evaluator's normalized value representation.
 type Value struct {
 	Kind   ValueKind
 	Value  any
+	Number Number
 	Bool   bool
 	Int    int64
 	Uint   uint64
@@ -83,6 +94,43 @@ type ValueConvertRequest struct {
 // ValueConverter converts raw values into expression values.
 type ValueConverter interface {
 	Convert(request ValueConvertRequest) (Value, bool, error)
+}
+
+// NumericComparator compares extension number values.
+type NumericComparator interface {
+	CompareNumber(request NumberCompareRequest) (result int, handled bool, err error)
+}
+
+// NumberCompareRequest describes a custom number comparison request.
+type NumberCompareRequest struct {
+	Left  Value
+	Right Value
+}
+
+// NumberBoolConverter converts an extension number final result to bool.
+type NumberBoolConverter interface {
+	ConvertNumberToBool(request NumberBoolRequest) (value bool, handled bool, err error)
+}
+
+// NumberBoolRequest describes a custom number-to-bool conversion request.
+type NumberBoolRequest struct {
+	Value Value
+}
+
+// NumberAdapter groups the extension hooks needed for custom number semantics.
+type NumberAdapter interface {
+	ValueConverter
+	NumericComparator
+	NumberBoolConverter
+}
+
+// DefaultNumberAdapterOrder is used by adapters that do not define Order.
+const DefaultNumberAdapterOrder = 0
+
+// OrderedNumberAdapter can run before or after other number adapters.
+type OrderedNumberAdapter interface {
+	NumberAdapter
+	Order() int
 }
 
 // ValueConverterFunc adapts a function to ValueConverter.

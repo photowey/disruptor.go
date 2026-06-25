@@ -23,6 +23,7 @@ import (
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
 	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/expression"
 	topology "github.com/photowey/disruptor.go/pkg/graph"
 	"github.com/photowey/disruptor.go/pkg/runtimegraph"
 )
@@ -307,6 +308,50 @@ func TestRuntimeGraphNodeExceptionHandlerOverridesRuntimeHandlerForHandlerErrors
 	recorder.assertNoRequest(t)
 }
 
+func TestRuntimeGraphReportsNumberAdapterConditionErrors(t *testing.T) {
+	conditionErr := errors.New("runtime decimal compare failed")
+	compiler := expression.NewCompiler(
+		expression.WithNumberAdapter(runtimeDecimalAdapter{err: conditionErr}),
+	)
+	recorder := newRuntimeExceptionRecorder()
+	graph := runtimegraph.MustRuntimeGraph[longEvent](
+		"runtime-number-adapter-error",
+		runtimegraph.WithExpressionCompiler(compiler),
+	).
+		MustNode("A", runtimeRecordingHandler{
+			set: map[string]any{
+				"amount": runtimeDecimalRaw{cents: 1125},
+			},
+		}).
+		MustNode("B", runtimeRecordingHandler{}).
+		MustEdge(topology.StartNode, "A").
+		MustEdge("A", "B", runtimegraph.WhenExpression[longEvent](`${amount} > "bad"`)).
+		MustEdge("B", topology.EndNode)
+
+	d := newRuntimeGraphTestDisruptor(t, 8)
+	if _, err := d.HandleRuntimeGraph(
+		graph,
+		disruptor.WithRuntimeGraphExceptionHandler[longEvent](recorder),
+	); err != nil {
+		t.Fatalf("handle runtime graph: %v", err)
+	}
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	publishValues(t, d.RingBuffer(), 1)
+	if err := d.Wait(); !errors.Is(err, conditionErr) {
+		t.Fatalf("wait error = %v, want condition error", err)
+	}
+	got := recorder.wait(t)
+	if got.Kind != disruptor.RuntimeGraphExceptionKindCondition {
+		t.Fatalf("exception kind = %v, want condition", got.Kind)
+	}
+	if got.EdgeFrom != "A" || got.EdgeTo != "B" {
+		t.Fatalf("exception edge = %s -> %s, want A -> B", got.EdgeFrom, got.EdgeTo)
+	}
+}
+
 func TestRuntimeGraphReportsPanicKind(t *testing.T) {
 	recorder := newRuntimeExceptionRecorder()
 	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-panic-kind").
@@ -436,6 +481,52 @@ type runtimePanicHandler struct{}
 
 func (runtimePanicHandler) OnEvent(request event.Request[longEvent]) error {
 	panic("runtime graph panic")
+}
+
+type runtimeDecimalRaw struct {
+	cents int64
+}
+
+type runtimeDecimalNumber struct {
+	cents int64
+}
+
+func (n runtimeDecimalNumber) NumberKind() expression.NumberKind {
+	return "runtime.decimal"
+}
+
+type runtimeDecimalAdapter struct {
+	err error
+}
+
+func (a runtimeDecimalAdapter) Convert(
+	request expression.ValueConvertRequest,
+) (expression.Value, bool, error) {
+	value, ok := request.Value.(runtimeDecimalRaw)
+	if !ok {
+		return expression.Value{}, false, nil
+	}
+
+	return expression.Value{
+		Kind:   expression.ValueNumber,
+		Number: runtimeDecimalNumber(value),
+	}, true, nil
+}
+
+func (a runtimeDecimalAdapter) CompareNumber(
+	request expression.NumberCompareRequest,
+) (int, bool, error) {
+	if _, ok := request.Left.Number.(runtimeDecimalNumber); !ok {
+		return 0, false, nil
+	}
+
+	return 0, true, a.err
+}
+
+func (a runtimeDecimalAdapter) ConvertNumberToBool(
+	request expression.NumberBoolRequest,
+) (bool, bool, error) {
+	return false, false, nil
 }
 
 type runtimeExceptionRecorder struct {

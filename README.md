@@ -308,8 +308,11 @@ implement `runtimevars.TypedResolver[T]` or `runtimevars.TypedVariables` so
 scalar values stay on the typed path before the expression engine boxes them.
 Default numeric comparison stays lightweight for the routing hot path: signed
 and unsigned integers compare exactly, while float operands use Go `float64`
-semantics. Fixed-point decimal semantics are intentionally left to an optional
-compiler or converter extension instead of becoming a core dependency.
+semantics. Domain numbers such as decimals, money, or big numbers are handled
+through `expression.WithNumberAdapter(adapter)`. A number adapter can convert
+ordinary or typed object variables into `ValueNumber`, compare custom numbers,
+and convert a final custom number result to bool. Decimal semantics remain
+adapter-owned and are not part of the core module dependency graph.
 
 ```mermaid
 flowchart LR

@@ -12,6 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main demonstrates conditional runtime graph routing and typed
-// runtime variable sources.
+// Package main demonstrates conditional runtime graph routing, typed runtime
+// variable sources, and a custom expression number adapter.
 package main

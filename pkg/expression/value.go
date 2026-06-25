@@ -21,7 +21,10 @@ import (
 	"github.com/photowey/disruptor.go/pkg/runtimevars"
 )
 
-func expressionValueToBool(value Value) (bool, error) {
+func expressionValueToBool(
+	value Value,
+	numberBoolConverters []NumberBoolConverter,
+) (bool, error) {
 	switch value.Kind {
 	case ValueBool:
 		return expressionBool(value), nil
@@ -42,12 +45,24 @@ func expressionValueToBool(value Value) (bool, error) {
 
 		return boolean, nil
 	default:
-		return false, fmt.Errorf(
-			"%w: cannot convert %v to bool",
-			ErrInvalid,
-			value.Kind,
-		)
+		for _, converter := range numberBoolConverters {
+			boolean, handled, err := converter.ConvertNumberToBool(NumberBoolRequest{
+				Value: value,
+			})
+			if err != nil {
+				return false, err
+			}
+			if handled {
+				return boolean, nil
+			}
+		}
 	}
+
+	return false, fmt.Errorf(
+		"%w: cannot convert %v to bool",
+		ErrInvalid,
+		value.Kind,
+	)
 }
 
 func requireExpressionBool(value Value) (bool, error) {
@@ -87,6 +102,25 @@ func compareRuntimeNumeric(op string, left Value, right Value) bool {
 	}
 
 	return compareRuntimeUnsignedSigned(op, expressionUint(left), expressionInt(right))
+}
+
+func compareRuntimeResult(op string, result int) bool {
+	switch op {
+	case "==":
+		return result == 0
+	case "!=":
+		return result != 0
+	case ">":
+		return result > 0
+	case ">=":
+		return result >= 0
+	case "<":
+		return result < 0
+	case "<=":
+		return result <= 0
+	default:
+		return false
+	}
 }
 
 func expressionNumericFloat(value Value) float64 {

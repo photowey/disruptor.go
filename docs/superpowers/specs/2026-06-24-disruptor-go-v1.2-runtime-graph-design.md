@@ -450,10 +450,10 @@ The default numeric path is intentionally small and allocation-conscious:
   values without converting them to large unsigned values.
 - float operands use Go `float64` comparison semantics.
 
-Fixed-point decimal arithmetic is not part of the default compiler. Decimal
-support should be supplied through an optional compiler or converter extension,
-and a mature decimal implementation is preferred over a project-local
-general-purpose decimal type if that extension becomes necessary.
+Fixed-point decimal arithmetic is not part of the default compiler. Starting in
+V1.3.0, decimal, money, big-number, and similar domain number semantics are
+supplied through `expression.WithNumberAdapter(adapter)` so the default routing
+hot path stays allocation-conscious.
 
 ### Boolean Conversion
 

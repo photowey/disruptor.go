@@ -142,18 +142,19 @@ func (n runtimeBinaryNode) evaluate(
 			return Value{}, err
 		}
 
-		return evaluateRuntimeBinaryOperator(n.op, left, right)
+		return evaluateRuntimeBinaryOperator(context, n.op, left, right)
 	}
 }
 
 func evaluateRuntimeBinaryOperator(
+	context runtimeExpressionEvalContext,
 	op string,
 	left Value,
 	right Value,
 ) (Value, error) {
 	switch op {
 	case "==", "!=", ">", ">=", "<", "<=":
-		return evaluateRuntimeComparison(op, left, right)
+		return evaluateRuntimeComparison(context, op, left, right)
 	case "&", "|", "^", "&^", "<<", ">>":
 		return evaluateRuntimeBitwise(op, left, right)
 	default:
@@ -166,6 +167,7 @@ func evaluateRuntimeBinaryOperator(
 }
 
 func evaluateRuntimeComparison(
+	context runtimeExpressionEvalContext,
 	op string,
 	left Value,
 	right Value,
@@ -198,6 +200,16 @@ func evaluateRuntimeComparison(
 		}
 
 		return Value{Kind: ValueBool, Bool: result}, nil
+	}
+	comparison, handled, err := context.compareNumber(left, right)
+	if err != nil {
+		return Value{}, err
+	}
+	if handled {
+		return Value{
+			Kind: ValueBool,
+			Bool: compareRuntimeResult(op, comparison),
+		}, nil
 	}
 
 	return Value{}, fmt.Errorf(
