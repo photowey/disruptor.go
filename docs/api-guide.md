@@ -471,6 +471,23 @@ does not shut them down. Executors created internally from
 producer-owned promises. `Future[T]` lets callers wait, inspect, and observe a
 result. Only `Promise[T]` can complete, fail, or cancel the result.
 
+The package is intentionally usable outside Disruptor:
+
+- Use `Executor` when a component needs bounded task execution without exposing
+  goroutines, channels, or wait groups to its callers.
+- Use `Future[T]` as the consumer-facing result handle.
+- Use `Promise[T]` when a producer completes a result from an external callback,
+  polling loop, scheduler, or integration boundary.
+- Use composition helpers when several futures should be joined or transformed,
+  but keep continuation work on an explicit executor.
+
+Learning path:
+
+- `examples/executor` is the complete runnable example.
+- `pkg/executor/example_test.go` contains pkg.go.dev examples.
+- `pkg/executor/executor_test.go` is the executable specification for exactly
+  once completion, observers, backpressure, shutdown, and composition.
+
 ```go
 type DoubleTask struct {
     Value int
@@ -500,6 +517,11 @@ waits for queue capacity while observing the submit context.
 Composition helpers include `AllOf`, `All`, `AnyOf`, `Any`, `ThenApply`,
 `ThenCompose`, and `Exceptionally`. Continuation helpers require an explicit
 executor so future composition does not hide unbounded goroutine creation.
+
+`All` preserves input order in the output slice. `Any` completes with the first
+successful result. `ThenApply` maps a successful parent result to a new value.
+`ThenCompose` maps a successful parent result to another future and flattens it.
+`Exceptionally` maps a failed parent result to a replacement value.
 
 ## Options
 

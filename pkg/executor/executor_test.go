@@ -284,6 +284,42 @@ func TestAllAndAnyComposition(t *testing.T) {
 	}
 }
 
+func TestCompositionHandlesConcurrentCompletion(t *testing.T) {
+	ctx := context.Background()
+
+	for attempt := 0; attempt < 100; attempt++ {
+		first := executor.NewPromise[int]()
+		second := executor.NewPromise[int]()
+		start := make(chan struct{})
+		go completePromiseAfterStart(start, first, 1)
+		go completePromiseAfterStart(start, second, 2)
+		close(start)
+
+		values, err := executor.All(first.Future(), second.Future()).Await(ctx)
+		if err != nil {
+			t.Fatalf("all await attempt %d: %v", attempt, err)
+		}
+		if len(values) != 2 || values[0] != 1 || values[1] != 2 {
+			t.Fatalf("values attempt %d = %v, want [1 2]", attempt, values)
+		}
+
+		anyFirst := executor.NewPromise[int]()
+		anySecond := executor.NewPromise[int]()
+		anyStart := make(chan struct{})
+		go completePromiseAfterStart(anyStart, anyFirst, 1)
+		go completePromiseAfterStart(anyStart, anySecond, 2)
+		close(anyStart)
+
+		value, err := executor.Any(anyFirst.Future(), anySecond.Future()).Await(ctx)
+		if err != nil {
+			t.Fatalf("any await attempt %d: %v", attempt, err)
+		}
+		if value != 1 && value != 2 {
+			t.Fatalf("any value attempt %d = %d, want 1 or 2", attempt, value)
+		}
+	}
+}
+
 func TestThenApplyThenComposeAndExceptionally(t *testing.T) {
 	ctx := context.Background()
 	inline := executor.NewInlineExecutor()
@@ -390,4 +426,13 @@ func waitForPendingSubmit(t *testing.T, submitErr <-chan error) {
 		t.Fatalf("submit returned before shutdown: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
+}
+
+func completePromiseAfterStart[T any](
+	start <-chan struct{},
+	promise executor.Promise[T],
+	value T,
+) {
+	<-start
+	promise.Complete(value)
 }

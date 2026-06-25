@@ -84,16 +84,24 @@ func AllOf(futures ...FutureView) Future[struct{}] {
 		return promise.Future()
 	}
 
-	var mu sync.Mutex
-	remaining := len(futures)
+	active := make([]FutureView, 0, len(futures))
 	var joined error
-	var canceled bool
 	for _, future := range futures {
 		if future == nil {
-			remaining--
 			joined = errors.Join(joined, fmt.Errorf("%w: future is nil", ErrInvalid))
 			continue
 		}
+		active = append(active, future)
+	}
+	if len(active) == 0 {
+		promise.Fail(joined)
+		return promise.Future()
+	}
+
+	var mu sync.Mutex
+	remaining := len(active)
+	var canceled bool
+	for _, future := range active {
 		future.ObserveAny(FutureObserverFunc[any](func(result Result[any]) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -107,7 +115,6 @@ func AllOf(futures ...FutureView) Future[struct{}] {
 			completeAllOf(promise, remaining, joined, canceled)
 		}))
 	}
-	completeAllOf(promise, remaining, joined, canceled)
 
 	return promise.Future()
 }
@@ -140,23 +147,33 @@ func All[T any](futures ...Future[T]) Future[[]T] {
 		return promise.Future()
 	}
 
-	var mu sync.Mutex
+	active := make([]Future[T], 0, len(futures))
+	indexes := make([]int, 0, len(futures))
 	values := make([]T, len(futures))
-	remaining := len(futures)
 	var joined error
-	var canceled bool
 	for index, future := range futures {
-		index := index
 		if future == nil {
-			remaining--
 			joined = errors.Join(joined, fmt.Errorf("%w: future is nil", ErrInvalid))
 			continue
 		}
+		active = append(active, future)
+		indexes = append(indexes, index)
+	}
+	if len(active) == 0 {
+		promise.Fail(joined)
+		return promise.Future()
+	}
+
+	var mu sync.Mutex
+	remaining := len(active)
+	var canceled bool
+	for activeIndex, future := range active {
+		resultIndex := indexes[activeIndex]
 		future.Observe(FutureObserverFunc[T](func(result Result[T]) {
 			mu.Lock()
 			defer mu.Unlock()
 			if result.OK() {
-				values[index] = result.Value
+				values[resultIndex] = result.Value
 			}
 			if result.Err != nil {
 				joined = errors.Join(joined, result.Err)
@@ -179,13 +196,6 @@ func All[T any](futures ...Future[T]) Future[[]T] {
 			promise.Complete(values)
 		}))
 	}
-	if remaining == 0 {
-		if joined != nil {
-			promise.Fail(joined)
-		} else {
-			promise.Complete(values)
-		}
-	}
 
 	return promise.Future()
 }
@@ -198,15 +208,23 @@ func AnyOf(futures ...FutureView) Future[any] {
 		return promise.Future()
 	}
 
-	var mu sync.Mutex
-	remaining := len(futures)
+	active := make([]FutureView, 0, len(futures))
 	var joined error
 	for _, future := range futures {
 		if future == nil {
-			remaining--
 			joined = errors.Join(joined, fmt.Errorf("%w: future is nil", ErrInvalid))
 			continue
 		}
+		active = append(active, future)
+	}
+	if len(active) == 0 {
+		promise.Fail(joined)
+		return promise.Future()
+	}
+
+	var mu sync.Mutex
+	remaining := len(active)
+	for _, future := range active {
 		future.ObserveAny(FutureObserverFunc[any](func(result Result[any]) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -224,9 +242,6 @@ func AnyOf(futures ...FutureView) Future[any] {
 			}
 		}))
 	}
-	if remaining == 0 {
-		promise.Fail(joined)
-	}
 
 	return promise.Future()
 }
@@ -239,15 +254,23 @@ func Any[T any](futures ...Future[T]) Future[T] {
 		return promise.Future()
 	}
 
-	var mu sync.Mutex
-	remaining := len(futures)
+	active := make([]Future[T], 0, len(futures))
 	var joined error
 	for _, future := range futures {
 		if future == nil {
-			remaining--
 			joined = errors.Join(joined, fmt.Errorf("%w: future is nil", ErrInvalid))
 			continue
 		}
+		active = append(active, future)
+	}
+	if len(active) == 0 {
+		promise.Fail(joined)
+		return promise.Future()
+	}
+
+	var mu sync.Mutex
+	remaining := len(active)
+	for _, future := range active {
 		future.Observe(FutureObserverFunc[T](func(result Result[T]) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -264,9 +287,6 @@ func Any[T any](futures ...Future[T]) Future[T] {
 				promise.Fail(joined)
 			}
 		}))
-	}
-	if remaining == 0 {
-		promise.Fail(joined)
 	}
 
 	return promise.Future()

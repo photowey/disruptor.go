@@ -13,4 +13,15 @@
 // limitations under the License.
 
 // Package executor provides bounded task execution, typed futures, and promises.
+//
+// The package is designed around explicit ownership. Executor implementations
+// decide where work runs and how backpressure is applied. Future values are
+// read-only result handles for callers. Promise values are producer-owned
+// completion handles used by task adapters, callbacks, schedulers, or external
+// integrations.
+//
+// Composition helpers such as All, Any, ThenApply, ThenCompose, and
+// Exceptionally require an explicit Executor for continuation work. This keeps
+// goroutine creation visible to the application and lets callers choose inline,
+// fixed worker, or custom execution policies.
 package executor

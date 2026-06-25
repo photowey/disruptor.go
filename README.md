@@ -323,7 +323,23 @@ joins, and sequence advancement. Advanced users can supply a caller-owned
 
 `pkg/executor` is a general-purpose bounded executor with typed read-only
 futures and producer-owned promises. It can be used independently of
-RuntimeGraph.
+RuntimeGraph, and RuntimeGraph uses the same abstraction for explicit parallel
+node execution.
+
+The design separates three responsibilities:
+
+- `Executor` owns where work runs and how backpressure is applied.
+- `Future[T]` is read-only. Callers can wait, inspect, or observe completion.
+- `Promise[T]` owns completion. Producers complete, fail, or cancel; consumers
+  cannot accidentally complete someone else's result.
+
+For a complete runnable walkthrough, see:
+
+- `examples/executor`: fixed workers, typed task submission, `All`, `ThenApply`,
+  and an externally completed `Promise`.
+- `pkg/executor/example_test.go`: godoc examples rendered by pkg.go.dev.
+- `pkg/executor/executor_test.go`: behavior-level tests for completion,
+  observers, backpressure, shutdown, and composition.
 
 ```go
 type DoubleTask struct {
