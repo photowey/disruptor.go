@@ -207,6 +207,52 @@ func TestFixedWorkerExecutorBlockPolicyRespectsContext(t *testing.T) {
 	close(release)
 }
 
+func TestSubmittedFutureCancelsWhenQueuedContextIsCanceled(t *testing.T) {
+	ctx := context.Background()
+	pool, err := executor.NewFixedWorkerExecutor(
+		executor.WithWorkers(1),
+		executor.WithQueueSize(1),
+		executor.WithRejectPolicy(executor.RejectPolicyReject),
+	)
+	if err != nil {
+		t.Fatalf("new fixed worker: %v", err)
+	}
+	defer shutdownExecutor(t, pool)
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	if err := pool.Submit(executor.SubmitRequest{
+		Context: context.Background(),
+		Task: executor.RunnableTaskFunc(func(context.Context) {
+			close(started)
+			<-release
+		}),
+	}); err != nil {
+		t.Fatalf("submit blocking: %v", err)
+	}
+	<-started
+
+	queuedCtx, cancel := context.WithCancel(context.Background())
+	future, err := executor.Submit(
+		queuedCtx,
+		pool,
+		executor.TaskFunc[int](func(context.Context) (int, error) {
+			return 42, nil
+		}),
+	)
+	if err != nil {
+		close(release)
+		t.Fatalf("submit queued typed task: %v", err)
+	}
+	cancel()
+	close(release)
+
+	_, err = future.Await(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("await queued canceled future error = %v, want context.Canceled", err)
+	}
+}
+
 func TestFixedWorkerExecutorShutdownStopsAcceptingTasks(t *testing.T) {
 	pool, err := executor.NewFixedWorkerExecutor(
 		executor.WithWorkers(1),
@@ -317,6 +363,66 @@ func TestCompositionHandlesConcurrentCompletion(t *testing.T) {
 		if value != 1 && value != 2 {
 			t.Fatalf("any value attempt %d = %d, want 1 or 2", attempt, value)
 		}
+	}
+}
+
+func TestCompositionNormalizesCustomCanceledResults(t *testing.T) {
+	ctx := context.Background()
+	inline := executor.NewInlineExecutor()
+	canceled := completedView[int]{
+		result: executor.Result[int]{Canceled: true},
+	}
+	succeeded := executor.CompletedFuture(7)
+
+	_, err := executor.All(canceled).Await(ctx)
+	if !errors.Is(err, executor.ErrCanceled) {
+		t.Fatalf("all canceled error = %v, want ErrCanceled", err)
+	}
+
+	_, err = executor.AllOf(canceled).Await(ctx)
+	if !errors.Is(err, executor.ErrCanceled) {
+		t.Fatalf("allOf canceled error = %v, want ErrCanceled", err)
+	}
+
+	value, err := executor.Any(canceled, succeeded).Await(ctx)
+	if err != nil {
+		t.Fatalf("any canceled then succeeded: %v", err)
+	}
+	if value != 7 {
+		t.Fatalf("any value = %d, want 7", value)
+	}
+
+	_, err = executor.Any(canceled).Await(ctx)
+	if !errors.Is(err, executor.ErrCanceled) {
+		t.Fatalf("any canceled error = %v, want ErrCanceled", err)
+	}
+
+	_, err = executor.AnyOf(canceled).Await(ctx)
+	if !errors.Is(err, executor.ErrCanceled) {
+		t.Fatalf("anyOf canceled error = %v, want ErrCanceled", err)
+	}
+
+	recovered, err := executor.Exceptionally(
+		ctx,
+		inline,
+		canceled,
+		executor.RecoverTaskFunc[int](func(_ context.Context, err error) (int, error) {
+			if !errors.Is(err, executor.ErrCanceled) {
+				return 0, err
+			}
+
+			return 9, nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("exceptionally canceled: %v", err)
+	}
+	value, err = recovered.Await(ctx)
+	if err != nil {
+		t.Fatalf("await recovered canceled: %v", err)
+	}
+	if value != 9 {
+		t.Fatalf("recovered canceled value = %d, want 9", value)
 	}
 }
 
@@ -435,4 +541,75 @@ func completePromiseAfterStart[T any](
 ) {
 	<-start
 	promise.Complete(value)
+}
+
+type completedView[T any] struct {
+	result executor.Result[T]
+	done   chan struct{}
+}
+
+func (f completedView[T]) Await(context.Context) (T, error) {
+	if f.result.OK() {
+		return f.result.Value, nil
+	}
+	if f.result.Canceled {
+		var zero T
+
+		if f.result.Err != nil {
+			return zero, f.result.Err
+		}
+
+		return zero, executor.ErrCanceled
+	}
+	var zero T
+
+	return zero, f.result.Err
+}
+
+func (f completedView[T]) Done() <-chan struct{} {
+	if f.done != nil {
+		return f.done
+	}
+
+	done := make(chan struct{})
+	close(done)
+
+	return done
+}
+
+func (f completedView[T]) Result() (executor.Result[T], bool) {
+	return f.result, true
+}
+
+func (f completedView[T]) Observe(observer executor.FutureObserver[T]) executor.Subscription {
+	if observer != nil {
+		observer.OnFutureComplete(f.result)
+	}
+
+	return completedSubscription{}
+}
+
+func (f completedView[T]) ResultAny() (executor.Result[any], bool) {
+	return executor.Result[any]{
+		Value:    f.result.Value,
+		Err:      f.result.Err,
+		Canceled: f.result.Canceled,
+	}, true
+}
+
+func (f completedView[T]) ObserveAny(
+	observer executor.FutureObserver[any],
+) executor.Subscription {
+	if observer != nil {
+		result, _ := f.ResultAny()
+		observer.OnFutureComplete(result)
+	}
+
+	return completedSubscription{}
+}
+
+type completedSubscription struct{}
+
+func (completedSubscription) Unsubscribe() bool {
+	return false
 }

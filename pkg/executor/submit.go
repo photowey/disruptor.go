@@ -67,6 +67,10 @@ type typedRunnableTask[T any] struct {
 	promise Promise[T]
 }
 
+func (t typedRunnableTask[T]) Cancel(cause error) {
+	t.promise.Cancel(cause)
+}
+
 func (t typedRunnableTask[T]) Run(ctx context.Context) {
 	defer func() {
 		if recovered := recover(); recovered != nil {

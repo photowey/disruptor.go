@@ -105,11 +105,11 @@ func AllOf(futures ...FutureView) Future[struct{}] {
 		future.ObserveAny(FutureObserverFunc[any](func(result Result[any]) {
 			mu.Lock()
 			defer mu.Unlock()
-			if result.Err != nil {
-				joined = errors.Join(joined, result.Err)
-			}
 			if result.Canceled {
 				canceled = true
+			}
+			if err := resultError(result); err != nil {
+				joined = errors.Join(joined, err)
 			}
 			remaining--
 			completeAllOf(promise, remaining, joined, canceled)
@@ -175,11 +175,11 @@ func All[T any](futures ...Future[T]) Future[[]T] {
 			if result.OK() {
 				values[resultIndex] = result.Value
 			}
-			if result.Err != nil {
-				joined = errors.Join(joined, result.Err)
-			}
 			if result.Canceled {
 				canceled = true
+			}
+			if err := resultError(result); err != nil {
+				joined = errors.Join(joined, err)
 			}
 			remaining--
 			if remaining > 0 {
@@ -235,10 +235,10 @@ func AnyOf(futures ...FutureView) Future[any] {
 				promise.Complete(result.Value)
 				return
 			}
-			joined = errors.Join(joined, result.Err)
+			joined = errors.Join(joined, resultError(result))
 			remaining--
 			if remaining == 0 {
-				promise.Fail(joined)
+				completeAnyOf(promise, joined)
 			}
 		}))
 	}
@@ -281,10 +281,10 @@ func Any[T any](futures ...Future[T]) Future[T] {
 				promise.Complete(result.Value)
 				return
 			}
-			joined = errors.Join(joined, result.Err)
+			joined = errors.Join(joined, resultError(result))
 			remaining--
 			if remaining == 0 {
-				promise.Fail(joined)
+				completeAny(promise, joined)
 			}
 		}))
 	}
@@ -388,7 +388,7 @@ func Exceptionally[T any](
 			ctx,
 			executor,
 			TaskFunc[T](func(ctx context.Context) (T, error) {
-				return task.Recover(ctx, result.Err)
+				return task.Recover(ctx, resultError(result))
 			}),
 			opts...,
 		)
@@ -413,23 +413,50 @@ func chainFuture[T any](promise Promise[T], future Future[T], err error) {
 			return
 		}
 		if result.Canceled {
-			promise.Cancel(result.Err)
+			promise.Cancel(resultError(result))
 			return
 		}
-		promise.Fail(result.Err)
+		promise.Fail(resultError(result))
 	}))
 }
 
 func completeFromResult[T, R any](promise Promise[R], result Result[T]) {
 	if result.Canceled {
-		promise.Cancel(result.Err)
+		promise.Cancel(resultError(result))
 		return
 	}
-	promise.Fail(result.Err)
+	promise.Fail(resultError(result))
 }
 
 func promiseCompleted[T any](future Future[T]) bool {
 	_, ok := future.Result()
 
 	return ok
+}
+
+func completeAnyOf(promise Promise[any], err error) {
+	if errors.Is(err, ErrCanceled) {
+		promise.Cancel(err)
+		return
+	}
+	promise.Fail(err)
+}
+
+func completeAny[T any](promise Promise[T], err error) {
+	if errors.Is(err, ErrCanceled) {
+		promise.Cancel(err)
+		return
+	}
+	promise.Fail(err)
+}
+
+func resultError[T any](result Result[T]) error {
+	if result.Canceled && result.Err == nil {
+		return ErrCanceled
+	}
+	if result.Err == nil && !result.OK() {
+		return ErrInvalid
+	}
+
+	return result.Err
 }
