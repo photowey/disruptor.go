@@ -67,7 +67,7 @@ type typedRunnableTask[T any] struct {
 	promise Promise[T]
 }
 
-func (t typedRunnableTask[T]) Cancel(cause error) {
+func (t typedRunnableTask[T]) cancelQueued(cause error) {
 	t.promise.Cancel(cause)
 }
 

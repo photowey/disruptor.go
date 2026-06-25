@@ -135,7 +135,7 @@ type fixedWorkerTask struct {
 }
 
 type cancelableRunnableTask interface {
-	Cancel(cause error)
+	cancelQueued(cause error)
 }
 
 // NewFixedWorkerExecutor creates and starts a fixed worker executor.
@@ -259,7 +259,7 @@ func (e *FixedWorkerExecutor) worker() {
 func (e *FixedWorkerExecutor) runTask(request SubmitRequest) {
 	if err := request.Context.Err(); err != nil {
 		if task, ok := request.Task.(cancelableRunnableTask); ok {
-			task.Cancel(err)
+			task.cancelQueued(err)
 		}
 		e.emitMetric("task_failed", request, err, 0)
 		return
