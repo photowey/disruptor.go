@@ -150,8 +150,30 @@ func TestRuntimeGraphBuildPlanEvaluatesConditionsAndFreezes(t *testing.T) {
 	if got := len(plan.Start); got != 1 {
 		t.Fatalf("start edge count = %d, want 1", got)
 	}
+	if got := len(plan.NodesByIndex); got != 3 {
+		t.Fatalf("nodes by index = %d, want 3", got)
+	}
 	if got := plan.Nodes["route"].Incoming; got != 1 {
 		t.Fatalf("route incoming = %d, want 1", got)
+	}
+	if got := plan.NodesByIndex[plan.Nodes["route"].Index].Name; got != "route" {
+		t.Fatalf("node at route index = %q, want route", got)
+	}
+	if got := plan.NodesByIndex[plan.Nodes["fast"].Index].Name; got != "fast" {
+		t.Fatalf("node at fast index = %q, want fast", got)
+	}
+	if got := plan.Start[0].ToIndex; got != plan.Nodes["route"].Index {
+		t.Fatalf("start edge target index = %d, want route index %d", got, plan.Nodes["route"].Index)
+	}
+	if got := plan.Start[0].FromIndex; got != VirtualNodeIndex {
+		t.Fatalf("start edge source index = %d, want virtual index", got)
+	}
+	fastPlanEdge := findPlanEdge(t, plan.Nodes["route"].Outgoing, "fast")
+	if got := fastPlanEdge.FromIndex; got != plan.Nodes["route"].Index {
+		t.Fatalf("route outgoing source index = %d, want route index %d", got, plan.Nodes["route"].Index)
+	}
+	if got := fastPlanEdge.ToIndex; got != plan.Nodes["fast"].Index {
+		t.Fatalf("route outgoing target index = %d, want fast index %d", got, plan.Nodes["fast"].Index)
 	}
 
 	runtimeContext := runtimevars.NewContext[runtimeGraphTestEvent](
@@ -201,6 +223,19 @@ func TestRuntimeGraphBuildPlanEvaluatesConditionsAndFreezes(t *testing.T) {
 	if _, err := runtimeGraph.BuildPlan(); !errors.Is(err, ErrHandled) {
 		t.Fatalf("second build plan error = %v, want runtimegraph.ErrHandled", err)
 	}
+}
+
+func findPlanEdge[T any](t *testing.T, edges []PlanEdge[T], to string) PlanEdge[T] {
+	t.Helper()
+
+	for _, edge := range edges {
+		if edge.To == to {
+			return edge
+		}
+	}
+
+	t.Fatalf("missing plan edge to %q", to)
+	return PlanEdge[T]{}
 }
 
 func TestRuntimeGraphConditionAndCompilerErrors(t *testing.T) {

@@ -138,11 +138,11 @@ func runtimeOperatorPrecedence(operator string) int {
 func parseRuntimeLiteral(literal string) (runtimeExpressionNode, error) {
 	switch literal {
 	case "true":
-		return runtimeLiteralNode{value: Value{Kind: ValueBool, Value: true}}, nil
+		return runtimeLiteralNode{value: Value{Kind: ValueBool, Bool: true}}, nil
 	case "false":
-		return runtimeLiteralNode{value: Value{Kind: ValueBool, Value: false}}, nil
+		return runtimeLiteralNode{value: Value{Kind: ValueBool, Bool: false}}, nil
 	case "nil":
-		return runtimeLiteralNode{value: Value{Kind: ValueNil, Value: nil}}, nil
+		return runtimeLiteralNode{value: Value{Kind: ValueNil}}, nil
 	}
 	if strings.HasPrefix(literal, `"`) {
 		value, err := strconv.Unquote(literal)
@@ -151,7 +151,7 @@ func parseRuntimeLiteral(literal string) (runtimeExpressionNode, error) {
 		}
 
 		return runtimeLiteralNode{
-			value: Value{Kind: ValueString, Value: value},
+			value: Value{Kind: ValueString, String: value},
 		}, nil
 	}
 	if strings.Contains(literal, ".") {
@@ -165,13 +165,13 @@ func parseRuntimeLiteral(literal string) (runtimeExpressionNode, error) {
 		}
 
 		return runtimeLiteralNode{
-			value: Value{Kind: ValueFloat, Value: value},
+			value: Value{Kind: ValueFloat, Float: value},
 		}, nil
 	}
 	value, err := strconv.ParseInt(strings.ReplaceAll(literal, "_", ""), 0, 64)
 	if err == nil {
 		return runtimeLiteralNode{
-			value: Value{Kind: ValueInt, Value: value},
+			value: Value{Kind: ValueInt, Int: value},
 		}, nil
 	}
 	unsigned, unsignedErr := strconv.ParseUint(strings.ReplaceAll(literal, "_", ""), 0, 64)
@@ -184,6 +184,6 @@ func parseRuntimeLiteral(literal string) (runtimeExpressionNode, error) {
 	}
 
 	return runtimeLiteralNode{
-		value: Value{Kind: ValueUint, Value: unsigned},
+		value: Value{Kind: ValueUint, Uint: unsigned},
 	}, nil
 }

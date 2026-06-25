@@ -40,6 +40,15 @@ Benchmark matrix:
 | Queue comparison | unbuffered channel, buffered channel, pointer channel, spin channel, `sync.Cond` ring |
 | CPU matrix | run release gate with `-cpu=1,2,4,8` |
 
+Runtime graph allocation gates:
+
+- `BenchmarkRuntimeGraphRouting/single_path`,
+  `BenchmarkRuntimeGraphRouting/active_join`, and the default
+  `BenchmarkRuntimeGraphRouting/expression_branch` are expected to stay at
+  `0 B/op` and `0 allocs/op`.
+- Expression routes remain tracked separately because custom providers,
+  converters, or resolvers can have a different allocation profile.
+
 `BenchmarkE2ELatencyQuantiles` reports sampled publish-to-handle `p50_ns`,
 `p95_ns`, and `p99_ns` for blocking and busy-spin wait strategies. Treat these
 tail-latency metrics as release gates alongside `ns/op`, `B/op`, `allocs/op`,

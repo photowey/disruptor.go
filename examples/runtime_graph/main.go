@@ -17,12 +17,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/photowey/disruptor.go/pkg/event"
-	topology "github.com/photowey/disruptor.go/pkg/graph"
-	"github.com/photowey/disruptor.go/pkg/runtimegraph"
 	"strings"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
+	topology "github.com/photowey/disruptor.go/pkg/graph"
+	"github.com/photowey/disruptor.go/pkg/runtimegraph"
+	"github.com/photowey/disruptor.go/pkg/runtimevars"
 )
 
 type routeEvent struct {
@@ -69,6 +70,39 @@ func (h routeStepHandler) OnEvent(request event.Request[routeEvent]) error {
 	return nil
 }
 
+type routeVariablesProvider struct{}
+
+func (routeVariablesProvider) Variables(request runtimevars.ProviderRequest[routeEvent]) (runtimevars.Variables, error) {
+	return routeVariables{
+		premium: request.Event != nil && request.Event.Value > 10,
+	}, nil
+}
+
+type routeVariables struct {
+	premium bool
+}
+
+func (v routeVariables) Lookup(path string) (any, bool) {
+	switch path {
+	case "plan.premium":
+		return v.premium, true
+	default:
+		return nil, false
+	}
+}
+
+func (v routeVariables) LookupValue(path string) (runtimevars.TypedValue, bool, error) {
+	switch path {
+	case "plan.premium":
+		return runtimevars.TypedValue{
+			Kind: runtimevars.TypedValueBool,
+			Bool: v.premium,
+		}, true, nil
+	default:
+		return runtimevars.TypedValue{}, false, nil
+	}
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -84,12 +118,15 @@ func main() {
 		MustNode("fast", routeStepHandler{name: "fast", steps: steps}).
 		MustNode("audit", routeStepHandler{name: "audit", steps: steps}).
 		MustEdge(topology.StartNode, "route").
-		MustEdge("route", "fast", runtimegraph.WhenExpression[routeEvent](`${route.fast}`)).
+		MustEdge("route", "fast", runtimegraph.WhenExpression[routeEvent](`${plan.premium} && ${route.fast}`)).
 		MustEdge("route", "audit", runtimegraph.WhenExpression[routeEvent](`${route.audit}`)).
 		MustEdge("fast", topology.EndNode).
 		MustEdge("audit", topology.EndNode)
 
-	if _, err := d.HandleRuntimeGraph(graph); err != nil {
+	if _, err := d.HandleRuntimeGraph(
+		graph,
+		disruptor.WithRuntimeGraphVariablesProvider[routeEvent](routeVariablesProvider{}),
+	); err != nil {
 		panic(err)
 	}
 	if err := d.Start(ctx); err != nil {

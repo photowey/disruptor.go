@@ -14,7 +14,11 @@
 
 package expression
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/photowey/disruptor.go/pkg/runtimevars"
+)
 
 type CompilerOption interface {
 	applyCompiler(config *compilerConfig) error
@@ -138,4 +142,25 @@ func (c runtimeExpressionEvalContext) convert(value any) (Value, error) {
 	}
 
 	return Value{Kind: ValueObject, Value: value}, nil
+}
+
+func (c runtimeExpressionEvalContext) lookup(path string) (Value, bool, error) {
+	if c.request.Variables == nil {
+		return Value{}, false, nil
+	}
+
+	if typed, ok := c.request.Variables.(runtimevars.TypedVariables); ok {
+		value, found, err := typed.LookupValue(path)
+		if err != nil || found {
+			return expressionValueFromTypedValue(value), found, err
+		}
+	}
+
+	value, ok := c.request.Variables.Lookup(path)
+	if !ok {
+		return Value{}, false, nil
+	}
+
+	converted, err := c.convert(value)
+	return converted, true, err
 }

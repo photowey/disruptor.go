@@ -16,6 +16,8 @@ package runtimevars
 
 import "sync"
 
+const defaultBagCapacity = 4
+
 // Variables exposes read-only runtime variable lookup.
 type Variables interface {
 	Lookup(path string) (any, bool)
@@ -41,9 +43,7 @@ type Bag struct {
 
 // NewBag creates a concurrency-safe event-scoped runtime bag.
 func NewBag() *Bag {
-	return &Bag{
-		values: make(map[string]any),
-	}
+	return &Bag{}
 }
 
 // Lookup returns a value from the bag.
@@ -59,6 +59,16 @@ func (b *Bag) Lookup(path string) (any, bool) {
 	return value, ok
 }
 
+// LookupValue returns a typed value from the bag.
+func (b *Bag) LookupValue(path string) (TypedValue, bool, error) {
+	value, ok := b.Lookup(path)
+	if !ok {
+		return TypedValue{}, false, nil
+	}
+
+	return typedValueFromAny(value), true, nil
+}
+
 // Set stores a value in the bag.
 func (b *Bag) Set(path string, value any) error {
 	if err := ValidatePath(path); err != nil {
@@ -68,6 +78,9 @@ func (b *Bag) Set(path string, value any) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	if b.values == nil {
+		b.values = make(map[string]any, defaultBagCapacity)
+	}
 	b.values[path] = value
 	return nil
 }
@@ -83,6 +96,20 @@ func (b *Bag) Delete(path string) error {
 
 	delete(b.values, path)
 	return nil
+}
+
+// Clear removes every stored value while keeping the backing map available for reuse.
+func (b *Bag) Clear() {
+	if b == nil {
+		return
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for path := range b.values {
+		delete(b.values, path)
+	}
 }
 
 // Variables returns the bag as a read-only variable source.

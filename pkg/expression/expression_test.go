@@ -78,6 +78,82 @@ func TestExpressionRejectsIntermediateIntegerAsBool(t *testing.T) {
 	}
 }
 
+func TestExpressionComparesLargeIntegersExactly(t *testing.T) {
+	t.Parallel()
+
+	bag := runtimevars.NewBag()
+	mustSetRuntimeValue(t, bag, "left", int64(9_007_199_254_740_993))
+	mustSetRuntimeValue(t, bag, "right", int64(9_007_199_254_740_992))
+	mustSetRuntimeValue(t, bag, "unsigned", uint64(9_007_199_254_740_993))
+
+	tests := []struct {
+		name       string
+		expression Expression
+		want       bool
+	}{
+		{name: "signed greater than signed", expression: `${left} > ${right}`, want: true},
+		{name: "signed not equal signed", expression: `${left} != ${right}`, want: true},
+		{name: "unsigned equals signed", expression: `${unsigned} == ${left}`, want: true},
+		{name: "unsigned greater than signed", expression: `${unsigned} > ${right}`, want: true},
+	}
+
+	compiler := NewCompiler()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			expression, err := compiler.Compile(tt.expression)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			got, err := expression.EvaluateBool(Request{
+				Variables: bag,
+			})
+			if err != nil {
+				t.Fatalf("evaluate: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("evaluate = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExpressionUsesTypedVariableLookup(t *testing.T) {
+	t.Parallel()
+
+	compiler := NewCompiler()
+	expression, err := compiler.Compile(`${value} >= 40`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	got, err := expression.EvaluateBool(Request{
+		Variables: typedExpressionVariables{},
+	})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if !got {
+		t.Fatalf("evaluate = false, want true")
+	}
+}
+
+type typedExpressionVariables struct{}
+
+func (typedExpressionVariables) Lookup(path string) (any, bool) {
+	panic("Lookup should not be called when LookupValue is available")
+}
+
+func (typedExpressionVariables) LookupValue(path string) (runtimevars.TypedValue, bool, error) {
+	if path != "value" {
+		return runtimevars.TypedValue{}, false, nil
+	}
+
+	return runtimevars.TypedValue{
+		Kind: runtimevars.TypedValueInt,
+		Int:  41,
+	}, true, nil
+}
+
 func mustSetRuntimeValue(t *testing.T, bag *runtimevars.Bag, path string, value any) {
 	t.Helper()
 

@@ -23,16 +23,21 @@ import (
 	"github.com/photowey/disruptor.go/pkg/graph"
 )
 
+// VirtualNodeIndex marks START/END virtual nodes in indexed scheduling fields.
+const VirtualNodeIndex = -1
+
 // Plan is an immutable scheduling view of a validated runtime graph.
 type Plan[T any] struct {
-	Name     string
-	Snapshot RuntimeGraphSnapshot
-	Nodes    map[string]*PlanNode[T]
-	Start    []PlanEdge[T]
+	Name         string
+	Snapshot     RuntimeGraphSnapshot
+	Nodes        map[string]*PlanNode[T]
+	NodesByIndex []PlanNode[T]
+	Start        []PlanEdge[T]
 }
 
 // PlanNode describes one real handler node in a runtime graph plan.
 type PlanNode[T any] struct {
+	Index            int
 	Name             string
 	Handler          event.Handler[T]
 	ExceptionHandler event.ExceptionHandler[T]
@@ -45,6 +50,8 @@ type PlanNode[T any] struct {
 type PlanEdge[T any] struct {
 	From              string
 	To                string
+	FromIndex         int
+	ToIndex           int
 	Condition         EdgeCondition[T]
 	CompiledCondition expression.BoolExpression
 }
@@ -82,14 +89,26 @@ func (g *RuntimeGraph[T]) BuildPlan() (*Plan[T], error) {
 
 	g.freezeHandledLocked()
 
+	nodeNames := make([]string, 0, len(g.nodes))
+	for name := range g.nodes {
+		nodeNames = append(nodeNames, name)
+	}
+	sort.Strings(nodeNames)
+
+	nodesByIndex := make([]PlanNode[T], len(nodeNames))
 	nodes := make(map[string]*PlanNode[T], len(g.nodes))
-	for name, node := range g.nodes {
-		nodes[name] = &PlanNode[T]{
+	indexByName := make(map[string]int, len(g.nodes))
+	for index, name := range nodeNames {
+		node := g.nodes[name]
+		nodesByIndex[index] = PlanNode[T]{
+			Index:            index,
 			Name:             node.name,
 			Handler:          node.handler,
 			ExceptionHandler: node.exceptionHandler,
 			Label:            node.label,
 		}
+		nodes[name] = &nodesByIndex[index]
+		indexByName[name] = index
 	}
 
 	edgesByFrom := make(map[string][]PlanEdge[T])
@@ -98,6 +117,8 @@ func (g *RuntimeGraph[T]) BuildPlan() (*Plan[T], error) {
 		planEdge := PlanEdge[T]{
 			From:              key.From,
 			To:                key.To,
+			FromIndex:         planIndex(indexByName, key.From),
+			ToIndex:           planIndex(indexByName, key.To),
 			Condition:         edge.condition,
 			CompiledCondition: edge.compiledCondition,
 		}
@@ -107,7 +128,7 @@ func (g *RuntimeGraph[T]) BuildPlan() (*Plan[T], error) {
 			edgesByFrom[key.From] = append(edgesByFrom[key.From], planEdge)
 		}
 		if key.To != graph.EndNode {
-			nodes[key.To].Incoming++
+			nodesByIndex[planEdge.ToIndex].Incoming++
 		}
 	}
 	sort.Slice(startEdges, func(i, j int) bool {
@@ -117,20 +138,30 @@ func (g *RuntimeGraph[T]) BuildPlan() (*Plan[T], error) {
 		sort.Slice(edgesByFrom[from], func(i, j int) bool {
 			return edgesByFrom[from][i].To < edgesByFrom[from][j].To
 		})
-		nodes[from].Outgoing = append(nodes[from].Outgoing, edgesByFrom[from]...)
+		fromIndex := indexByName[from]
+		nodesByIndex[fromIndex].Outgoing = append(nodesByIndex[fromIndex].Outgoing, edgesByFrom[from]...)
 	}
-	for _, node := range nodes {
-		if node.Incoming == 0 {
+	for index := range nodesByIndex {
+		if nodesByIndex[index].Incoming == 0 {
 			// Validation guarantees at least one incoming edge; this keeps the
 			// scheduler safe if a future validation rule changes.
-			node.Incoming = 1
+			nodesByIndex[index].Incoming = 1
 		}
 	}
 
 	return &Plan[T]{
-		Name:     g.name,
-		Snapshot: g.snapshotLocked(),
-		Nodes:    nodes,
-		Start:    startEdges,
+		Name:         g.name,
+		Snapshot:     g.snapshotLocked(),
+		Nodes:        nodes,
+		NodesByIndex: nodesByIndex,
+		Start:        startEdges,
 	}, nil
+}
+
+func planIndex(indexByName map[string]int, name string) int {
+	if index, ok := indexByName[name]; ok {
+		return index
+	}
+
+	return VirtualNodeIndex
 }

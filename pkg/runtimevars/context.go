@@ -59,7 +59,7 @@ type ContextView interface {
 // Context exposes event-scoped runtime variables to handlers.
 type Context[T any] struct {
 	bag       *Bag
-	variables Variables
+	variables View[T]
 }
 
 // NewContext creates a runtime context with bag, provider, and resolver lookup.
@@ -69,18 +69,43 @@ func NewContext[T any](
 	provider Variables,
 	resolver Resolver[T],
 ) *Context[T] {
-	bag := NewBag()
+	runtimeContext := NewReusableContext[T]()
+	runtimeContext.Reset(request, graphName, provider, resolver)
+
+	return runtimeContext
+}
+
+// NewReusableContext creates an empty runtime context that can be reset per event.
+func NewReusableContext[T any]() *Context[T] {
 	return &Context[T]{
-		bag: bag,
-		variables: View[T]{
-			Bag:       bag,
-			Provider:  provider,
-			Resolver:  resolver,
-			Context:   request.Context,
-			Event:     request.Event,
-			Sequence:  request.Sequence,
-			GraphName: graphName,
-		},
+		bag: NewBag(),
+	}
+}
+
+// Reset prepares the context for a new event and clears previous event-scoped values.
+func (c *Context[T]) Reset(
+	request Request[T],
+	graphName string,
+	provider Variables,
+	resolver Resolver[T],
+) {
+	if c == nil {
+		return
+	}
+	if c.bag == nil {
+		c.bag = NewBag()
+	} else {
+		c.bag.Clear()
+	}
+
+	c.variables = View[T]{
+		Bag:       c.bag,
+		Provider:  provider,
+		Resolver:  resolver,
+		Context:   request.Context,
+		Event:     request.Event,
+		Sequence:  request.Sequence,
+		GraphName: graphName,
 	}
 }
 
@@ -113,11 +138,11 @@ func (c *Context[T]) Delete(path string) error {
 
 // Variables returns the merged runtime variable lookup view.
 func (c *Context[T]) Variables() Variables {
-	if c == nil || c.variables == nil {
+	if c == nil {
 		return NoopContext{}
 	}
 
-	return c.variables
+	return &c.variables
 }
 
 // View merges runtime bag, provider, and event resolver values.
@@ -159,6 +184,27 @@ func (v View[T]) Lookup(path string) (any, bool) {
 	return nil, false
 }
 
+// LookupValue resolves a runtime variable as a typed value.
+func (v View[T]) LookupValue(path string) (TypedValue, bool, error) {
+	if v.Bag != nil {
+		if typed, ok, err := lookupTypedValue(v.Bag, path); err != nil || ok {
+			return typed, ok, err
+		}
+	}
+	if v.Provider != nil {
+		if typed, ok, err := lookupTypedValue(v.Provider, path); err != nil || ok {
+			return typed, ok, err
+		}
+	}
+	if v.Resolver != nil {
+		if typed, ok, err := resolveTypedValue(v, path); err != nil || ok {
+			return typed, ok, err
+		}
+	}
+
+	return TypedValue{}, false, nil
+}
+
 // NoopContext implements empty runtime variable lookup and mutation.
 type NoopContext struct{}
 
@@ -180,4 +226,44 @@ func (NoopContext) Delete(path string) error {
 // Variables returns the no-op context as a read-only variable source.
 func (c NoopContext) Variables() Variables {
 	return c
+}
+
+func lookupTypedValue(source Variables, path string) (TypedValue, bool, error) {
+	if typed, ok := source.(TypedVariables); ok {
+		value, found, err := typed.LookupValue(path)
+		if err != nil || found {
+			return value, found, err
+		}
+	}
+	value, ok := source.Lookup(path)
+	if !ok {
+		return TypedValue{}, false, nil
+	}
+
+	return typedValueFromAny(value), true, nil
+}
+
+func resolveTypedValue[T any](view View[T], path string) (TypedValue, bool, error) {
+	if resolver, ok := view.Resolver.(TypedResolver[T]); ok {
+		return resolver.ResolveValue(ResolveRequest[T]{
+			Context:   view.Context,
+			Event:     view.Event,
+			Sequence:  view.Sequence,
+			GraphName: view.GraphName,
+			Path:      path,
+		})
+	}
+
+	value, ok, err := view.Resolver.Resolve(ResolveRequest[T]{
+		Context:   view.Context,
+		Event:     view.Event,
+		Sequence:  view.Sequence,
+		GraphName: view.GraphName,
+		Path:      path,
+	})
+	if err != nil || !ok {
+		return TypedValue{}, ok, err
+	}
+
+	return typedValueFromAny(value), true, nil
 }

@@ -18,6 +18,7 @@ import (
 	"context"
 	"reflect"
 	"strings"
+	"sync"
 )
 
 // Resolver resolves expression paths from an event value.
@@ -48,51 +49,130 @@ type ResolveRequest[T any] struct {
 
 // NewReflectionResolver creates a resolver that reads fields, JSON tags, and string maps.
 func NewReflectionResolver[T any]() Resolver[T] {
-	return reflectionResolver[T]{}
+	return &reflectionResolver[T]{}
 }
 
-type reflectionResolver[T any] struct{}
+type reflectionResolver[T any] struct {
+	paths sync.Map
+}
 
-func (reflectionResolver[T]) Resolve(request ResolveRequest[T]) (any, bool, error) {
+func (r *reflectionResolver[T]) Resolve(request ResolveRequest[T]) (any, bool, error) {
+	value, ok, err := r.ResolveValue(request)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+
+	return value.any(), true, nil
+}
+
+func (r *reflectionResolver[T]) ResolveValue(
+	request ResolveRequest[T],
+) (TypedValue, bool, error) {
 	if request.Event == nil {
-		return nil, false, nil
-	}
-	if err := ValidatePath(request.Path); err != nil {
-		return nil, false, err
+		return TypedValue{}, false, nil
 	}
 
-	return resolveReflectPath(reflect.ValueOf(request.Event), strings.Split(request.Path, "."))
+	path, err := r.path(request.Path)
+	if err != nil {
+		return TypedValue{}, false, err
+	}
+
+	return resolveReflectPath(reflect.ValueOf(request.Event), path, 0)
 }
 
-func resolveReflectPath(value reflect.Value, parts []string) (any, bool, error) {
+func (r *reflectionResolver[T]) path(path string) (compiledPath, error) {
+	if r == nil {
+		return compilePath(path)
+	}
+	if cached, ok := r.paths.Load(path); ok {
+		return cached.(compiledPath), nil
+	}
+
+	compiled, err := compilePath(path)
+	if err != nil {
+		return compiledPath{}, err
+	}
+	cached, _ := r.paths.LoadOrStore(path, compiled)
+	return cached.(compiledPath), nil
+}
+
+func resolveReflectPath(
+	value reflect.Value,
+	path compiledPath,
+	index int,
+) (TypedValue, bool, error) {
 	value = indirectReflectValue(value)
 	if !value.IsValid() {
-		return nil, false, nil
+		return TypedValue{}, false, nil
 	}
-	if len(parts) == 0 {
-		return value.Interface(), true, nil
+	if index >= path.Len() {
+		return reflectTypedValue(value)
 	}
 
-	head := parts[0]
+	head := path.At(index)
 	switch value.Kind() {
 	case reflect.Map:
 		key := reflect.ValueOf(head)
 		if key.Type().AssignableTo(value.Type().Key()) {
 			item := value.MapIndex(key)
 			if !item.IsValid() {
-				return nil, false, nil
+				return TypedValue{}, false, nil
 			}
 
-			return resolveReflectPath(item, parts[1:])
+			return resolveReflectPath(item, path, index+1)
 		}
 	case reflect.Struct:
 		field := findStructField(value, head)
 		if field.IsValid() {
-			return resolveReflectPath(field, parts[1:])
+			return resolveReflectPath(field, path, index+1)
 		}
 	}
 
-	return nil, false, nil
+	return TypedValue{}, false, nil
+}
+
+func reflectTypedValue(value reflect.Value) (TypedValue, bool, error) {
+	switch value.Kind() {
+	case reflect.Bool:
+		return TypedValue{Kind: TypedValueBool, Bool: value.Bool()}, true, nil
+	case reflect.Int:
+		return TypedValue{Kind: TypedValueInt, Int: value.Int()}, true, nil
+	case reflect.Int8:
+		return TypedValue{Kind: TypedValueInt, Int: value.Int()}, true, nil
+	case reflect.Int16:
+		return TypedValue{Kind: TypedValueInt, Int: value.Int()}, true, nil
+	case reflect.Int32:
+		return TypedValue{Kind: TypedValueInt, Int: value.Int()}, true, nil
+	case reflect.Int64:
+		return TypedValue{Kind: TypedValueInt, Int: value.Int()}, true, nil
+	case reflect.Uint:
+		return TypedValue{Kind: TypedValueUint, Uint: value.Uint()}, true, nil
+	case reflect.Uint8:
+		return TypedValue{Kind: TypedValueUint, Uint: value.Uint()}, true, nil
+	case reflect.Uint16:
+		return TypedValue{Kind: TypedValueUint, Uint: value.Uint()}, true, nil
+	case reflect.Uint32:
+		return TypedValue{Kind: TypedValueUint, Uint: value.Uint()}, true, nil
+	case reflect.Uint64:
+		return TypedValue{Kind: TypedValueUint, Uint: value.Uint()}, true, nil
+	case reflect.Uintptr:
+		return TypedValue{Kind: TypedValueUint, Uint: value.Uint()}, true, nil
+	case reflect.Float32:
+		return TypedValue{Kind: TypedValueFloat, Float: value.Float()}, true, nil
+	case reflect.Float64:
+		return TypedValue{Kind: TypedValueFloat, Float: value.Float()}, true, nil
+	case reflect.String:
+		return TypedValue{Kind: TypedValueString, String: value.String()}, true, nil
+	default:
+		if value.CanInterface() {
+			return TypedValue{
+				Kind:  TypedValueObject,
+				Value: value.Interface(),
+			}, true, nil
+		}
+
+		return TypedValue{}, false, nil
+	}
 }
 
 func indirectReflectValue(value reflect.Value) reflect.Value {
@@ -116,7 +196,7 @@ func findStructField(value reflect.Value, name string) reflect.Value {
 		if fieldType.Name == name || strings.EqualFold(fieldType.Name, name) {
 			return value.Field(i)
 		}
-		if tagName := strings.Split(fieldType.Tag.Get("json"), ",")[0]; tagName == name {
+		if tagName, _, _ := strings.Cut(fieldType.Tag.Get("json"), ","); tagName == name {
 			return value.Field(i)
 		}
 	}

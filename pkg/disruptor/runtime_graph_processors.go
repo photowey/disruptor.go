@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/photowey/disruptor.go/pkg/event"
-	"github.com/photowey/disruptor.go/pkg/graph"
 	topology "github.com/photowey/disruptor.go/pkg/runtimegraph"
 	"github.com/photowey/disruptor.go/pkg/runtimevars"
 )
@@ -348,6 +347,8 @@ type runtimeGraphEventHandler[T any] struct {
 	resolver         runtimevars.Resolver[T]
 	metricsSink      RuntimeGraphMetricsSink
 	workers          int
+	runtimeContext   *runtimevars.Context[T]
+	runState         runtimeGraphRunState[T]
 }
 
 func (h *runtimeGraphEventHandler[T]) OnStart(ctx context.Context) error {
@@ -377,21 +378,12 @@ func (h *runtimeGraphEventHandler[T]) OnEvent(request event.Request[T]) error {
 		}
 	}
 
-	runtimeCtx := runtimevars.NewContext(
-		runtimevars.Request[T]{
-			Context:  request.Context,
-			Event:    request.Event,
-			Sequence: request.Sequence,
-		},
-		h.graphName,
-		providerVariables,
-		h.resolver,
-	)
-	state := newRuntimeGraphRunState[T](h.plan, runtimeCtx, request)
+	runtimeCtx := h.prepareRuntimeContext(request, providerVariables)
+	state := h.prepareRunState(runtimeCtx, request)
 	if err := state.processStart(h); err != nil {
 		return err
 	}
-	for len(state.ready) > 0 {
+	for state.hasReady() {
 		name := state.popReady()
 		if err := state.runNode(h, name); err != nil {
 			return err
@@ -426,6 +418,39 @@ func (h *runtimeGraphEventHandler[T]) OnEvent(request event.Request[T]) error {
 			Runtime:   runtimeCtx,
 		})
 	}
+}
+
+func (h *runtimeGraphEventHandler[T]) prepareRuntimeContext(
+	request event.Request[T],
+	providerVariables runtimevars.Variables,
+) *runtimevars.Context[T] {
+	if h.runtimeContext == nil {
+		h.runtimeContext = runtimevars.NewReusableContext[T]()
+	}
+	h.runtimeContext.Reset(
+		runtimevars.Request[T]{
+			Context:  request.Context,
+			Event:    request.Event,
+			Sequence: request.Sequence,
+		},
+		h.graphName,
+		providerVariables,
+		h.resolver,
+	)
+
+	return h.runtimeContext
+}
+
+func (h *runtimeGraphEventHandler[T]) prepareRunState(
+	runtime runtimevars.ContextView,
+	request event.Request[T],
+) *runtimeGraphRunState[T] {
+	if h.runState.plan == nil {
+		h.runState = newRuntimeGraphRunState(h.plan)
+	}
+	h.runState.reset(runtime, request)
+
+	return &h.runState
 }
 
 func (h *runtimeGraphEventHandler[T]) emitMetric(metric RuntimeGraphMetric) {
@@ -477,8 +502,9 @@ type runtimeGraphRunState[T any] struct {
 	plan       *topology.Plan[T]
 	runtime    runtimevars.ContextView
 	request    event.Request[T]
-	nodes      map[string]*runtimeGraphNodeState
-	ready      []string
+	nodes      []runtimeGraphNodeState
+	ready      []int
+	readyHead  int
 	endReached bool
 }
 
@@ -492,20 +518,31 @@ type runtimeGraphNodeState struct {
 
 func newRuntimeGraphRunState[T any](
 	plan *topology.Plan[T],
+) runtimeGraphRunState[T] {
+	return runtimeGraphRunState[T]{
+		plan:  plan,
+		nodes: make([]runtimeGraphNodeState, len(plan.NodesByIndex)),
+		ready: make([]int, 0, len(plan.NodesByIndex)),
+	}
+}
+
+func (s *runtimeGraphRunState[T]) reset(
 	runtime runtimevars.ContextView,
 	request event.Request[T],
-) *runtimeGraphRunState[T] {
-	nodes := make(map[string]*runtimeGraphNodeState, len(plan.Nodes))
-	for name, node := range plan.Nodes {
-		nodes[name] = &runtimeGraphNodeState{total: node.Incoming}
-	}
+) {
+	s.runtime = runtime
+	s.request = request
+	s.endReached = false
+	s.ready = s.ready[:0]
+	s.readyHead = 0
 
-	return &runtimeGraphRunState[T]{
-		plan:    plan,
-		runtime: runtime,
-		request: request,
-		nodes:   nodes,
-		ready:   make([]string, 0, len(plan.Nodes)),
+	if len(s.nodes) != len(s.plan.NodesByIndex) {
+		s.nodes = make([]runtimeGraphNodeState, len(s.plan.NodesByIndex))
+	}
+	for index := range s.plan.NodesByIndex {
+		s.nodes[index] = runtimeGraphNodeState{
+			total: s.plan.NodesByIndex[index].Incoming,
+		}
 	}
 }
 
@@ -545,13 +582,13 @@ func (s *runtimeGraphRunState[T]) processStart(handler *runtimeGraphEventHandler
 			Sequence:  s.request.Sequence,
 			Selected:  selected,
 		})
-		if edge.To == graph.EndNode {
+		if edge.ToIndex == topology.VirtualNodeIndex {
 			if selected {
 				s.endReached = true
 			}
 			continue
 		}
-		if err := s.resolveInbound(handler, edge.To, selected); err != nil {
+		if err := s.resolveInbound(handler, edge.ToIndex, selected); err != nil {
 			return err
 		}
 	}
@@ -559,19 +596,39 @@ func (s *runtimeGraphRunState[T]) processStart(handler *runtimeGraphEventHandler
 	return nil
 }
 
-func (s *runtimeGraphRunState[T]) popReady() string {
-	name := s.ready[0]
-	s.ready = s.ready[1:]
-	return name
+func (s *runtimeGraphRunState[T]) hasReady() bool {
+	return s.readyHead < len(s.ready)
+}
+
+func (s *runtimeGraphRunState[T]) popReady() int {
+	index := s.ready[s.readyHead]
+	s.readyHead++
+
+	return index
+}
+
+func (s *runtimeGraphRunState[T]) pushReady(index int) {
+	if s.readyHead > 0 {
+		copy(s.ready, s.ready[s.readyHead:])
+		s.ready = s.ready[:len(s.ready)-s.readyHead]
+		s.readyHead = 0
+	}
+
+	s.ready = append(s.ready, index)
+	sort.Ints(s.ready)
 }
 
 func (s *runtimeGraphRunState[T]) resolveInbound(
 	handler *runtimeGraphEventHandler[T],
-	name string,
+	index int,
 	selected bool,
 ) error {
-	node := s.nodes[name]
-	if node == nil || node.done {
+	if index < 0 || index >= len(s.nodes) {
+		return nil
+	}
+
+	node := &s.nodes[index]
+	if node.done {
 		return nil
 	}
 
@@ -585,20 +642,21 @@ func (s *runtimeGraphRunState[T]) resolveInbound(
 	node.scheduled = true
 	if node.selected == 0 {
 		node.done = true
+		planNode := &s.plan.NodesByIndex[index]
 		handler.emitMetric(RuntimeGraphMetric{
 			Kind:      "node_skipped",
 			GraphName: handler.graphName,
 			Node: event.Node{
 				GraphName: handler.graphName,
-				NodeName:  name,
+				NodeName:  planNode.Name,
 			},
 			Sequence: s.request.Sequence,
 		})
-		for _, edge := range s.plan.Nodes[name].Outgoing {
-			if edge.To == graph.EndNode {
+		for _, edge := range planNode.Outgoing {
+			if edge.ToIndex == topology.VirtualNodeIndex {
 				continue
 			}
-			if err := s.resolveInbound(handler, edge.To, false); err != nil {
+			if err := s.resolveInbound(handler, edge.ToIndex, false); err != nil {
 				return err
 			}
 		}
@@ -606,22 +664,25 @@ func (s *runtimeGraphRunState[T]) resolveInbound(
 		return nil
 	}
 
-	s.ready = append(s.ready, name)
-	sort.Strings(s.ready)
+	s.pushReady(index)
 
 	return nil
 }
 
 func (s *runtimeGraphRunState[T]) runNode(
 	handler *runtimeGraphEventHandler[T],
-	name string,
+	index int,
 ) error {
-	nodeState := s.nodes[name]
-	if nodeState == nil || nodeState.done {
+	if index < 0 || index >= len(s.nodes) {
 		return nil
 	}
 
-	planNode := s.plan.Nodes[name]
+	nodeState := &s.nodes[index]
+	if nodeState.done {
+		return nil
+	}
+
+	planNode := &s.plan.NodesByIndex[index]
 	request := event.Request[T]{
 		Context:    s.request.Context,
 		Event:      s.request.Event,
@@ -629,13 +690,14 @@ func (s *runtimeGraphRunState[T]) runNode(
 		EndOfBatch: s.request.EndOfBatch,
 		Node: event.Node{
 			GraphName: handler.graphName,
-			NodeName:  name,
+			NodeName:  planNode.Name,
 			NodeLabel: planNode.Label,
 		},
 		Runtime: s.runtime,
 	}
 
 	var handlerErr error
+	var panicked bool
 	started := time.Now()
 	handler.emitMetric(RuntimeGraphMetric{
 		Kind:      "node_scheduled",
@@ -644,20 +706,11 @@ func (s *runtimeGraphRunState[T]) runNode(
 		Sequence:  request.Sequence,
 	})
 	for {
-		handlerErr = s.invokeHandler(planNode.Handler, request)
+		handlerErr, panicked = s.invokeHandler(planNode.Handler, request)
 		if handlerErr == nil {
 			break
 		}
-		action := handler.handleRuntimeException(RuntimeGraphExceptionRequest[T]{
-			Context:   request.Context,
-			Event:     request.Event,
-			Sequence:  request.Sequence,
-			GraphName: handler.graphName,
-			NodeName:  name,
-			Kind:      RuntimeGraphExceptionKindHandler,
-			Cause:     handlerErr,
-			Runtime:   s.runtime,
-		})
+		action := s.handleNodeFailure(handler, planNode, request, handlerErr, panicked)
 		switch action {
 		case event.ExceptionActionContinue:
 		case event.ExceptionActionRetry:
@@ -667,6 +720,7 @@ func (s *runtimeGraphRunState[T]) runNode(
 		}
 		break
 	}
+	resetNodeRetry(planNode.ExceptionHandler, request.Sequence)
 
 	nodeState.done = true
 	handler.emitMetric(RuntimeGraphMetric{
@@ -692,7 +746,7 @@ func (s *runtimeGraphRunState[T]) runNode(
 				Event:     request.Event,
 				Sequence:  request.Sequence,
 				GraphName: handler.graphName,
-				NodeName:  name,
+				NodeName:  planNode.Name,
 				EdgeFrom:  edge.From,
 				EdgeTo:    edge.To,
 				Kind:      RuntimeGraphExceptionKindCondition,
@@ -713,13 +767,13 @@ func (s *runtimeGraphRunState[T]) runNode(
 			Sequence:  request.Sequence,
 			Selected:  selected,
 		})
-		if edge.To == graph.EndNode {
+		if edge.ToIndex == topology.VirtualNodeIndex {
 			if selected {
 				s.endReached = true
 			}
 			continue
 		}
-		if err := s.resolveInbound(handler, edge.To, selected); err != nil {
+		if err := s.resolveInbound(handler, edge.ToIndex, selected); err != nil {
 			return err
 		}
 	}
@@ -730,14 +784,70 @@ func (s *runtimeGraphRunState[T]) runNode(
 func (s *runtimeGraphRunState[T]) invokeHandler(
 	handler event.Handler[T],
 	request event.Request[T],
-) (err error) {
+) (err error, panicked bool) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("disruptor: runtime graph handler panic: %v", recovered)
+			panicked = true
 		}
 	}()
 
-	return handler.OnEvent(request)
+	return handler.OnEvent(request), false
+}
+
+func (s *runtimeGraphRunState[T]) handleNodeFailure(
+	handler *runtimeGraphEventHandler[T],
+	planNode *topology.PlanNode[T],
+	request event.Request[T],
+	handlerErr error,
+	panicked bool,
+) event.ExceptionAction {
+	if panicked || planNode.ExceptionHandler == nil {
+		kind := RuntimeGraphExceptionKindHandler
+		if panicked {
+			kind = RuntimeGraphExceptionKindPanic
+		}
+
+		return handler.handleRuntimeException(RuntimeGraphExceptionRequest[T]{
+			Context:   request.Context,
+			Event:     request.Event,
+			Sequence:  request.Sequence,
+			GraphName: handler.graphName,
+			NodeName:  planNode.Name,
+			Kind:      kind,
+			Cause:     handlerErr,
+			Runtime:   s.runtime,
+		})
+	}
+
+	action := planNode.ExceptionHandler.HandleEventException(event.Exception[T]{
+		Context:  request.Context,
+		Event:    request.Event,
+		Sequence: request.Sequence,
+		Err:      handlerErr,
+		Node:     request.Node,
+	})
+	handler.emitMetric(RuntimeGraphMetric{
+		Kind:      "exception",
+		GraphName: handler.graphName,
+		Node:      request.Node,
+		Sequence:  request.Sequence,
+		Err:       handlerErr,
+	})
+	if action == event.ExceptionActionUnknown {
+		return event.ExceptionActionHalt
+	}
+
+	return action
+}
+
+func resetNodeRetry[T any](handler event.ExceptionHandler[T], sequence int64) {
+	resetter, ok := handler.(interface{ ResetRetry(sequence int64) })
+	if !ok {
+		return
+	}
+
+	resetter.ResetRetry(sequence)
 }
 
 // NewFatalRuntimeGraphExceptionHandler returns a handler that halts on every failure.

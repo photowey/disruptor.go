@@ -440,6 +440,21 @@ Initial syntax:
 Path syntax uses dot-separated identifiers inside `${...}`. Empty path segments
 are invalid.
 
+### Numeric Semantics
+
+The default numeric path is intentionally small and allocation-conscious:
+
+- signed integer comparisons are exact.
+- unsigned integer comparisons are exact.
+- mixed signed/unsigned integer comparisons are exact and handle negative signed
+  values without converting them to large unsigned values.
+- float operands use Go `float64` comparison semantics.
+
+Fixed-point decimal arithmetic is not part of the default compiler. Decimal
+support should be supplied through an optional compiler or converter extension,
+and a mature decimal implementation is preferred over a project-local
+general-purpose decimal type if that extension becomes necessary.
+
 ### Boolean Conversion
 
 The final expression result must convert to bool:
@@ -748,11 +763,31 @@ Rules:
 
 Each sequence has runtime state:
 
-- runtime bag
-- node status map
-- ready node queue
+- reusable runtime context and runtime bag
+- indexed node status slice
+- indexed ready node queue
 - end-reached flag
 - no-route result
+
+### Scheduler Performance Notes
+
+`RuntimeGraph.BuildPlan()` compiles stable node indexes and edge indexes before
+the graph is registered. The scheduler hot path uses those indexes instead of
+per-event node-name map lookups.
+
+The scheduler owns a reusable per-processor workspace:
+
+- `runtimevars.Context[T]` is reset before each event.
+- `runtimevars.Bag` allocates its map lazily on first write and clears it
+  between events while keeping the backing map for reuse.
+- route state is stored in preallocated slices sized from `Plan.NodesByIndex`.
+- expression paths use compiled runtime variable paths and the optional
+  `runtimevars.TypedVariables` / `runtimevars.TypedResolver[T]` channel to
+  avoid scalar `any` boxing.
+
+Default runtime graph routing benchmarks, including the expression branch, should
+remain allocation-free. Expression routes are still measured separately because
+custom providers, converters, or resolvers can have their own allocation profile.
 
 The state can be released when the event reaches `END`, completes by configured
 NoRoute action, or halts.

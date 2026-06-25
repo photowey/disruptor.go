@@ -13,4 +13,11 @@
 // limitations under the License.
 
 // Package runtimevars contains runtime graph variable storage and lookup helpers.
+//
+// Runtime variables are event-scoped. Disruptor runtime graph processors reset
+// the concrete context before each event, so handlers should treat
+// event.Request.Runtime as valid only for the current callback.
+//
+// TypedVariables and TypedResolver are optional low-allocation extensions used
+// by expression evaluation to avoid boxing scalar runtime values as any.
 package runtimevars

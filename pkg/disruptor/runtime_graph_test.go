@@ -266,6 +266,75 @@ func TestRuntimeGraphExceptionHandlerReceivesFailures(t *testing.T) {
 	})
 }
 
+func TestRuntimeGraphNodeExceptionHandlerOverridesRuntimeHandlerForHandlerErrors(t *testing.T) {
+	retryHandler, err := event.NewRetryExceptionHandler[longEvent](
+		1,
+		event.ExceptionActionHalt,
+	)
+	if err != nil {
+		t.Fatalf("new retry handler: %v", err)
+	}
+
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-node-handler-override").
+		MustNode(
+			"A",
+			&runtimeFailOnceHandler{err: errors.New("ignored once")},
+			runtimegraph.WithNodeExceptionHandler[longEvent](retryHandler),
+		).
+		MustEdge(topology.StartNode, "A").
+		MustEdge("A", topology.EndNode)
+
+	recorder := newRuntimeExceptionRecorder()
+	d := newRuntimeGraphTestDisruptor(t, 8)
+	processors, err := d.HandleRuntimeGraph(
+		graph,
+		disruptor.WithRuntimeGraphExceptionHandler[longEvent](recorder),
+	)
+	if err != nil {
+		t.Fatalf("handle runtime graph: %v", err)
+	}
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer d.Stop()
+
+	publishValues(t, d.RingBuffer(), 1)
+	waitForSequenceValue(t, processors.Sequence(), 0)
+	d.Stop()
+	if err := d.Wait(); err != nil {
+		t.Fatalf("wait after node-level retry: %v", err)
+	}
+	recorder.assertNoRequest(t)
+}
+
+func TestRuntimeGraphReportsPanicKind(t *testing.T) {
+	recorder := newRuntimeExceptionRecorder()
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-panic-kind").
+		MustNode("A", runtimePanicHandler{}).
+		MustEdge(topology.StartNode, "A").
+		MustEdge("A", topology.EndNode)
+
+	d := newRuntimeGraphTestDisruptor(t, 8)
+	if _, err := d.HandleRuntimeGraph(
+		graph,
+		disruptor.WithRuntimeGraphExceptionHandler[longEvent](recorder),
+	); err != nil {
+		t.Fatalf("handle runtime graph: %v", err)
+	}
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	publishValues(t, d.RingBuffer(), 1)
+	if err := d.Wait(); err == nil {
+		t.Fatal("wait error is nil, want panic error")
+	}
+	got := recorder.wait(t)
+	if got.Kind != disruptor.RuntimeGraphExceptionKindPanic {
+		t.Fatalf("exception kind = %v, want panic", got.Kind)
+	}
+}
+
 func newRuntimeGraphTestDisruptor(t *testing.T, size int) *disruptor.Disruptor[longEvent] {
 	t.Helper()
 
@@ -349,6 +418,26 @@ func (c runtimeErrorCondition) Evaluate(
 	return false, c.err
 }
 
+type runtimeFailOnceHandler struct {
+	err  error
+	once sync.Once
+}
+
+func (h *runtimeFailOnceHandler) OnEvent(request event.Request[longEvent]) error {
+	var err error
+	h.once.Do(func() {
+		err = h.err
+	})
+
+	return err
+}
+
+type runtimePanicHandler struct{}
+
+func (runtimePanicHandler) OnEvent(request event.Request[longEvent]) error {
+	panic("runtime graph panic")
+}
+
 type runtimeExceptionRecorder struct {
 	requests chan disruptor.RuntimeGraphExceptionRequest[longEvent]
 }
@@ -380,6 +469,16 @@ func (r runtimeExceptionRecorder) wait(
 	}
 
 	return disruptor.RuntimeGraphExceptionRequest[longEvent]{}
+}
+
+func (r runtimeExceptionRecorder) assertNoRequest(t *testing.T) {
+	t.Helper()
+
+	select {
+	case request := <-r.requests:
+		t.Fatalf("unexpected runtime graph exception: %#v", request)
+	case <-time.After(50 * time.Millisecond):
+	}
 }
 
 type runtimeGraphMetricRecorder struct {

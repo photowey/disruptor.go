@@ -271,6 +271,8 @@ processor registration still creates processors for real handler nodes only.
 `RuntimeGraph[T]` is separate from static `Graph[T]`. It evaluates edge
 conditions for each event and executes only selected handler paths. Handlers can
 write event-scoped runtime variables; expression edges read those variables.
+`event.Request.Runtime` is reset between events and should be used only inside
+the current handler callback.
 
 ```go
 type RouteHandler struct {
@@ -301,6 +303,13 @@ _, err = d.HandleRuntimeGraph(runtimeGraph)
 
 Runtime expressions support bools, strings, numeric comparisons, grouping,
 logical operators, and integer bitwise operators such as `${flags} & 1`.
+The default event resolver and any custom runtime variable source can also
+implement `runtimevars.TypedResolver[T]` or `runtimevars.TypedVariables` so
+scalar values stay on the typed path before the expression engine boxes them.
+Default numeric comparison stays lightweight for the routing hot path: signed
+and unsigned integers compare exactly, while float operands use Go `float64`
+semantics. Fixed-point decimal semantics are intentionally left to an optional
+compiler or converter extension instead of becoming a core dependency.
 
 ```mermaid
 flowchart LR

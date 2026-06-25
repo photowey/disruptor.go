@@ -40,14 +40,10 @@ type runtimePathNode struct {
 func (n runtimePathNode) evaluate(
 	context runtimeExpressionEvalContext,
 ) (Value, error) {
-	if context.request.Variables == nil {
-		return Value{}, fmt.Errorf(
-			"%w: runtime path %q has no variables",
-			ErrInvalid,
-			n.path,
-		)
+	value, ok, err := context.lookup(n.path)
+	if err != nil {
+		return Value{}, err
 	}
-	value, ok := context.request.Variables.Lookup(n.path)
 	if !ok {
 		return Value{}, fmt.Errorf(
 			"%w: runtime path %q not found",
@@ -56,7 +52,7 @@ func (n runtimePathNode) evaluate(
 		)
 	}
 
-	return context.convert(value)
+	return value, nil
 }
 
 type runtimeUnaryNode struct {
@@ -79,7 +75,7 @@ func (n runtimeUnaryNode) evaluate(
 			return Value{}, err
 		}
 
-		return Value{Kind: ValueBool, Value: !boolean}, nil
+		return Value{Kind: ValueBool, Bool: !boolean}, nil
 	default:
 		return Value{}, fmt.Errorf(
 			"%w: unsupported unary operator %q",
@@ -110,7 +106,7 @@ func (n runtimeBinaryNode) evaluate(
 			return Value{}, err
 		}
 		if !leftBool {
-			return Value{Kind: ValueBool, Value: false}, nil
+			return Value{Kind: ValueBool, Bool: false}, nil
 		}
 		right, err := n.right.evaluate(context)
 		if err != nil {
@@ -121,14 +117,14 @@ func (n runtimeBinaryNode) evaluate(
 			return Value{}, err
 		}
 
-		return Value{Kind: ValueBool, Value: rightBool}, nil
+		return Value{Kind: ValueBool, Bool: rightBool}, nil
 	case "||":
 		leftBool, err := requireExpressionBool(left)
 		if err != nil {
 			return Value{}, err
 		}
 		if leftBool {
-			return Value{Kind: ValueBool, Value: true}, nil
+			return Value{Kind: ValueBool, Bool: true}, nil
 		}
 		right, err := n.right.evaluate(context)
 		if err != nil {
@@ -139,7 +135,7 @@ func (n runtimeBinaryNode) evaluate(
 			return Value{}, err
 		}
 
-		return Value{Kind: ValueBool, Value: rightBool}, nil
+		return Value{Kind: ValueBool, Bool: rightBool}, nil
 	default:
 		right, err := n.right.evaluate(context)
 		if err != nil {
@@ -185,24 +181,23 @@ func evaluateRuntimeComparison(
 			)
 		}
 
-		return Value{Kind: ValueBool, Value: result}, nil
+		return Value{Kind: ValueBool, Bool: result}, nil
 	}
 	if isExpressionNumeric(left) && isExpressionNumeric(right) {
-		leftFloat, rightFloat := expressionNumericFloat(left), expressionNumericFloat(right)
-		result := compareRuntimeFloat(op, leftFloat, rightFloat)
-		return Value{Kind: ValueBool, Value: result}, nil
+		result := compareRuntimeNumeric(op, left, right)
+		return Value{Kind: ValueBool, Bool: result}, nil
 	}
 	if left.Kind == ValueString && right.Kind == ValueString {
-		result := compareRuntimeString(op, left.Value.(string), right.Value.(string))
-		return Value{Kind: ValueBool, Value: result}, nil
+		result := compareRuntimeString(op, expressionString(left), expressionString(right))
+		return Value{Kind: ValueBool, Bool: result}, nil
 	}
 	if left.Kind == ValueBool && right.Kind == ValueBool {
-		result, err := compareRuntimeBool(op, left.Value.(bool), right.Value.(bool))
+		result, err := compareRuntimeBool(op, expressionBool(left), expressionBool(right))
 		if err != nil {
 			return Value{}, err
 		}
 
-		return Value{Kind: ValueBool, Value: result}, nil
+		return Value{Kind: ValueBool, Bool: result}, nil
 	}
 
 	return Value{}, fmt.Errorf(
@@ -249,8 +244,8 @@ func evaluateRuntimeBitwise(
 		result = leftUint >> rightUint
 	}
 	if leftSigned && rightSigned && result <= math.MaxInt64 {
-		return Value{Kind: ValueInt, Value: int64(result)}, nil
+		return Value{Kind: ValueInt, Int: int64(result)}, nil
 	}
 
-	return Value{Kind: ValueUint, Value: result}, nil
+	return Value{Kind: ValueUint, Uint: result}, nil
 }

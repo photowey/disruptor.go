@@ -349,10 +349,18 @@ request.Runtime.Set("route.fast", true)
 request.Runtime.Set("risk.score", 91)
 ```
 
+The runtime context is scoped to the current `OnEvent` callback. Runtime graph
+processors reset and reuse the concrete context between events to keep the hot
+path allocation-free for non-expression routes, so handlers should not retain
+`request.Runtime` beyond the callback.
+
 Expression edges read the merged variable view. Lookup order is runtime bag,
 configured `runtimevars.Provider[T]`, then configured event value resolver. The
 default event resolver uses reflection and supports struct fields, JSON tags,
-and string-keyed maps.
+and string-keyed maps. It also implements `runtimevars.TypedResolver[T]` so
+scalar values can reach the expression evaluator without first being boxed as
+`any`. Custom variable sources can implement `runtimevars.TypedVariables` when
+they need the same low-allocation expression path.
 
 Runtime expressions support:
 
@@ -362,6 +370,13 @@ Runtime expressions support:
 - logical operators: `&&`, `||`, `!`
 - grouping with parentheses
 - integer bitwise operators: `&`, `|`, `^`, `&^`, `<<`, `>>`
+
+Numeric comparison is optimized for routing decisions. Signed and unsigned
+integers compare exactly, including mixed signed/unsigned comparisons. Float
+operands use Go `float64` semantics. The built-in compiler does not provide
+fixed-point decimal arithmetic by default; applications that require monetary or
+other decimal semantics should provide a custom compiler or value converter so
+that the core event path keeps its low-allocation behavior.
 
 The final expression result is converted to bool. Bool values are used directly,
 integers use zero/non-zero truthiness, and strings use `strconv.ParseBool`.
@@ -378,10 +393,11 @@ _, err = d.HandleRuntimeGraph(
 )
 ```
 
-Runtime graph failures are routed through `RuntimeGraphExceptionHandler[T]`.
-This is separate from the existing static/fan-out `ExceptionHandler[T]` so
-handler, condition, no-route, and panic failures can be observed without
-changing V1 semantics.
+Runtime graph condition, no-route, and panic failures are routed through
+`RuntimeGraphExceptionHandler[T]`. Handler errors use the node-level
+`runtimegraph.WithNodeExceptionHandler[T]` override when present, otherwise they
+also use `RuntimeGraphExceptionHandler[T]`. Node-level overrides do not handle
+panic recovery.
 
 ## Options
 

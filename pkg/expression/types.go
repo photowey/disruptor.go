@@ -66,8 +66,13 @@ const (
 
 // Value is the evaluator's normalized value representation.
 type Value struct {
-	Kind  ValueKind
-	Value any
+	Kind   ValueKind
+	Value  any
+	Bool   bool
+	Int    int64
+	Uint   uint64
+	Float  float64
+	String string
 }
 
 // ValueConvertRequest describes a converter request.
