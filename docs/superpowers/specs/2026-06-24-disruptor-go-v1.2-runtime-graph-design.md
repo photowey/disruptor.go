@@ -941,7 +941,9 @@ Typed `EdgeCondition[T]` values are validated for non-nil presence only.
 - condition evaluation errors enter the runtime exception handler.
 - handler errors enter the runtime exception handler.
 - panic recovery enters the runtime exception handler.
-- workers greater than one can run independent nodes concurrently.
+- worker values greater than one are accepted but execution remains inline in
+  V1.2.0. Parallel RuntimeGraph execution is reserved for the executor-backed
+  scheduler design.
 
 ## Benchmarks
 
