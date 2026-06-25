@@ -41,6 +41,7 @@ func TestExamplesRun(t *testing.T) {
 		{name: "diamond", dir: "diamond", expected: "diamond:D after B+C for 9\n"},
 		{name: "graph export", dir: "graph_export", expected: "graph=export source=validate entry=validate leaf=persist exit=persist nodes=4 edges=3\n"},
 		{name: "runtime graph", dir: "runtime_graph", expected: "route:11,fast:11\n"},
+		{name: "runtime graph executor", dir: "runtime_graph_executor", expected: "route:31\nbranch:fraud:31\nbranch:pricing:31\nexecutor-shutdown:caller\n"},
 	}
 
 	for _, tt := range tests {

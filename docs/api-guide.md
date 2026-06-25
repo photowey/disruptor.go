@@ -425,6 +425,28 @@ evaluation, joins, `END`, no-route handling, exception policy, and sequence
 advancement. Worker goroutines only execute node handlers and return completion
 messages to the scheduler.
 
+```mermaid
+sequenceDiagram
+    participant Scheduler
+    participant Exec as Executor
+    participant Worker
+    participant Handler as event.Handler[T]
+
+    Scheduler->>Scheduler: evaluate START and ready nodes
+    alt workers == 1
+        Scheduler->>Handler: run node inline
+        Handler-->>Scheduler: result or error
+    else workers > 1 or caller-owned executor
+        Scheduler->>Exec: submit selected node task
+        Exec->>Worker: dispatch task
+        Worker->>Handler: OnEvent(request)
+        Handler-->>Worker: result or error
+        Worker-->>Exec: completion
+        Exec-->>Scheduler: node result
+    end
+    Scheduler->>Scheduler: evaluate outgoing edges, joins, END, and no-route
+```
+
 ```go
 processors, err := d.HandleRuntimeGraph(
     runtimeGraph,
@@ -483,7 +505,8 @@ The package is intentionally usable outside Disruptor:
 
 Learning path:
 
-- `examples/executor` is the complete runnable example.
+- `examples/executor` and `examples/runtime_graph_executor` are the complete
+  runnable examples.
 - `pkg/executor/example_test.go` contains pkg.go.dev examples.
 - `pkg/executor/executor_test.go` is the executable specification for exactly
   once completion, observers, backpressure, shutdown, and composition.

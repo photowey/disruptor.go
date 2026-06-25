@@ -174,7 +174,7 @@ flowchart TB
     App["Application"] --> D["Disruptor[T]"]
     App --> RB["RingBuffer[T]"]
     App --> EventPkg["pkg/event contracts"]
-    App --> ExecutorPkg["pkg/executor"]
+    App --> ExecutorAPI["pkg/executor"]
     App --> GraphPkg["pkg/graph"]
     App --> RuntimeGraphPkg["pkg/runtimegraph"]
     RuntimeGraphPkg --> ExprPkg["pkg/expression"]
@@ -192,7 +192,15 @@ flowchart TB
         Fanout --> P["BatchEventProcessor[T]"]
         StaticGraph --> GP["GraphProcessors"]
         RuntimeGraphMode --> RSP["runtime graph scheduler"]
-        RuntimeGraphMode --> ExecutorPkg
+    end
+
+    subgraph ExecutorInternals["pkg/executor"]
+        Exec["Executor / Submit"]
+        Pool["FixedWorkerExecutor"]
+        Fut["Future[T] / Promise[T]"]
+        Exec --> Pool
+        Exec --> Fut
+        Pool --> Worker["worker goroutines"]
     end
 
     P --> B["Barrier"]
@@ -203,8 +211,10 @@ flowchart TB
     RuntimeGraphPkg --> EC["edge conditions"]
     EC --> ExprPkg
     RSP --> VarsPkg
-    ExecutorPkg --> RSP
-    RSP --> RH["selected event.Handler[T] paths"]
+    ExecutorAPI --> Exec
+    RSP --> Exec
+    Pool --> RH["selected event.Handler[T] tasks"]
+    Worker --> RSP
     RSP --> RE["RuntimeGraphExceptionHandler[T]"]
     P --> M
     RSP --> M
@@ -222,6 +232,8 @@ sequenceDiagram
     participant RB as RingBuffer T
     participant Seq as Sequencer
     participant Proc as Processor
+    participant Exec as Executor
+    participant W as Worker
     participant H as EventHandler T
 
     App->>RB: PublishEvent(ctx, translator)
@@ -235,8 +247,17 @@ sequenceDiagram
         H-->>Proc: nil or error
     else HandleRuntimeGraph
         Proc->>Proc: evaluate START edges
-        Proc->>H: run selected node handler
-        H-->>Proc: runtime variables and result
+        alt workers == 1
+            Proc->>H: run selected node handler inline
+            H-->>Proc: runtime variables, result, or error
+        else workers > 1 or caller-owned executor
+            Proc->>Exec: Submit(selected node task)
+            Exec->>W: dispatch task
+            W->>H: OnEvent(request)
+            H-->>W: runtime variables, result, or error
+            W-->>Exec: completion
+            Exec-->>Proc: node result
+        end
         Proc->>Proc: evaluate outgoing edges
         Proc->>Proc: complete at END or configured no-route action
     end
@@ -317,7 +338,8 @@ _, err = d.HandleRuntimeGraph(
 With `workers > 1`, handler side effects and independent node completion order
 are not deterministic. The scheduler still owns route state, edge evaluation,
 joins, and sequence advancement. Advanced users can supply a caller-owned
-`executor.Executor` through `disruptor.WithRuntimeGraphExecutor`.
+`executor.Executor` through `disruptor.WithRuntimeGraphExecutor`; Disruptor
+submits node work to that executor but does not shut it down.
 
 ## Executor
 
@@ -337,6 +359,8 @@ For a complete runnable walkthrough, see:
 
 - `examples/executor`: fixed workers, typed task submission, `All`, `ThenApply`,
   and an externally completed `Promise`.
+- `examples/runtime_graph_executor`: caller-owned executor, RuntimeGraph worker
+  dispatch, and explicit shutdown ownership.
 - `pkg/executor/example_test.go`: godoc examples rendered by pkg.go.dev.
 - `pkg/executor/executor_test.go`: behavior-level tests for completion,
   observers, backpressure, shutdown, and composition.
@@ -505,6 +529,7 @@ Runnable examples live under `examples/`:
 - `examples/diamond`
 - `examples/graph_export`
 - `examples/runtime_graph`
+- `examples/runtime_graph_executor`
 
 Run one with:
 

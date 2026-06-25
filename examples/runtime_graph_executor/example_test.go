@@ -12,10 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package examples groups runnable examples for the public disruptor package.
-//
-// Each child directory is a small main package focused on one usage path:
-// basic publication, multi-consumer fan-out, metrics, recovery, batch publish,
-// single-producer sequencing, graph quick starts, graph topologies, runtime
-// graph executor ownership, and explicit executor composition.
-package examples
+package main
+
+func Example() {
+	main()
+
+	// Output:
+	// route:31
+	// branch:fraud:31
+	// branch:pricing:31
+	// executor-shutdown:caller
+}

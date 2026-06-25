@@ -12,10 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package examples groups runnable examples for the public disruptor package.
-//
-// Each child directory is a small main package focused on one usage path:
-// basic publication, multi-consumer fan-out, metrics, recovery, batch publish,
-// single-producer sequencing, graph quick starts, graph topologies, runtime
-// graph executor ownership, and explicit executor composition.
-package examples
+// Package main demonstrates RuntimeGraph running selected node handlers on a
+// caller-owned executor. The scheduler still owns route state, edge evaluation,
+// joins, and sequence advancement; the executor only runs handler tasks.
+package main

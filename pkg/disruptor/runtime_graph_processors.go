@@ -149,7 +149,9 @@ func WithRuntimeGraphWorkers[T any](workers int) RuntimeGraphHandleOption[T] {
 	}
 }
 
-// WithRuntimeGraphExecutor sets the executor used for runtime graph handlers.
+// WithRuntimeGraphExecutor sets the caller-owned executor used for runtime
+// graph handlers. Disruptor submits node handler work to this executor but does
+// not shut it down.
 func WithRuntimeGraphExecutor[T any](
 	executor executor.Executor,
 ) RuntimeGraphHandleOption[T] {

@@ -11,6 +11,21 @@ typed futures, promises, and CompletableFuture-style composition. RuntimeGraph
 will use this package as its first high-performance consumer, but the executor
 package is a stable general-purpose API.
 
+## Architecture Sketch
+
+```mermaid
+flowchart TB
+    Scheduler["RuntimeGraph scheduler"] --> Exec["executor.Executor"]
+    Exec --> Pool["FixedWorkerExecutor"]
+    Pool --> Worker["worker goroutines"]
+    Worker --> Handler["event.Handler[T]"]
+    Handler --> Exec
+    Exec --> Future["Future[T] / Promise[T]"]
+    Scheduler --> Future
+    Scheduler --> State["route state / joins / END"]
+    Worker -. no direct state mutation .-> State
+```
+
 ## Goals
 
 - Expose a stable public `pkg/executor` package.

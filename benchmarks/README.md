@@ -64,6 +64,9 @@ Executor benchmark notes:
 - `BenchmarkPromiseComplete`, `BenchmarkExecutorSubmitInline`,
   `BenchmarkExecutorSubmitFixedWorker`, and `BenchmarkFutureAllOf` establish the
   v1.4 executor baseline.
+- `examples/runtime_graph_executor` mirrors the runtime-graph executor path that
+  the benchmarks measure, so example output and benchmark expectations stay
+  aligned.
 - Use `benchstat`; a single benchmark run is only a smoke check.
 
 `BenchmarkE2ELatencyQuantiles` reports sampled publish-to-handle `p50_ns`,
