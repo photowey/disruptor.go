@@ -1,9 +1,10 @@
 # API Guide
 
-This guide documents the public V1 through V1.2 surface. The API is split by
+This guide documents the public V1 through V1.4 surface. The API is split by
 responsibility:
 
 - `pkg/disruptor`: ring buffer, facade, processors, wait strategies, metrics
+- `pkg/executor`: bounded task execution, typed futures, and promises
 - `pkg/event`: handler requests, lifecycle hooks, exception handlers
 - `pkg/graph`: static dependency graph builder, validation, snapshots, export
 - `pkg/runtimegraph`: conditional graph builder and edge conditions
@@ -417,6 +418,89 @@ Runtime graph condition, no-route, and panic failures are routed through
 also use `RuntimeGraphExceptionHandler[T]`. Node-level overrides do not handle
 panic recovery.
 
+Runtime graph execution is deterministic by default. `WithRuntimeGraphWorkers`
+activates an internal fixed worker executor when `workers > 1`, allowing
+independent ready nodes to run concurrently. The scheduler still owns edge
+evaluation, joins, `END`, no-route handling, exception policy, and sequence
+advancement. Worker goroutines only execute node handlers and return completion
+messages to the scheduler.
+
+```go
+processors, err := d.HandleRuntimeGraph(
+    runtimeGraph,
+    disruptor.WithRuntimeGraphWorkers[LongEvent](2),
+)
+if err != nil {
+    return err
+}
+
+_ = processors
+```
+
+With `workers > 1`, independent node ordering and handler side-effect ordering
+are not deterministic. Handlers must be concurrency-safe. The runtime variable
+bag is concurrency-safe, but concurrent writes to the same path use
+last-write-wins semantics with nondeterministic write order.
+
+Advanced users can supply a caller-owned executor:
+
+```go
+pool, err := executor.NewFixedWorkerExecutor(
+    executor.WithWorkers(4),
+    executor.WithQueueSize(4),
+    executor.WithRejectPolicy(executor.RejectPolicyReject),
+)
+if err != nil {
+    return err
+}
+defer pool.Shutdown(ctx)
+
+_, err = d.HandleRuntimeGraph(
+    runtimeGraph,
+    disruptor.WithRuntimeGraphExecutor[LongEvent](pool),
+)
+```
+
+Executors passed through `WithRuntimeGraphExecutor` are caller-owned. Disruptor
+does not shut them down. Executors created internally from
+`WithRuntimeGraphWorkers` are shut down by Disruptor.
+
+## Executor
+
+`pkg/executor` provides a bounded execution API with typed read-only futures and
+producer-owned promises. `Future[T]` lets callers wait, inspect, and observe a
+result. Only `Promise[T]` can complete, fail, or cancel the result.
+
+```go
+type DoubleTask struct {
+    Value int
+}
+
+func (t DoubleTask) Execute(context.Context) (int, error) {
+    return t.Value * 2, nil
+}
+
+inline := executor.NewInlineExecutor()
+future, err := executor.Submit(ctx, inline, DoubleTask{Value: 21})
+if err != nil {
+    return err
+}
+
+value, err := future.Await(ctx)
+if err != nil {
+    return err
+}
+_ = value
+```
+
+`NewFixedWorkerExecutor` starts a bounded worker pool. `RejectPolicyBlock`
+waits for queue capacity while observing the submit context.
+`RejectPolicyReject` returns `executor.ErrSaturated` when the queue is full.
+
+Composition helpers include `AllOf`, `All`, `AnyOf`, `Any`, `ThenApply`,
+`ThenCompose`, and `Exceptionally`. Continuation helpers require an explicit
+executor so future composition does not hide unbounded goroutine creation.
+
 ## Options
 
 Ring buffer options:
@@ -443,14 +527,16 @@ Runtime graph handle options:
 
 - `WithRuntimeGraphExceptionHandler[T](handler)`
 - `WithRuntimeGraphWorkers[T](workers)`
+- `WithRuntimeGraphExecutor[T](executor)`
 - `WithRuntimeGraphNoRouteAction[T](action)`
 - `WithRuntimeGraphVariablesProvider[T](provider)`
 - `WithRuntimeGraphEventValueResolver[T](resolver)`
 - `WithRuntimeGraphMetricsSink[T](sink)`
 
-`WithRuntimeGraphWorkers` is a forward-compatible configuration hook in v1.2.0:
-the value is validated, while current execution remains deterministic inside the
-runtime graph scheduler processor.
+`WithRuntimeGraphWorkers(1)` keeps deterministic inline execution.
+`WithRuntimeGraphWorkers(workers)` with `workers > 1` creates an internal fixed
+worker executor. `WithRuntimeGraphWorkers` and `WithRuntimeGraphExecutor` cannot
+be used together.
 
 Node options:
 

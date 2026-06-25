@@ -160,6 +160,7 @@ flowchart TB
     App["应用程序"] --> D["Disruptor[T]"]
     App --> RB["RingBuffer[T]"]
     App --> EventPkg["pkg/event 契约"]
+    App --> ExecutorPkg["pkg/executor"]
     App --> GraphPkg["pkg/graph"]
     App --> RuntimeGraphPkg["pkg/runtimegraph"]
     RuntimeGraphPkg --> ExprPkg["pkg/expression"]
@@ -177,6 +178,7 @@ flowchart TB
         Fanout --> P["BatchEventProcessor[T]"]
         StaticGraph --> GP["GraphProcessors"]
         RuntimeGraphMode --> RSP["runtime graph scheduler"]
+        RuntimeGraphMode --> ExecutorPkg
     end
 
     P --> B["Barrier"]
@@ -187,6 +189,7 @@ flowchart TB
     RuntimeGraphPkg --> EC["edge conditions"]
     EC --> ExprPkg
     RSP --> VarsPkg
+    ExecutorPkg --> RSP
     RSP --> RH["被选中的 event.Handler[T] 路径"]
     RSP --> RE["RuntimeGraphExceptionHandler[T]"]
     P --> M
@@ -283,6 +286,50 @@ runtimeGraph := runtimegraph.MustRuntimeGraph[LongEvent]("runtime-route").
 
 _, err = d.HandleRuntimeGraph(runtimeGraph)
 ```
+
+`RuntimeGraph` 默认保持确定性执行。如果被选中的独立节点需要并发执行，可以显式
+配置 workers：
+
+```go
+_, err = d.HandleRuntimeGraph(
+    runtimeGraph,
+    disruptor.WithRuntimeGraphWorkers[LongEvent](2),
+)
+```
+
+当 `workers > 1` 时，独立节点完成顺序和 handler 副作用顺序不再保证确定。
+scheduler 仍然独占 route state、边计算、join 和 sequence 推进。高级用户也可以
+通过 `disruptor.WithRuntimeGraphExecutor` 传入调用方自主管理生命周期的
+`executor.Executor`。
+
+## Executor
+
+`pkg/executor` 是通用的有界执行器包，提供 typed read-only future 和
+producer-owned promise，可以独立于 RuntimeGraph 使用。
+
+```go
+type DoubleTask struct {
+    Value int
+}
+
+func (t DoubleTask) Execute(context.Context) (int, error) {
+    return t.Value * 2, nil
+}
+
+inline := executor.NewInlineExecutor()
+future, err := executor.Submit(ctx, inline, DoubleTask{Value: 21})
+if err != nil {
+    return err
+}
+
+value, err := future.Await(ctx)
+if err != nil {
+    return err
+}
+```
+
+`Future[T]` 只读：调用方可以等待、读取和观察结果。`Promise[T]` 拥有完成、失败和
+取消能力。Fixed worker executor 使用有界队列，并显式支持阻塞或拒绝两种背压策略。
 
 runtime 表达式支持 bool、字符串、数值比较、分组、逻辑运算，以及
 `${flags} & 1` 这类整数位运算。

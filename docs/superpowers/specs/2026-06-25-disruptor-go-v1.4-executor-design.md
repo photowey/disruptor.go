@@ -2,7 +2,7 @@
 
 ## Status
 
-Design approved.
+Design revised after BMAD Party Mode review.
 
 Target tag: `v1.4.0`
 
@@ -16,7 +16,7 @@ package is a stable general-purpose API.
 - Expose a stable public `pkg/executor` package.
 - Hide low-level `sync.WaitGroup`, channel fan-in, and worker lifecycle details
   behind a small task and future API.
-- Support typed `Future[T]` and `Promise[T]`.
+- Support typed read-only `Future[T]` and producer-owned `Promise[T]`.
 - Support composition helpers similar to Java `CompletableFuture`, adapted to
   Go generics and context cancellation.
 - Keep public APIs interface-first and replaceable.
@@ -133,7 +133,9 @@ is rejected before the task is accepted, `Submit` returns an error.
 
 ## Future And Promise API Sketch
 
-The future API is split into small interfaces and composed into `Future[T]`.
+The future API is split into small read-only interfaces and composed into
+`Future[T]`. `Future[T]` is an observation API only. Completion and
+cancellation belong to `Promise[T]`, not to consumers of a future.
 
 ```go
 type Awaiter[T any] interface {
@@ -143,10 +145,6 @@ type Awaiter[T any] interface {
 
 type ResultReader[T any] interface {
     Result() (Result[T], bool)
-}
-
-type Canceler interface {
-    Cancel(cause error) bool
 }
 
 type FutureObserver[T any] interface {
@@ -168,7 +166,6 @@ type Future[T any] interface {
     ResultReader[T]
     ObservableFuture[T]
     FutureView
-    Canceler
 }
 ```
 
@@ -180,7 +177,6 @@ type FutureView interface {
     Done() <-chan struct{}
     ResultAny() (Result[any], bool)
     ObserveAny(observer FutureObserver[any]) Subscription
-    Cancel(cause error) bool
 }
 ```
 
@@ -214,6 +210,11 @@ func CanceledFuture[T any](cause error) Future[T]
 
 Promises are concurrency-safe. Completion is exactly-once. Late observers are
 notified immediately with the already completed result.
+
+`Future[T]` intentionally does not expose `Cancel`. This preserves producer
+ownership: consumers can wait, observe, or inspect, but cannot complete someone
+else's result. Callers cancel submitted work by canceling the submission context
+or by owning the promise that backs a future.
 
 ## Composition API Sketch
 
@@ -382,8 +383,8 @@ Cancellation is cooperative:
 - A canceled submission context rejects a task before it is queued.
 - A queued task checks the context before execution.
 - A running task receives the context and must return when it wants to stop.
-- `Future.Cancel(cause)` completes the future if the task has not already
-  completed. It does not forcibly stop a running goroutine.
+- `Promise.Cancel(cause)` completes the promise if it has not already completed.
+  It does not forcibly stop a running goroutine.
 
 Shutdown is graceful:
 
@@ -405,10 +406,25 @@ func WithRuntimeGraphExecutor[T any](
 
 `WithRuntimeGraphWorkers[T](workers int)` remains supported:
 
-- `workers == 1` uses the inline executor.
-- `workers > 1` creates an internal fixed worker executor.
+- `workers == 1` uses direct inline handler invocation and bypasses executor
+  submission to preserve the default zero-allocation RuntimeGraph path.
+- `workers > 1` creates an internal fixed worker executor with:
+  - `WithWorkers(workers)`
+  - `WithQueueSize(workers)`
+  - `WithRejectPolicy(executor.RejectPolicyReject)`
+  - a RuntimeGraph panic path that reports `RuntimeGraphExceptionKindPanic`
 - Supplying both `WithRuntimeGraphWorkers` and `WithRuntimeGraphExecutor` is
   invalid to avoid ambiguous ownership and lifecycle.
+
+Executor ownership:
+
+- RuntimeGraph owns and shuts down executors created from
+  `WithRuntimeGraphWorkers`.
+- Executors supplied through `WithRuntimeGraphExecutor` are caller-owned.
+  Disruptor never calls `Shutdown` on caller-owned executors.
+- RuntimeGraph waits for in-flight tasks before returning a handler, condition,
+  or executor error from the current event. `OnShutdown` shuts down only an
+  internally-owned executor.
 
 RuntimeGraph scheduler behavior:
 
@@ -422,6 +438,23 @@ RuntimeGraph scheduler behavior:
 8. Complete the sequence only after END is reached or no-route policy completes.
 
 Workers never evaluate outbound edges and never mutate route state directly.
+
+Worker completion is reported through an internal scheduler-owned message:
+
+```go
+type runtimeGraphNodeResult[T any] struct {
+    index    int
+    request  event.Request[T]
+    duration time.Duration
+    err      error
+    panicked bool
+}
+```
+
+The completion message contains the node identity, request metadata, duration,
+handler error, and panic marker only. Edge evaluation, join resolution,
+END/no-route decisions, retry handling, and route-state mutation remain
+scheduler-only.
 
 ### Scheduler Non-Blocking Rule
 
@@ -456,6 +489,24 @@ RuntimeGraph preserves existing handler semantics:
 When halting, the scheduler waits for in-flight tasks before returning so the
 ring-buffer event and runtime context are not reused while handlers still hold
 references to them.
+
+## Compatibility And Concurrency Notes
+
+Default RuntimeGraph execution remains `workers == 1` and deterministic.
+`WithRuntimeGraphWorkers(workers > 1)` changes previously accepted configuration
+from a forward-compatible hook into active parallel execution.
+
+When `workers > 1` or `WithRuntimeGraphExecutor` is used:
+
+- independent ready nodes may run concurrently.
+- independent node completion order is not deterministic.
+- handler side effects may be observed in a different order.
+- handlers must be concurrency-safe.
+- the runtime variable bag is concurrency-safe, but same-key concurrent writes
+  use last-write-wins semantics with nondeterministic write order.
+- edge evaluation, joins, END, no-route, sequence advancement, and exception
+  policy remain deterministic relative to the completion order observed by the
+  scheduler.
 
 ## Metrics
 
@@ -531,13 +582,31 @@ Executor tests:
 RuntimeGraph tests:
 
 - workers greater than one can execute independent nodes concurrently.
+- default workers equal one keeps the existing deterministic handler order.
 - scheduler state remains single-owner.
 - worker completion advances joins correctly.
 - executor submission failure uses `RuntimeGraphExceptionKindExecutor`.
+- caller-owned RuntimeGraph executors are not shut down by Disruptor.
+- internally-created RuntimeGraph executors are shut down by Disruptor.
 - handler error continue/retry/halt semantics match the inline scheduler.
 - halt waits for in-flight workers before returning.
 - metrics continue to emit node scheduled/completed and edge selected/skipped
   signals.
+
+Failure matrix tests:
+
+- executor closed during submit.
+- executor saturated during submit.
+- executor shutdown during submit.
+- submission context canceled before enqueue.
+- running task returns after promise cancellation attempt.
+- continuation submission failure.
+- `ThenCompose` outer failure.
+- `ThenCompose` inner failure.
+- `ThenCompose` inner cancellation.
+- `All` with mixed success and failure.
+- `Any` with mixed failure and success.
+- panic handler notification without changing task recovery policy.
 
 ## Benchmark Requirements
 
@@ -556,6 +625,34 @@ RuntimeGraph benchmark expectations:
   allocation profile.
 - parallel RuntimeGraph benchmarks should report throughput and allocations
   separately because cross-goroutine scheduling has different costs.
+
+## Quality Gates
+
+Release-blocking verification:
+
+```bash
+make ci
+go test -race -shuffle=on ./...
+go test -run '^$' -bench='Benchmark(Future|Promise|Executor|RuntimeGraph)' \
+  -benchmem -count=10 -cpu=1,2,4,8 ./... | tee bench.txt
+benchstat benchmarks/baseline/baseline.txt bench.txt
+```
+
+`pkg/executor` and RuntimeGraph executor-path tests must include goroutine leak
+checks using `go.uber.org/goleak`. Tests for parallel scheduling must use
+deterministic coordination primitives such as barriers or manual executors, not
+sleep-based timing guesses.
+
+Regression policy:
+
+- default inline RuntimeGraph allocation counts must not materially regress.
+- executor benchmarks establish their own baseline because cross-goroutine
+  scheduling has different costs from inline execution.
+- benchmark conclusions must use `benchstat`; single-run results are smoke
+  checks only.
+
+CI must run ordinary tests, race tests, lint, vet, and a benchmark smoke target
+that includes executor benchmarks.
 
 ## Compatibility
 
@@ -577,6 +674,15 @@ Implementation must update:
 
 Examples must avoid naked anonymous function parameters in public APIs. They may
 use named task structs or named `TaskFunc` variables.
+
+Documentation acceptance criteria:
+
+- `pkg/executor` has `doc.go` and executable examples.
+- `docs/api-guide.md` documents executor ownership, Future/Promise semantics,
+  backpressure, cancellation, and RuntimeGraph parallel execution.
+- `README.md` and `README.zh-CN.md` include a concise executor example and a
+  RuntimeGraph workers example.
+- `benchmarks/README.md` explains executor benchmark interpretation.
 
 ## Design Checks
 

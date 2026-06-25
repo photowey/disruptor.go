@@ -88,7 +88,7 @@ examples:
 
 .PHONY: bench-smoke
 bench-smoke:
-	$(GO) test -run '^$$' -bench=BenchmarkRingBufferMatrix -benchmem -benchtime=100ms -count=1 ./benchmarks
+	$(GO) test -run '^$$' -bench='Benchmark(RingBufferMatrix|ExecutorSubmitInline|RuntimeGraphRoutingParallel)' -benchmem -benchtime=100ms -count=1 ./benchmarks
 
 .PHONY: bench
 bench:
@@ -101,4 +101,4 @@ bench-release:
 
 .PHONY: clean
 clean:
-	rm -rf .tmp coverage.out coverage.html *.test bench.txt
+	rm -rf coverage.out coverage.html *.test bench.txt

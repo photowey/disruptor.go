@@ -16,6 +16,8 @@ go test -run '^$' -bench=BenchmarkE2EDisruptorParallelProducers -benchmem -count
 go test -run '^$' -bench=BenchmarkChannelComparison -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkGraphTopology -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkRuntimeGraphRouting -benchmem -count=10 ./benchmarks
+go test -run '^$' -bench=BenchmarkRuntimeGraphRoutingParallel -benchmem -count=10 ./benchmarks
+go test -run '^$' -bench='Benchmark(Future|Promise|Executor)' -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkExpressionNumberAdapterComparison -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkE2ELatencyQuantiles -benchmem -count=10 ./benchmarks
 ```
@@ -35,7 +37,7 @@ Benchmark matrix:
 | Axis | Current groups |
 | --- | --- |
 | Ring size | `1024`, `65536`, `1048576` in `BenchmarkRingBufferMatrix`; `65536` in end-to-end and channel comparisons |
-| Topology | `1/1`, `1/N`, `M/1`, `M/N`, graph single-node, graph pipeline, graph fan-in, graph diamond, runtime graph single-path, runtime graph expression branch, and runtime graph active join |
+| Topology | `1/1`, `1/N`, `M/1`, `M/N`, graph single-node, graph pipeline, graph fan-in, graph diamond, runtime graph single-path, runtime graph expression branch, runtime graph active join, and runtime graph parallel workers |
 | Wait strategy | blocking and busy-spin |
 | Claim batch size | `1`, `4`, `16`, `64`, `256` |
 | Queue comparison | unbuffered channel, buffered channel, pointer channel, spin channel, `sync.Cond` ring |
@@ -51,6 +53,18 @@ Runtime graph allocation gates:
   converters, or resolvers can have a different allocation profile.
 - `BenchmarkExpressionNumberAdapterComparison` tracks the fake decimal adapter
   comparison path separately from default runtime graph allocation gates.
+- `BenchmarkRuntimeGraphRoutingParallel` tracks the explicit worker-backed
+  RuntimeGraph path separately. Cross-goroutine scheduling has real costs, so
+  compare it against its own baseline instead of the default inline allocation
+  gate.
+
+Executor benchmark notes:
+
+- `BenchmarkFutureAwaitCompleted` is expected to remain allocation-free.
+- `BenchmarkPromiseComplete`, `BenchmarkExecutorSubmitInline`,
+  `BenchmarkExecutorSubmitFixedWorker`, and `BenchmarkFutureAllOf` establish the
+  v1.4 executor baseline.
+- Use `benchstat`; a single benchmark run is only a smoke check.
 
 `BenchmarkE2ELatencyQuantiles` reports sampled publish-to-handle `p50_ns`,
 `p95_ns`, and `p99_ns` for blocking and busy-spin wait strategies. Treat these

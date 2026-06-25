@@ -28,12 +28,16 @@ import (
 func BenchmarkRuntimeGraphRouting(b *testing.B) {
 	for _, shape := range []string{"single_path", "expression_branch", "active_join"} {
 		b.Run(shape, func(b *testing.B) {
-			benchmarkRuntimeGraphRouting(b, shape)
+			benchmarkRuntimeGraphRouting(b, shape, 1)
 		})
 	}
 }
 
-func benchmarkRuntimeGraphRouting(b *testing.B, shape string) {
+func BenchmarkRuntimeGraphRoutingParallel(b *testing.B) {
+	benchmarkRuntimeGraphRouting(b, "parallel_workers", 2)
+}
+
+func benchmarkRuntimeGraphRouting(b *testing.B, shape string, workers int) {
 	b.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -49,7 +53,10 @@ func benchmarkRuntimeGraphRouting(b *testing.B, shape string) {
 
 	var processed atomic.Int64
 	graph, handlerCount := newBenchmarkRuntimeGraph(shape, &processed)
-	if _, err := d.HandleRuntimeGraph(graph); err != nil {
+	if _, err := d.HandleRuntimeGraph(
+		graph,
+		disruptor.WithRuntimeGraphWorkers[benchEvent](workers),
+	); err != nil {
 		b.Fatalf("handle runtime graph: %v", err)
 	}
 	if err := d.Start(ctx); err != nil {
@@ -125,6 +132,17 @@ func newBenchmarkRuntimeGraph(
 			MustEdge("B", "C").
 			MustEdge("C", topology.EndNode)
 		return graph, 2
+	case "parallel_workers":
+		graph := runtimegraph.MustRuntimeGraph[benchEvent]("runtime-parallel").
+			MustNode("A", handler).
+			MustNode("B", handler).
+			MustNode("C", handler).
+			MustEdge(topology.StartNode, "A").
+			MustEdge(topology.StartNode, "B").
+			MustEdge("A", "C").
+			MustEdge("B", "C").
+			MustEdge("C", topology.EndNode)
+		return graph, 3
 	default:
 		panic("unknown runtime graph benchmark shape: " + shape)
 	}

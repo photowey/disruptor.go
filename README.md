@@ -174,6 +174,7 @@ flowchart TB
     App["Application"] --> D["Disruptor[T]"]
     App --> RB["RingBuffer[T]"]
     App --> EventPkg["pkg/event contracts"]
+    App --> ExecutorPkg["pkg/executor"]
     App --> GraphPkg["pkg/graph"]
     App --> RuntimeGraphPkg["pkg/runtimegraph"]
     RuntimeGraphPkg --> ExprPkg["pkg/expression"]
@@ -191,6 +192,7 @@ flowchart TB
         Fanout --> P["BatchEventProcessor[T]"]
         StaticGraph --> GP["GraphProcessors"]
         RuntimeGraphMode --> RSP["runtime graph scheduler"]
+        RuntimeGraphMode --> ExecutorPkg
     end
 
     P --> B["Barrier"]
@@ -201,6 +203,7 @@ flowchart TB
     RuntimeGraphPkg --> EC["edge conditions"]
     EC --> ExprPkg
     RSP --> VarsPkg
+    ExecutorPkg --> RSP
     RSP --> RH["selected event.Handler[T] paths"]
     RSP --> RE["RuntimeGraphExceptionHandler[T]"]
     P --> M
@@ -300,6 +303,52 @@ runtimeGraph := runtimegraph.MustRuntimeGraph[LongEvent]("runtime-route").
 
 _, err = d.HandleRuntimeGraph(runtimeGraph)
 ```
+
+`RuntimeGraph` is deterministic by default. When independent selected nodes
+should run concurrently, configure workers explicitly:
+
+```go
+_, err = d.HandleRuntimeGraph(
+    runtimeGraph,
+    disruptor.WithRuntimeGraphWorkers[LongEvent](2),
+)
+```
+
+With `workers > 1`, handler side effects and independent node completion order
+are not deterministic. The scheduler still owns route state, edge evaluation,
+joins, and sequence advancement. Advanced users can supply a caller-owned
+`executor.Executor` through `disruptor.WithRuntimeGraphExecutor`.
+
+## Executor
+
+`pkg/executor` is a general-purpose bounded executor with typed read-only
+futures and producer-owned promises. It can be used independently of
+RuntimeGraph.
+
+```go
+type DoubleTask struct {
+    Value int
+}
+
+func (t DoubleTask) Execute(context.Context) (int, error) {
+    return t.Value * 2, nil
+}
+
+inline := executor.NewInlineExecutor()
+future, err := executor.Submit(ctx, inline, DoubleTask{Value: 21})
+if err != nil {
+    return err
+}
+
+value, err := future.Await(ctx)
+if err != nil {
+    return err
+}
+```
+
+`Future[T]` is read-only: callers can wait, inspect, and observe results.
+`Promise[T]` owns completion, failure, and cancellation. Fixed worker executors
+use bounded queues with explicit block or reject backpressure policies.
 
 Runtime expressions support bools, strings, numeric comparisons, grouping,
 logical operators, and integer bitwise operators such as `${flags} & 1`.

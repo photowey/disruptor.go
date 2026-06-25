@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/executor"
 	topology "github.com/photowey/disruptor.go/pkg/runtimegraph"
 	"github.com/photowey/disruptor.go/pkg/runtimevars"
 )
@@ -40,6 +41,8 @@ const (
 	RuntimeGraphExceptionKindNoRoute
 	// RuntimeGraphExceptionKindPanic reports a recovered panic.
 	RuntimeGraphExceptionKindPanic
+	// RuntimeGraphExceptionKindExecutor reports an executor submission failure.
+	RuntimeGraphExceptionKindExecutor
 )
 
 // RuntimeGraphExceptionRequest describes a runtime graph failure.
@@ -96,6 +99,9 @@ type runtimeGraphHandleConfig[T any] struct {
 	exceptionHandler RuntimeGraphExceptionHandler[T]
 	noRouteAction    RuntimeNoRouteAction
 	workers          int
+	workersSet       bool
+	executor         executor.Executor
+	executorSet      bool
 	provider         runtimevars.Provider[T]
 	resolver         runtimevars.Resolver[T]
 	metricsSink      RuntimeGraphMetricsSink
@@ -137,6 +143,24 @@ func WithRuntimeGraphWorkers[T any](workers int) RuntimeGraphHandleOption[T] {
 			}
 
 			config.workers = workers
+			config.workersSet = true
+			return nil
+		},
+	}
+}
+
+// WithRuntimeGraphExecutor sets the executor used for runtime graph handlers.
+func WithRuntimeGraphExecutor[T any](
+	executor executor.Executor,
+) RuntimeGraphHandleOption[T] {
+	return runtimeGraphHandleOptionFunc[T]{
+		applyFunc: func(config *runtimeGraphHandleConfig[T]) error {
+			if executor == nil {
+				return fmt.Errorf("%w: runtime graph executor is nil", topology.ErrInvalid)
+			}
+
+			config.executor = executor
+			config.executorSet = true
 			return nil
 		},
 	}
@@ -264,6 +288,12 @@ func (d *Disruptor[T]) HandleRuntimeGraph(
 			return nil, fmt.Errorf("applying runtime graph handle option: %w", err)
 		}
 	}
+	if handleConfig.workersSet && handleConfig.executorSet {
+		return nil, fmt.Errorf(
+			"%w: runtime graph workers and executor cannot both be configured",
+			topology.ErrInvalid,
+		)
+	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -297,6 +327,8 @@ func (d *Disruptor[T]) HandleRuntimeGraph(
 		resolver:         handleConfig.resolver,
 		metricsSink:      handleConfig.metricsSink,
 		workers:          handleConfig.workers,
+		executor:         handleConfig.executor,
+		executorOwned:    false,
 	}
 
 	stopOnce := &sync.Once{}
@@ -347,6 +379,8 @@ type runtimeGraphEventHandler[T any] struct {
 	resolver         runtimevars.Resolver[T]
 	metricsSink      RuntimeGraphMetricsSink
 	workers          int
+	executor         executor.Executor
+	executorOwned    bool
 	runtimeContext   *runtimevars.Context[T]
 	runState         runtimeGraphRunState[T]
 }
@@ -355,11 +389,36 @@ func (h *runtimeGraphEventHandler[T]) OnStart(ctx context.Context) error {
 	if h.workers < 1 {
 		return fmt.Errorf("%w: runtime graph workers must be positive", topology.ErrInvalid)
 	}
+	if h.executor != nil {
+		return nil
+	}
+	if h.workers == 1 {
+		return nil
+	}
+
+	pool, err := executor.NewFixedWorkerExecutor(
+		executor.WithWorkers(h.workers),
+		executor.WithQueueSize(h.workers),
+		executor.WithRejectPolicy(executor.RejectPolicyReject),
+		executor.WithName(h.graphName),
+	)
+	if err != nil {
+		return err
+	}
+	h.executor = pool
+	h.executorOwned = true
 
 	return nil
 }
 
 func (h *runtimeGraphEventHandler[T]) OnShutdown(ctx context.Context) error {
+	if h.executorOwned && h.executor != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		return h.executor.Shutdown(shutdownCtx)
+	}
+
 	return nil
 }
 
@@ -383,9 +442,20 @@ func (h *runtimeGraphEventHandler[T]) OnEvent(request event.Request[T]) error {
 	if err := state.processStart(h); err != nil {
 		return err
 	}
-	for state.hasReady() {
-		name := state.popReady()
-		if err := state.runNode(h, name); err != nil {
+	for state.hasReady() || state.inFlight > 0 {
+		for state.hasReady() {
+			index := state.popReady()
+			if err := state.submitNode(h, index); err != nil {
+				state.drainInFlight()
+				return err
+			}
+		}
+		if state.inFlight == 0 {
+			break
+		}
+		result := <-state.results
+		if err := state.completeNode(h, result); err != nil {
+			state.drainInFlight()
 			return err
 		}
 	}
@@ -505,6 +575,8 @@ type runtimeGraphRunState[T any] struct {
 	nodes      []runtimeGraphNodeState
 	ready      []int
 	readyHead  int
+	results    chan runtimeGraphNodeResult[T]
+	inFlight   int
 	endReached bool
 }
 
@@ -535,6 +607,13 @@ func (s *runtimeGraphRunState[T]) reset(
 	s.endReached = false
 	s.ready = s.ready[:0]
 	s.readyHead = 0
+	s.inFlight = 0
+	if s.results == nil || cap(s.results) != len(s.plan.NodesByIndex) {
+		s.results = make(chan runtimeGraphNodeResult[T], len(s.plan.NodesByIndex))
+	}
+	for len(s.results) > 0 {
+		<-s.results
+	}
 
 	if len(s.nodes) != len(s.plan.NodesByIndex) {
 		s.nodes = make([]runtimeGraphNodeState, len(s.plan.NodesByIndex))
@@ -598,6 +677,13 @@ func (s *runtimeGraphRunState[T]) processStart(handler *runtimeGraphEventHandler
 
 func (s *runtimeGraphRunState[T]) hasReady() bool {
 	return s.readyHead < len(s.ready)
+}
+
+func (s *runtimeGraphRunState[T]) drainInFlight() {
+	for s.inFlight > 0 {
+		<-s.results
+		s.inFlight--
+	}
 }
 
 func (s *runtimeGraphRunState[T]) popReady() int {
@@ -669,7 +755,7 @@ func (s *runtimeGraphRunState[T]) resolveInbound(
 	return nil
 }
 
-func (s *runtimeGraphRunState[T]) runNode(
+func (s *runtimeGraphRunState[T]) submitNode(
 	handler *runtimeGraphEventHandler[T],
 	index int,
 ) error {
@@ -696,29 +782,76 @@ func (s *runtimeGraphRunState[T]) runNode(
 		Runtime: s.runtime,
 	}
 
-	var handlerErr error
-	var panicked bool
-	started := time.Now()
 	handler.emitMetric(RuntimeGraphMetric{
 		Kind:      "node_scheduled",
 		GraphName: handler.graphName,
 		Node:      request.Node,
 		Sequence:  request.Sequence,
 	})
-	for {
-		handlerErr, panicked = s.invokeHandler(planNode.Handler, request)
-		if handlerErr == nil {
-			break
+	task := runtimeGraphNodeTask[T]{
+		index:   index,
+		handler: planNode.Handler,
+		request: request,
+		results: s.results,
+	}
+	if handler.executor == nil {
+		task.Run(request.Context)
+		result := <-s.results
+		return s.completeNode(handler, result)
+	}
+	if err := handler.executor.Submit(executor.SubmitRequest{
+		Context: request.Context,
+		Task:    task,
+		Name:    planNode.Name,
+	}); err != nil {
+		action := handler.handleRuntimeException(RuntimeGraphExceptionRequest[T]{
+			Context:   request.Context,
+			Event:     request.Event,
+			Sequence:  request.Sequence,
+			GraphName: handler.graphName,
+			NodeName:  planNode.Name,
+			Kind:      RuntimeGraphExceptionKindExecutor,
+			Cause:     err,
+			Runtime:   s.runtime,
+		})
+		if action != event.ExceptionActionContinue {
+			return err
 		}
-		action := s.handleNodeFailure(handler, planNode, request, handlerErr, panicked)
+		nodeState.done = true
+		return nil
+	}
+
+	s.inFlight++
+	return nil
+}
+
+func (s *runtimeGraphRunState[T]) completeNode(
+	handler *runtimeGraphEventHandler[T],
+	result runtimeGraphNodeResult[T],
+) error {
+	if result.index < 0 || result.index >= len(s.nodes) {
+		return nil
+	}
+	if s.inFlight > 0 {
+		s.inFlight--
+	}
+
+	nodeState := &s.nodes[result.index]
+	if nodeState.done {
+		return nil
+	}
+
+	planNode := &s.plan.NodesByIndex[result.index]
+	request := result.request
+	if result.err != nil {
+		action := s.handleNodeFailure(handler, planNode, request, result.err, result.panicked)
 		switch action {
 		case event.ExceptionActionContinue:
 		case event.ExceptionActionRetry:
-			continue
+			return s.submitNode(handler, result.index)
 		default:
-			return handlerErr
+			return result.err
 		}
-		break
 	}
 	resetNodeRetry(planNode.ExceptionHandler, request.Sequence)
 
@@ -728,7 +861,7 @@ func (s *runtimeGraphRunState[T]) runNode(
 		GraphName: handler.graphName,
 		Node:      request.Node,
 		Sequence:  request.Sequence,
-		Duration:  time.Since(started),
+		Duration:  result.duration,
 	})
 	for _, edge := range planNode.Outgoing {
 		selected, err := edge.Evaluate(topology.EdgeConditionRequest[T]{
@@ -781,7 +914,34 @@ func (s *runtimeGraphRunState[T]) runNode(
 	return nil
 }
 
-func (s *runtimeGraphRunState[T]) invokeHandler(
+type runtimeGraphNodeResult[T any] struct {
+	index    int
+	request  event.Request[T]
+	duration time.Duration
+	err      error
+	panicked bool
+}
+
+type runtimeGraphNodeTask[T any] struct {
+	index   int
+	handler event.Handler[T]
+	request event.Request[T]
+	results chan<- runtimeGraphNodeResult[T]
+}
+
+func (t runtimeGraphNodeTask[T]) Run(ctx context.Context) {
+	started := time.Now()
+	err, panicked := invokeRuntimeGraphHandler(t.handler, t.request)
+	t.results <- runtimeGraphNodeResult[T]{
+		index:    t.index,
+		request:  t.request,
+		duration: time.Since(started),
+		err:      err,
+		panicked: panicked,
+	}
+}
+
+func invokeRuntimeGraphHandler[T any](
 	handler event.Handler[T],
 	request event.Request[T],
 ) (err error, panicked bool) {

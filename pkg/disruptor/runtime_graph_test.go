@@ -18,11 +18,13 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
 	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/executor"
 	"github.com/photowey/disruptor.go/pkg/expression"
 	topology "github.com/photowey/disruptor.go/pkg/graph"
 	"github.com/photowey/disruptor.go/pkg/runtimegraph"
@@ -380,6 +382,217 @@ func TestRuntimeGraphReportsPanicKind(t *testing.T) {
 	}
 }
 
+func TestRuntimeGraphWorkersExecuteIndependentNodesConcurrently(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	aStarted := make(chan struct{})
+	bStarted := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan string, 2)
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-workers").
+		MustNode("A", runtimeBlockingHandler{
+			name:    "A",
+			started: aStarted,
+			peer:    bStarted,
+			release: release,
+			done:    done,
+		}).
+		MustNode("B", runtimeBlockingHandler{
+			name:    "B",
+			started: bStarted,
+			peer:    aStarted,
+			release: release,
+			done:    done,
+		}).
+		MustNode("C", runtimeRecordingHandler{name: "C", handled: done}).
+		MustEdge(topology.StartNode, "A").
+		MustEdge(topology.StartNode, "B").
+		MustEdge("A", "C").
+		MustEdge("B", "C").
+		MustEdge("C", topology.EndNode)
+
+	d := newRuntimeGraphTestDisruptor(t, 8)
+	processors, err := d.HandleRuntimeGraph(
+		graph,
+		disruptor.WithRuntimeGraphWorkers[longEvent](2),
+	)
+	if err != nil {
+		t.Fatalf("handle runtime graph: %v", err)
+	}
+	if err := d.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer d.Stop()
+
+	publishValues(t, d.RingBuffer(), 1)
+	waitForRuntimeSignal(t, aStarted, "A started")
+	waitForRuntimeSignal(t, bStarted, "B started")
+	close(release)
+	wantRuntimeHandlersAnyOrder(t, done, []string{"A", "B", "C"})
+	waitForSequenceValue(t, processors.Sequence(), 0)
+}
+
+func TestRuntimeGraphRejectsWorkersAndExecutorTogether(t *testing.T) {
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-worker-conflict").
+		MustNode("A", runtimeRecordingHandler{}).
+		MustEdge(topology.StartNode, "A").
+		MustEdge("A", topology.EndNode)
+
+	d := newRuntimeGraphTestDisruptor(t, 8)
+	_, err := d.HandleRuntimeGraph(
+		graph,
+		disruptor.WithRuntimeGraphWorkers[longEvent](2),
+		disruptor.WithRuntimeGraphExecutor[longEvent](executor.NewInlineExecutor()),
+	)
+	if err == nil {
+		t.Fatal("handle runtime graph error is nil, want conflict")
+	}
+}
+
+func TestRuntimeGraphExternalExecutorIsCallerOwned(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	exec := &runtimeLifecycleExecutor{Executor: executor.NewInlineExecutor()}
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-external-executor").
+		MustNode("A", runtimeRecordingHandler{}).
+		MustEdge(topology.StartNode, "A").
+		MustEdge("A", topology.EndNode)
+
+	d := newRuntimeGraphTestDisruptor(t, 8)
+	processors, err := d.HandleRuntimeGraph(
+		graph,
+		disruptor.WithRuntimeGraphExecutor[longEvent](exec),
+	)
+	if err != nil {
+		t.Fatalf("handle runtime graph: %v", err)
+	}
+	if err := d.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	publishValues(t, d.RingBuffer(), 1)
+	waitForSequenceValue(t, processors.Sequence(), 0)
+	d.Stop()
+	if err := d.Wait(); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if exec.shutdowns.Load() != 0 {
+		t.Fatalf("external executor shutdowns = %d, want 0", exec.shutdowns.Load())
+	}
+}
+
+func TestRuntimeGraphExecutorFailureUsesExceptionKindExecutor(t *testing.T) {
+	submitErr := errors.New("executor submit failed")
+	recorder := newRuntimeExceptionRecorder()
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-executor-failure").
+		MustNode("A", runtimeRecordingHandler{}).
+		MustEdge(topology.StartNode, "A").
+		MustEdge("A", topology.EndNode)
+
+	d := newRuntimeGraphTestDisruptor(t, 8)
+	if _, err := d.HandleRuntimeGraph(
+		graph,
+		disruptor.WithRuntimeGraphExecutor[longEvent](runtimeFailingExecutor{err: submitErr}),
+		disruptor.WithRuntimeGraphExceptionHandler[longEvent](recorder),
+	); err != nil {
+		t.Fatalf("handle runtime graph: %v", err)
+	}
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	publishValues(t, d.RingBuffer(), 1)
+	if err := d.Wait(); !errors.Is(err, submitErr) {
+		t.Fatalf("wait error = %v, want submit error", err)
+	}
+	got := recorder.wait(t)
+	if got.Kind != disruptor.RuntimeGraphExceptionKindExecutor {
+		t.Fatalf("exception kind = %v, want executor", got.Kind)
+	}
+}
+
+func TestRuntimeGraphParallelJoinWaitsForInFlightHandlersOnHalt(t *testing.T) {
+	handlerErr := errors.New("halt after slow handler")
+	finished := make(chan struct{})
+	release := make(chan struct{})
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-halt-waits").
+		MustNode("slow", runtimeReleaseHandler{
+			release:  release,
+			finished: finished,
+		}).
+		MustNode("fail", runtimeRecordingHandler{err: handlerErr}).
+		MustEdge(topology.StartNode, "slow").
+		MustEdge(topology.StartNode, "fail").
+		MustEdge("slow", topology.EndNode).
+		MustEdge("fail", topology.EndNode)
+
+	d := newRuntimeGraphTestDisruptor(t, 8)
+	if _, err := d.HandleRuntimeGraph(
+		graph,
+		disruptor.WithRuntimeGraphWorkers[longEvent](2),
+	); err != nil {
+		t.Fatalf("handle runtime graph: %v", err)
+	}
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	publishValues(t, d.RingBuffer(), 1)
+	waitForBlockedWait(t, d)
+	close(release)
+	if err := d.Wait(); !errors.Is(err, handlerErr) {
+		t.Fatalf("wait error = %v, want handler error", err)
+	}
+	waitForRuntimeSignal(t, finished, "slow handler finished")
+}
+
+func TestRuntimeGraphExternalExecutorWaitsForInFlightHandlersOnHalt(t *testing.T) {
+	handlerErr := errors.New("halt after external executor slow handler")
+	finished := make(chan struct{})
+	release := make(chan struct{})
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-external-halt-waits").
+		MustNode("slow", runtimeReleaseHandler{
+			release:  release,
+			finished: finished,
+		}).
+		MustNode("fail", runtimeRecordingHandler{err: handlerErr}).
+		MustEdge(topology.StartNode, "slow").
+		MustEdge(topology.StartNode, "fail").
+		MustEdge("slow", topology.EndNode).
+		MustEdge("fail", topology.EndNode)
+
+	pool, err := executor.NewFixedWorkerExecutor(
+		executor.WithWorkers(2),
+		executor.WithQueueSize(2),
+	)
+	if err != nil {
+		t.Fatalf("new fixed worker executor: %v", err)
+	}
+	defer shutdownRuntimeExecutor(t, pool)
+
+	d := newRuntimeGraphTestDisruptor(t, 8)
+	if _, err := d.HandleRuntimeGraph(
+		graph,
+		disruptor.WithRuntimeGraphExecutor[longEvent](pool),
+	); err != nil {
+		t.Fatalf("handle runtime graph: %v", err)
+	}
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	waitErr := make(chan error, 1)
+	publishValues(t, d.RingBuffer(), 1)
+	go runtimeGraphWait(d, waitErr)
+	assertRuntimeWaitBlocked(t, waitErr)
+	close(release)
+	if err := <-waitErr; !errors.Is(err, handlerErr) {
+		t.Fatalf("wait error = %v, want handler error", err)
+	}
+	waitForRuntimeSignal(t, finished, "external executor slow handler finished")
+}
+
 func newRuntimeGraphTestDisruptor(t *testing.T, size int) *disruptor.Disruptor[longEvent] {
 	t.Helper()
 
@@ -406,6 +619,74 @@ func wantRuntimeHandlers(t *testing.T, handled <-chan string, want []string) {
 		case <-time.After(300 * time.Millisecond):
 			t.Fatalf("timed out waiting for handler %q", name)
 		}
+	}
+}
+
+func wantRuntimeHandlersAnyOrder(t *testing.T, handled <-chan string, want []string) {
+	t.Helper()
+
+	remaining := make(map[string]int, len(want))
+	for _, name := range want {
+		remaining[name]++
+	}
+	for range want {
+		select {
+		case got := <-handled:
+			if remaining[got] == 0 {
+				t.Fatalf("unexpected handler %q, remaining=%v", got, remaining)
+			}
+			remaining[got]--
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for handlers; remaining=%v", remaining)
+		}
+	}
+}
+
+func waitForRuntimeSignal(t *testing.T, signal <-chan struct{}, label string) {
+	t.Helper()
+
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
+func waitForBlockedWait(t *testing.T, d *disruptor.Disruptor[longEvent]) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		_ = d.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("wait returned before slow handler was released")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func assertRuntimeWaitBlocked(t *testing.T, waitErr <-chan error) {
+	t.Helper()
+
+	select {
+	case err := <-waitErr:
+		t.Fatalf("wait returned before slow handler was released: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func runtimeGraphWait(d *disruptor.Disruptor[longEvent], waitErr chan<- error) {
+	waitErr <- d.Wait()
+}
+
+func shutdownRuntimeExecutor(t *testing.T, exec executor.Executor) {
+	t.Helper()
+
+	if err := exec.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown runtime executor: %v", err)
 	}
 }
 
@@ -481,6 +762,58 @@ type runtimePanicHandler struct{}
 
 func (runtimePanicHandler) OnEvent(request event.Request[longEvent]) error {
 	panic("runtime graph panic")
+}
+
+type runtimeBlockingHandler struct {
+	name    string
+	started chan<- struct{}
+	peer    <-chan struct{}
+	release <-chan struct{}
+	done    chan<- string
+}
+
+func (h runtimeBlockingHandler) OnEvent(request event.Request[longEvent]) error {
+	close(h.started)
+	<-h.peer
+	<-h.release
+	h.done <- h.name
+
+	return nil
+}
+
+type runtimeReleaseHandler struct {
+	release  <-chan struct{}
+	finished chan<- struct{}
+}
+
+func (h runtimeReleaseHandler) OnEvent(request event.Request[longEvent]) error {
+	<-h.release
+	close(h.finished)
+
+	return nil
+}
+
+type runtimeLifecycleExecutor struct {
+	executor.Executor
+	shutdowns atomic.Int64
+}
+
+func (e *runtimeLifecycleExecutor) Shutdown(ctx context.Context) error {
+	e.shutdowns.Add(1)
+
+	return e.Executor.Shutdown(ctx)
+}
+
+type runtimeFailingExecutor struct {
+	err error
+}
+
+func (e runtimeFailingExecutor) Submit(executor.SubmitRequest) error {
+	return e.err
+}
+
+func (e runtimeFailingExecutor) Shutdown(context.Context) error {
+	return nil
 }
 
 type runtimeDecimalRaw struct {
