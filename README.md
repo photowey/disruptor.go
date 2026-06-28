@@ -295,8 +295,8 @@ processor registration still creates processors for real handler nodes only.
 `RuntimeGraph[T]` is separate from static `Graph[T]`. It evaluates edge
 conditions for each event and executes only selected handler paths. Handlers can
 write event-scoped runtime variables; expression edges read those variables.
-`event.Request.Runtime` is reset between events and should be used only inside
-the current handler callback.
+`event.Request.Runtime` is reset between events and is scoped to the current
+handler callback.
 
 ```go
 type RouteHandler struct {
@@ -325,8 +325,8 @@ runtimeGraph := runtimegraph.MustRuntimeGraph[LongEvent]("runtime-route").
 _, err = d.HandleRuntimeGraph(runtimeGraph)
 ```
 
-`RuntimeGraph` is deterministic by default. When independent selected nodes
-should run concurrently, configure workers explicitly:
+`RuntimeGraph` is deterministic by default. Independent selected nodes can run
+concurrently when workers are configured explicitly:
 
 ```go
 _, err = d.HandleRuntimeGraph(
@@ -497,7 +497,7 @@ _, err = d.HandleEventsWithOptions(
 
 Handler panics are recovered and routed through the same exception handler path.
 Producer translator panics still publish the claimed sequence first, then
-re-panic to the caller so consumers do not get stuck behind an unpublished slot.
+re-panic to the caller so consumers can continue past the claimed slot.
 
 ## Metrics
 

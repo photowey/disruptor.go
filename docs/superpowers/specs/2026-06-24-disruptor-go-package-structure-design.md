@@ -2,11 +2,10 @@
 
 ## Status
 
-Revised after implementation review.
+Specification aligned with the implemented package structure.
 
-Target: pre-v1.2.0 hardening with an intentional breaking API cleanup. This
-project is not yet consumed by downstream projects, so the package split should
-optimize clarity instead of preserving compatibility glue.
+Scope: pre-v1.2.0 hardening with an intentional breaking API cleanup. The
+package split prioritizes ownership clarity over compatibility aliases.
 
 ## Decision
 
@@ -28,18 +27,17 @@ Callers import the package that owns the concept they use:
 | `internal/padding` | Cache-line padding primitives and build-tag overrides |
 | `internal/sequencer` | Sequence primitive and single/multi producer sequencers |
 
-## Goals
+## Objectives
 
-- Make package boundaries visible in code, examples, benchmarks, and docs.
-- Keep public APIs interface-first and replaceable.
-- Avoid compatibility aliases such as `disruptor.MustGraph` or
+- Package boundaries are visible in code, examples, benchmarks, and docs.
+- Public APIs remain interface-first and replaceable.
+- Compatibility aliases such as `disruptor.MustGraph` or
   `disruptor.EventRequest`.
-- Keep package names short, lowercase, and specific.
-- Keep processor and ring-buffer hot paths in `pkg/disruptor` until there is a
-  stronger reason to extract them.
-- Keep low-level algorithms in `internal/` when users should not import them.
+- Package names are short, lowercase, and specific.
+- Processor and ring-buffer hot paths remain in `pkg/disruptor`.
+- Low-level algorithms remain in `internal/` when they are not public imports.
 
-## Non-Goals
+## Out Of Scope
 
 - Preserve the previous single-package facade.
 - Add glue files that only forward old names to new packages.
@@ -163,19 +161,19 @@ pkg/expression
   -> pkg/runtimevars
 ```
 
-`pkg/event`, `pkg/graph`, `pkg/expression`, and `pkg/runtimevars` must remain
-usable without importing `pkg/disruptor`.
+`pkg/event`, `pkg/graph`, `pkg/expression`, and `pkg/runtimevars` are usable
+without importing `pkg/disruptor`.
 
 ## Examples And Benchmarks
 
-Examples and benchmarks should demonstrate the package split directly:
+Examples and benchmarks demonstrate the package split directly:
 
 - handler request types use `event.Request[T]`
 - handler slices use `[]event.Handler[T]`
 - static graphs use `topology "github.com/photowey/disruptor.go/pkg/graph"`
 - runtime graphs use `runtimegraph`
 - retry/fatal/ignore exception handlers use `pkg/event`
-- no example should depend on old `disruptor.*` graph or event aliases
+- examples contain no old `disruptor.*` graph or event aliases
 
 ## Documentation Updates
 
@@ -187,14 +185,13 @@ Required docs:
 - V1.2 runtime graph design
 - benchmark notes if benchmark scenarios or imports change
 
-Architecture diagrams must show the public package split instead of a single
-catch-all `pkg/disruptor` package.
+Architecture diagrams show the public package split.
 
 ## Acceptance Criteria
 
 - `pkg/disruptor` no longer contains event, graph, runtime graph, expression, or
   runtime variable builder files.
-- No compatibility re-export files are added for old graph/event APIs.
+- Compatibility re-export files for old graph/event APIs are absent.
 - Examples compile against the split packages.
 - Benchmarks compile against the split packages.
 - Current docs and diagrams use the split package names.

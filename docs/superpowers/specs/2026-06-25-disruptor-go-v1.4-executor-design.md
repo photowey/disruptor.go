@@ -2,16 +2,16 @@
 
 ## Status
 
-Design revised after BMAD Party Mode review.
+Specification aligned with the implemented executor design.
 
-Target tag: `v1.4.0`
+Release tag: `v1.4.0`
 
 This design adds a public `pkg/executor` package for bounded task execution,
 typed futures, promises, and CompletableFuture-style composition. RuntimeGraph
-will use this package as its first high-performance consumer, but the executor
-package is a stable general-purpose API.
+uses this package for explicit parallel node execution. The executor package is
+a stable general-purpose API.
 
-## Architecture Sketch
+## Architecture
 
 ```mermaid
 flowchart TB
@@ -26,7 +26,7 @@ flowchart TB
     Worker -. no direct state mutation .-> State
 ```
 
-## Goals
+## Objectives
 
 - Expose a stable public `pkg/executor` package.
 - Hide low-level `sync.WaitGroup`, channel fan-in, and worker lifecycle details
@@ -34,25 +34,25 @@ flowchart TB
 - Support typed read-only `Future[T]` and producer-owned `Promise[T]`.
 - Support composition helpers similar to Java `CompletableFuture`, adapted to
   Go generics and context cancellation.
-- Keep public APIs interface-first and replaceable.
-- Avoid naked anonymous function parameters in public APIs. Convenience function
+- Public APIs remain interface-first and replaceable.
+- Public APIs avoid naked anonymous function parameters. Convenience function
   adapters may exist as named `TaskFunc`, `ApplyTaskFunc`, and similar types.
 - Provide a bounded fixed worker executor with explicit backpressure behavior.
-- Let RuntimeGraph execute independent ready nodes concurrently without letting
+- RuntimeGraph executes independent ready nodes concurrently without letting
   workers mutate scheduler route state.
-- Preserve deterministic RuntimeGraph behavior by default.
+- Default RuntimeGraph behavior remains deterministic.
 
-## Non-Goals
+## Out Of Scope
 
-- Do not copy Java's thread-pool API directly. Go already has a goroutine
-  scheduler; this package controls task bounds, lifecycle, and composition.
-- Do not add dynamic pool resizing in V1.4.0.
-- Do not add work stealing in V1.4.0.
-- Do not add unbounded queues.
-- Do not add preemptive task cancellation. Running tasks must cooperate with
+- Java thread-pool API parity. Go already has a goroutine scheduler; this
+  package controls task bounds, lifecycle, and composition.
+- Dynamic pool resizing in V1.4.0.
+- Work stealing in V1.4.0.
+- Unbounded queues.
+- Preemptive task cancellation. Running tasks cooperate with
   `context.Context`.
-- Do not change RingBuffer, Sequencer, WaitStrategy, or static Graph execution.
-- Do not make RuntimeGraph parallel execution the default.
+- RingBuffer, Sequencer, WaitStrategy, or static Graph execution changes.
+- RuntimeGraph parallel execution as the default mode.
 
 ## Design Summary
 
@@ -78,7 +78,7 @@ completion back to the scheduler, and the scheduler advances the state machine.
 Go does not support generic methods. Because of that, `Executor` itself is
 non-generic and generic behavior is provided by package-level helper functions.
 
-This keeps custom executors easy to implement while preserving typed user code:
+This API shape keeps custom executors small while preserving typed user code:
 
 ```go
 future, err := executor.Submit[OrderResult](ctx, pool, task)
@@ -87,7 +87,7 @@ future, err := executor.Submit[OrderResult](ctx, pool, task)
 The executor only knows how to run a `RunnableTask`. The typed `Submit[T]`
 helper wraps a `Task[T]` into a runnable task and completes a `Promise[T]`.
 
-## Public Executor API Sketch
+## Public Executor API
 
 ```go
 package executor
@@ -146,7 +146,7 @@ func Submit[T any](
 options, wraps the typed task in a runnable task, and submits it. If submission
 is rejected before the task is accepted, `Submit` returns an error.
 
-## Future And Promise API Sketch
+## Future And Promise API
 
 The future API is split into small read-only interfaces and composed into
 `Future[T]`. `Future[T]` is an observation API only. Completion and
@@ -231,7 +231,7 @@ ownership: consumers can wait, observe, or inspect, but cannot complete someone
 else's result. Callers cancel submitted work by canceling the submission context
 or by owning the promise that backs a future.
 
-## Composition API Sketch
+## Composition API
 
 Composition helpers must not create hidden unbounded goroutines and must not
 consume worker slots just to wait for other futures. They are implemented by
@@ -295,8 +295,8 @@ func Exceptionally[T any](
 ) (Future[T], error)
 ```
 
-Continuations do not run in the goroutine that completes the parent future.
-They are submitted to the executor. If continuation submission fails, the child
+Continuations are submitted to the executor instead of running in the goroutine
+that completes the parent future. If continuation submission fails, the child
 future completes with that submission error.
 
 ## Built-In Executors
@@ -354,9 +354,8 @@ const (
 - `RejectPolicyReject` returns `ErrSaturated` immediately when the queue is
   full.
 
-`CallerRuns` is intentionally excluded from V1.4.0. It is useful in some
-application pools but unsafe as a RuntimeGraph default because it can make the
-scheduler execute node handlers inline.
+`CallerRuns` is outside V1.4.0. The policy can make the scheduler execute node
+handlers inline, which violates RuntimeGraph executor isolation.
 
 ## Error Model
 
@@ -480,8 +479,7 @@ run handler code when an external executor is configured.
 
 Submission backpressure is separate from handler execution. If submission blocks
 under `RejectPolicyBlock`, it must be bounded by context cancellation. For
-RuntimeGraph, `RejectPolicyReject` is recommended when saturation should be
-reported immediately.
+RuntimeGraph, `RejectPolicyReject` reports saturation immediately.
 
 Executor submission failures are reported through RuntimeGraph exception
 handling as an executor failure. V1.4.0 adds:
@@ -636,9 +634,9 @@ Add benchmarks for:
 
 RuntimeGraph benchmark expectations:
 
-- default inline RuntimeGraph benchmarks should stay near the existing
+- default inline RuntimeGraph benchmarks stay near the existing
   allocation profile.
-- parallel RuntimeGraph benchmarks should report throughput and allocations
+- parallel RuntimeGraph benchmarks report throughput and allocations
   separately because cross-goroutine scheduling has different costs.
 
 ## Quality Gates
@@ -660,10 +658,11 @@ sleep-based timing guesses.
 
 Regression policy:
 
-- default inline RuntimeGraph allocation counts must not materially regress.
+- default inline RuntimeGraph allocation counts remain within the established
+  baseline.
 - executor benchmarks establish their own baseline because cross-goroutine
   scheduling has different costs from inline execution.
-- benchmark conclusions must use `benchstat`; single-run results are smoke
+- benchmark conclusions use `benchstat`; single-run results are smoke
   checks only.
 
 CI must run ordinary tests, race tests, lint, vet, and a benchmark smoke target
@@ -687,8 +686,8 @@ Implementation must update:
 - `benchmarks/README.md`
 - `examples/`
 
-Examples must avoid naked anonymous function parameters in public APIs. They may
-use named task structs or named `TaskFunc` variables.
+Examples use named task structs or named `TaskFunc` variables instead of naked
+anonymous function parameters in public API usage.
 
 Documentation acceptance criteria:
 
@@ -701,9 +700,9 @@ Documentation acceptance criteria:
 
 ## Design Checks
 
-- No hidden unbounded goroutines are introduced by Future composition.
-- No unbounded queues are introduced.
-- RuntimeGraph workers do not mutate scheduler state.
+- Future composition introduces no hidden unbounded goroutines.
+- Queues remain bounded.
+- RuntimeGraph scheduler state remains scheduler-owned.
 - RuntimeGraph handler execution does not occupy the scheduler when an executor
   is configured.
 - Cancellation is cooperative and documented.

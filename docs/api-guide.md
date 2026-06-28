@@ -301,8 +301,8 @@ Graph mode uses its own exception semantics:
   sequence.
 
 Graph mode keeps producer backpressure on leaf processors only. Intermediate
-processors remain barrier dependencies for downstream nodes but do not gate the
-producer.
+processors remain barrier dependencies for downstream nodes, while producer
+gating stays leaf-only.
 
 `HandleGraph` freezes the graph instance. A handled graph cannot be mutated or
 registered on another disruptor. Use `Snapshot`, `Mermaid`, or `DOT` before or
@@ -352,8 +352,8 @@ request.Runtime.Set("risk.score", 91)
 
 The runtime context is scoped to the current `OnEvent` callback. Runtime graph
 processors reset and reuse the concrete context between events to keep the hot
-path allocation-free for non-expression routes, so handlers should not retain
-`request.Runtime` beyond the callback.
+path allocation-free for non-expression routes. Handler code treats
+`request.Runtime` as callback-scoped state.
 
 Expression edges read the merged variable view. Lookup order is runtime bag,
 configured `runtimevars.Provider[T]`, then configured event value resolver. The
@@ -378,7 +378,7 @@ operands use Go `float64` semantics. The built-in compiler does not provide
 fixed-point decimal arithmetic by default.
 
 Applications that require monetary, decimal, big-number, or other domain number
-semantics should register `expression.WithNumberAdapter(adapter)`. A
+semantics register `expression.WithNumberAdapter(adapter)`. A
 `NumberAdapter` combines conversion, comparison, and final bool conversion:
 
 ```go
@@ -415,8 +415,8 @@ _, err = d.HandleRuntimeGraph(
 Runtime graph condition, no-route, and panic failures are routed through
 `RuntimeGraphExceptionHandler[T]`. Handler errors use the node-level
 `runtimegraph.WithNodeExceptionHandler[T]` override when present, otherwise they
-also use `RuntimeGraphExceptionHandler[T]`. Node-level overrides do not handle
-panic recovery.
+also use `RuntimeGraphExceptionHandler[T]`. Panic recovery stays on the runtime
+graph exception handler path.
 
 Runtime graph execution is deterministic by default. `WithRuntimeGraphWorkers`
 activates an internal fixed worker executor when `workers > 1`, allowing
@@ -500,7 +500,7 @@ The package is intentionally usable outside Disruptor:
 - Use `Future[T]` as the consumer-facing result handle.
 - Use `Promise[T]` when a producer completes a result from an external callback,
   polling loop, scheduler, or integration boundary.
-- Use composition helpers when several futures should be joined or transformed,
+- Use composition helpers when several futures are joined or transformed,
   but keep continuation work on an explicit executor.
 
 Learning path:
@@ -596,8 +596,8 @@ Options are separated by lifecycle stage so a processor option cannot be passed
 to ring-buffer construction.
 
 `ProducerTypeMulti` is the default. It tracks claimed and published sequences
-with per-slot availability metadata, so consumers do not observe a later
-published sequence while an earlier claimed sequence is still unpublished.
+with per-slot availability metadata, so consumer visibility remains contiguous
+across published sequences.
 
 `ProducerTypeSingle` is the lighter path for one producer goroutine. It assumes
 the single producer publishes claimed sequences in order, including batch ranges.

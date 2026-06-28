@@ -4,33 +4,34 @@
 
 Implemented.
 
-Target tag: `v1.3.0`
+Release tag: `v1.3.0`
 
 This design extends the V1.2 runtime expression engine with a high-level number
 extension API. The feature is intended for decimal, money, big number, and other
 domain-specific numeric values without adding a decimal dependency to the core
 module.
 
-## Goals
+## Objectives
 
 - Add an expression number extension point that is easy for application
   developers to implement.
-- Keep default `int`, `uint`, and `float` expression behavior compatible with
+- Default `int`, `uint`, and `float` expression behavior stays compatible with
   V1.2.
-- Preserve the default runtime graph hot path and default expression benchmarks.
+- The default runtime graph hot path and default expression benchmarks stay
+  stable.
 - Support custom number comparison, final-result bool conversion, and conversion
   from both ordinary variables and typed variables.
 - Allow multiple number adapters with deterministic ordering.
-- Keep the public API interface-first and replaceable through compiler options.
-- Avoid forcing decimal, money, or big number dependencies into the core module.
+- Public API remains interface-first and replaceable through compiler options.
+- Decimal, money, and big number dependencies stay outside the core module.
 
-## Non-Goals
+## Out Of Scope
 
-- Core `pkg/expression` will not import `github.com/shopspring/decimal`.
-- Core expression syntax will not add decimal literals in V1.3.0.
-- Core string semantics will not change. Strings are parsed as numbers only when
+- Core `pkg/expression` has no `github.com/shopspring/decimal` dependency.
+- Core expression syntax has no decimal literals in V1.3.0.
+- Core string semantics are unchanged. Strings are parsed as numbers only when
   a registered number adapter explicitly handles that comparison.
-- `&&`, `||`, and `!` will not perform implicit number-to-bool conversion on
+- `&&`, `||`, and `!` have no implicit number-to-bool conversion on
   intermediate operands.
 - RuntimeGraph scheduling, START/END semantics, NoRoute behavior, and graph
   validation rules are not changed by this release.
@@ -203,7 +204,7 @@ Both ordinary `Variables.Lookup(path)` values and
 conversion. This closes the V1.2 gap where typed values bypassed custom
 converters.
 
-Adapter conversion should be able to produce:
+Adapter conversion can produce:
 
 ```go
 Value{
@@ -262,21 +263,20 @@ ${amount} && ${vip}
 
 ## Decimal Adapter Guidance
 
-V1.3.0 should include tests and examples using a fake decimal-like type in the
-core repository. The real `github.com/shopspring/decimal` dependency should not
-be added to core.
+V1.3.0 includes tests and examples using a fake decimal-like type in the core
+repository. The core module has no `github.com/shopspring/decimal` dependency.
 
-A future optional adapter can live outside the core hot path. Possible shapes:
+Optional decimal adapters live outside the core hot path. Supported shapes:
 
 - a separate package that users opt into, if accepting the dependency in the
   module is acceptable.
 - a documentation recipe showing how to implement an adapter in application
   code.
-- a separate module if the project later wants to keep the root module free of
-  optional decimal dependencies.
+- a separate module that keeps the root module free of optional decimal
+  dependencies.
 
-The initial V1.3.0 implementation should prefer fake adapter tests over a new
-third-party dependency.
+The V1.3.0 implementation uses fake adapter tests instead of a new third-party
+dependency.
 
 ## Error Handling
 
@@ -295,13 +295,12 @@ Examples:
 
 ## Performance Requirements
 
-Default behavior must remain allocation-conscious:
+Default behavior remains allocation-conscious:
 
-- Runtime graph routes without expression conditions should remain allocation
-  free.
-- Default runtime graph expression branch benchmarks should remain `0 allocs/op`.
-- JSON tag typed resolver benchmark should remain `0 allocs/op`.
-- Adapter benchmarks should report their own allocation profile separately
+- Runtime graph routes without expression conditions remain allocation-free.
+- Default runtime graph expression branch benchmarks remain `0 allocs/op`.
+- JSON tag typed resolver benchmark remains `0 allocs/op`.
+- Adapter benchmarks report their own allocation profile separately
   because adapter implementations may allocate.
 
 The built-in fast path must not route ordinary `int`, `uint`, and `float`
@@ -345,8 +344,8 @@ Update:
 - `examples/runtime_graph`
 - benchmark docs if new adapter benchmarks are added
 
-Docs must state that decimal semantics are adapter-owned and not part of the
-core expression engine.
+Docs state that decimal semantics are adapter-owned and outside the core
+expression engine.
 
 ## Acceptance Criteria
 

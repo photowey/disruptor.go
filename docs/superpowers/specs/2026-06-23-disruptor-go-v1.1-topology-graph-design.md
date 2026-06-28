@@ -1,41 +1,39 @@
 # Disruptor.go V1.1 Topology Graph Design
 
-Status: awaiting user review before implementation planning.
+Status: specified.
 
 This document captures the V1.1 design for named consumer dependency graphs.
-The feature adds pipeline, join, and diamond topologies without changing the V1
-producer publication path. It defines the topology graph portion of V1.1, not
-every item in the broader V2 backlog.
+The feature adds pipeline, join, and diamond topologies while preserving the V1
+producer publication path. The document defines the topology graph portion of
+V1.1.
 
-## Goals
+## Objectives
 
-- Keep `RingBuffer`, `Sequencer`, publish, and backpressure hot paths unchanged.
+- `RingBuffer`, `Sequencer`, publish, and backpressure hot paths remain
+  unchanged.
 - Add an explicit graph object for consumer dependency topology.
 - Support pipeline, fan-in, fan-out, and diamond topologies such as `(A+B)+C`.
 - Require explicit graph and node names for debugging, metrics, and graph export.
-- Keep V1 fan-out APIs working as they do today.
+- V1 fan-out APIs retain existing behavior.
 - Provide structured graph validation and readable error messages.
 - Add node context to consumer requests, exceptions, and consumer metrics.
 - Export graph structure as Mermaid, DOT, and structured snapshots.
 - Cover the topology implementation with tests, examples, and benchmarks.
 
-## Non-Goals
+## Out Of Scope
 
-- No topic routing or RabbitMQ-style `*` / `#` matching in this topology
-  design.
-- No `Handle(...).Then(...)` chain DSL in this topology design.
-- No runtime graph mutation after the graph is handled.
-- No mixing V1 fan-out registration and V1.1 graph registration on one
+- Topic routing or RabbitMQ-style `*` / `#` matching.
+- `Handle(...).Then(...)` chain DSL.
+- Runtime graph mutation after graph registration.
+- Mixing V1 fan-out registration and V1.1 graph registration on one
   `Disruptor` instance.
-- No externally implemented graph source for `HandleGraph` in V1.1.
-- No graph-level lifecycle hooks such as `OnGraphStart`.
-- No pull-style `Poller[T]`.
-- No batch rewind implementation.
-- No SIMD or AVX scanner implementation.
-- No Prometheus or OpenTelemetry adapter package.
-- No public custom sequencer extension.
-
-Deferred items remain candidates for later minor versions.
+- Externally implemented graph sources for `HandleGraph` in V1.1.
+- Graph-level lifecycle hooks such as `OnGraphStart`.
+- Pull-style `Poller[T]`.
+- Batch rewind.
+- SIMD or AVX scanner implementation.
+- Prometheus or OpenTelemetry adapter package.
+- Public custom sequencer extension.
 
 ## Public API
 
@@ -294,9 +292,8 @@ Graph registration algorithm:
 11. Append processors to the owning `Disruptor`.
 
 Intermediate node sequences remain barrier dependencies for downstream nodes,
-but they are not producer gating sequences. This is required for `A -> B -> C`;
-otherwise A or B could apply producer backpressure even though C is the true
-topology leaf.
+while producer gating uses only leaf sequences. In `A -> B -> C`, C is the
+topology leaf and the only producer-gating processor.
 
 ## Graph Validation
 
@@ -324,7 +321,7 @@ Validation rules:
 - Disconnected non-isolated components are allowed. For example, `A -> B` and
   `C -> D` in the same graph has two sources and two leaves.
 
-Errors should wrap sentinel values and include graph and node or edge details:
+Errors wrap sentinel values and include graph and node or edge details:
 
 ```go
 var (
@@ -365,8 +362,8 @@ Rules:
   freeze.
 - Graph processors are started, stopped, and waited through the owning
   `Disruptor`.
-- Topology dependencies order event processing for each sequence. They do not
-  define handler `OnStart` or `OnShutdown` ordering.
+- Topology dependencies order event processing for each sequence. Handler
+  `OnStart` and `OnShutdown` ordering is lifecycle-manager-defined.
 
 One `Disruptor[T]` instance must use one consumer registration mode:
 
@@ -442,7 +439,7 @@ Rules:
 - The complete graph object is not stored in `EventRequest`.
 - Node metadata is not stored in `EventRequest`; it remains available through
   snapshots and graph export.
-- User tests should prefer named fields when constructing request payloads.
+- User tests use named fields when constructing request payloads.
   `EventRequest` is primarily constructed by the library and may gain metadata
   fields across minor versions.
 
@@ -504,8 +501,8 @@ Rules:
   failed event.
 - A node using `ExceptionActionHalt` records its terminal error and asks the
   owning graph processors to stop, alerting dependent barriers.
-- Downstream nodes do not process the failed sequence because the failed
-  upstream sequence is not dependency-complete.
+- Downstream nodes skip the failed sequence because the failed upstream sequence
+  is dependency-incomplete.
 - A source node using `ExceptionActionContinue` advances, allowing downstream
   nodes to continue.
 - A source node using `ExceptionActionRetry` does not advance, so downstream
@@ -592,7 +589,7 @@ flowchart LR
 
 ## Package Layout
 
-V1.1 keeps graph code in the public package first:
+V1.1 places graph code in the public package:
 
 ```text
 pkg/disruptor/
@@ -603,8 +600,8 @@ pkg/disruptor/
   node_context.go
 ```
 
-This avoids premature internal package splitting while the public API settles.
-If graph validation and export logic grows, pure algorithm code can move later:
+Algorithm-only helpers may move to an internal package when validation and
+export logic require extraction:
 
 ```text
 internal/topology/
@@ -617,14 +614,13 @@ Public types remain in `pkg/disruptor` even if internal helpers are extracted.
 
 ## Examples
 
-V1.1 should add runnable examples:
+V1.1 includes runnable examples:
 
 - `examples/pipeline`: `validate -> enrich -> persist`
 - `examples/diamond`: `A -> B`, `A -> C`, `B+C -> D`
 - `examples/graph_export`: print Mermaid or snapshot output
 
-Example tests should verify output and avoid anonymous function-heavy public
-examples. Named handlers remain the preferred demonstration style.
+Example tests verify output and use named handlers in public examples.
 
 The diamond example must include a full lifecycle:
 
@@ -649,12 +645,12 @@ if err := d.Start(ctx); err != nil {
 defer d.Stop()
 ```
 
-The example should publish one event and prove that D observes the event only
+The example publishes one event and verifies that D observes the event only
 after B and C have both processed it.
 
 ## Tests
 
-Topology work must follow test-first development.
+Topology behavior is specified through tests.
 
 Required coverage:
 
@@ -683,7 +679,7 @@ Required coverage:
 - `HandleGraph` cannot run after `Start`.
 - `(A+B)+C` waits for both A and B before C handles a sequence.
 - Leaf sequences are the only producer gating sequences.
-- Intermediate graph node sequences do not producer-gate.
+- Intermediate graph node sequences are barrier dependencies only.
 - `ExceptionActionHalt` in graph mode stops the graph without advancing the
   failed sequence.
 - V1 `NewBatchEventProcessor` still gates producers and still advances the
@@ -717,7 +713,7 @@ topic routing or ownership transfer.
 
 - Existing V1 `HandleEventsWith` and `HandleEventsWithOptions` behavior remains
   unchanged.
-- Existing producers and translators do not change.
+- Existing producers and translators remain unchanged.
 - Existing V1 consumers see zero-value `EventRequest.Node`.
 - New graph users must build topology before `Start`.
 - A single `Disruptor` instance cannot mix fan-out and graph modes.
@@ -726,27 +722,26 @@ topic routing or ownership transfer.
   `BatchMetric`, `EventMetric`, and `ProcessorMetric`.
 - This is a source compatibility risk for external code using unkeyed composite
   literals. The project accepts this V1.1 risk because these structs are
-  library-constructed callback payloads; user tests should use named fields.
+  library-constructed callback payloads; user tests use named fields.
 - Graph topology orders consumers over the same ring event. It does not route,
   clone, transform, or transfer event ownership.
 
-## Deferred Backlog
+## Extension Backlog
 
-The following items remain outside this topology graph design:
+The following items are outside this topology graph design:
 
 - Topic routing with dotted event keys and RabbitMQ-style `*` / `#` patterns.
 - `Handle(...).Then(...)` chain DSL.
 - Pull-style `Poller[T]`.
-- Timeout-aware wait strategies and `TimeoutHandler`; these remain separate
-  design work if they are selected for the next minor release.
+- Timeout-aware wait strategies and `TimeoutHandler`.
 - Full batch rewind.
 - SIMD or AVX availability scanner backend.
 - Prometheus and OpenTelemetry adapters.
 - Public custom sequencer extension.
 - Runtime graph mutation.
 
-## Open Decisions
+## Decision Status
 
-There are no open decisions for this V1.1 topology graph design. Implementation
-details such as exact unexported struct names, traversal helper function names,
-and error message punctuation can be settled during the implementation plan.
+The V1.1 topology graph design has no unresolved product-level decisions.
+Implementation-level details include unexported struct names, traversal helper
+function names, and error message punctuation.

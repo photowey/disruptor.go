@@ -2,19 +2,19 @@
 
 ## Status
 
-Implemented and under release review.
+Implemented.
 
-Target tag: `v1.2.0`
+Release tag: `v1.2.0`
 
-This design extends V1.1 graph support in two phases:
+This design extends V1.1 graph support in two checkpoints:
 
 1. Tighten `Graph[T]` terminal-node semantics so graph entry and exit edges are
    explicit.
 2. Add `RuntimeGraph[T]` for event-level conditional routing.
 
-## Goals
+## Objectives
 
-- Keep the V1.1 static `Graph[T]` processing path high-performance and
+- The V1.1 static `Graph[T]` processing path remains high-performance and
   deterministic.
 - Make `START` and `END` built-in graph nodes while requiring developers to
   maintain terminal edges explicitly.
@@ -22,22 +22,21 @@ This design extends V1.1 graph support in two phases:
 - Support edge conditions through both typed Go predicates and a built-in
   expression engine.
 - Support runtime-generated variables, similar to BPMN process variables.
-- Keep public APIs interface-first and replaceable through options.
-- Avoid anonymous function types in public function signatures. `XxxFunc`
+- Public APIs remain interface-first and replaceable through options.
+- Public function signatures avoid anonymous function types. `XxxFunc`
   adapters may exist as named helper types.
 - Add tests, examples, and benchmarks for both static graph migration and runtime
   graph behavior.
 
-## Non-Goals
+## Out Of Scope
 
-- Topic routing, wildcard matching, and trie-based dispatch remain outside
-  V1.2.0.
-- Runtime graph cycles and loops are not supported in V1.2.0.
-- Graph topology mutation after registration or start is not supported.
-- Static `Graph[T]` does not get conditional edges.
-- The built-in expression engine does not execute user code.
-- Arithmetic operators beyond the required comparison, logical, and bitwise
-  operators are not required in V1.2.0.
+- Topic routing, wildcard matching, and trie-based dispatch.
+- Runtime graph cycles and loops in V1.2.0.
+- Graph topology mutation after registration or start.
+- Conditional edges on static `Graph[T]`.
+- User-code execution inside the built-in expression engine.
+- Additional arithmetic operators beyond comparison, logical, and bitwise
+  operators.
 
 ## Design Summary
 
@@ -46,14 +45,14 @@ V1.2.0 standardizes graph terminal semantics:
 - `graph.StartNode` and `graph.EndNode` are the exported constants for `START`
   and `END`.
 - `START` and `END` are built-in virtual nodes.
-- Developers do not register handlers for `START` or `END`.
+- Handlers are registered only for real nodes; `START` and `END` are virtual.
 - Developers must declare terminal edges explicitly.
 - Snapshot and export output render built-in terminal nodes and explicit edges
   only.
 
 `RuntimeGraph[T]` uses the same terminal-node model but adds runtime conditions
 on edges. Each event starts at `START`, evaluates outgoing edge conditions, and
-routes only through selected edges. Handlers for unselected paths do not run.
+routes only through selected edges. Unselected paths remain inactive.
 
 ```mermaid
 flowchart TB
@@ -73,9 +72,9 @@ flowchart TB
     Scheduler --> RuntimeExceptions["RuntimeGraphExceptionHandler[T]"]
 ```
 
-## Phase 1: Static Graph Terminal Edges
+## Checkpoint 1: Static Graph Terminal Edges
 
-### Current V1.1 Behavior
+### V1.1 Baseline
 
 V1.1 automatically augments snapshots with:
 
@@ -149,8 +148,8 @@ Meaning:
 - `Exits`: real nodes with explicit `real -> END` edges.
 
 `Nodes` includes `START` and `END` when the graph has at least one real node.
-`Edges` includes only edges declared by the developer. No automatic terminal
-edges are added.
+`Edges` contains developer-declared edges only. Automatic terminal edges are
+omitted.
 
 Adding `Entries` and `Exits` changes the exported struct shape. Keyed composite
 literals remain compatible. Unkeyed `GraphSnapshot` literals must be updated.
@@ -175,8 +174,8 @@ Terminal edges are excluded from real source, leaf, and cycle computation.
 
 `HandleGraph` ignores terminal nodes and terminal edges when wiring processors:
 
-- No processor is created for `START`.
-- No processor is created for `END`.
+- `START` has no processor.
+- `END` has no processor.
 - `START -> real` does not create a barrier dependency.
 - `real -> END` does not create a processor or sequence dependency.
 - Real-node edges still define the static barrier graph.
@@ -322,8 +321,7 @@ Runtime-specific error handling is defined separately below.
 
 ### RuntimeGraph Snapshot
 
-Runtime graph snapshots should not expose handler values or compiled expression
-internals.
+Runtime graph snapshots omit handler values and compiled expression internals.
 
 ```go
 type RuntimeGraphSnapshot struct {
@@ -344,8 +342,8 @@ type RuntimeGraphEdgeSnapshot struct {
 }
 ```
 
-`Condition` is a stable display string. Typed conditions that do not expose an
-expression may render as an implementation name or `custom`.
+`Condition` is a stable display string. Typed conditions without an expression
+string render as an implementation name or `custom`.
 
 ## Edge Conditions
 
@@ -373,7 +371,7 @@ Named adapter types may be provided:
 type EdgeConditionFunc[T any] func(EdgeConditionRequest[T]) (bool, error)
 ```
 
-No public API should accept an unnamed function type as a parameter.
+Public APIs accept named interfaces or named adapter types.
 
 ### Edge Options
 
@@ -585,9 +583,8 @@ handlers can call `request.Runtime.Set(...)` directly when the request is create
 by the framework. `Variables()` returns the merged read-only view used by
 expression evaluation.
 
-For non-runtime graph processing, `Runtime` should be a no-op context when the
-request is created by the framework. User-created zero-value requests may still
-leave it nil.
+For non-runtime graph processing, framework-created requests receive a no-op
+runtime context. User-created zero-value requests may still leave it nil.
 
 ### Resolver and Converter Pipeline
 
@@ -626,7 +623,7 @@ a typed resolver through options.
 
 ### Expression Values and Converters
 
-The evaluator should know a small fixed set of internal kinds.
+The evaluator uses a small fixed set of internal kinds.
 
 ```go
 type ExpressionValueKind uint8
@@ -706,13 +703,13 @@ skipped, `C` is skipped.
 
 ## NoRoute
 
-NoRoute means the active path cannot continue.
+NoRoute represents an active path with no continuation.
 
 NoRoute cases:
 
 - All `START` outgoing edge conditions are false.
 - An active node finishes and all outgoing edge conditions are false.
-- No active path can reach `END`.
+- Every active path fails to reach `END`.
 
 Default action:
 
@@ -747,15 +744,15 @@ func WithRuntimeGraphWorkers[T any](workers int) RuntimeGraphHandleOption[T]
 ```
 
 The scheduler owns route state. `WithRuntimeGraphWorkers` validates the runtime
-graph configuration and leaves a forward-compatibility hook for later worker
-pool expansion, but v1.2.0 executes ready nodes inside the scheduler processor.
+graph configuration and reserves the worker-count option for executor-backed
+parallel execution. V1.2.0 executes ready nodes inside the scheduler processor.
 
 Rules:
 
 - Scheduler state is single-owner.
-- No worker mutates route state directly.
-- The runtime bag is concurrency-safe for handler code and future parallel
-  execution.
+- Route-state mutation is scheduler-owned.
+- The runtime bag is concurrency-safe for handler code and executor-backed
+  parallel execution.
 - Default `workers=1` gives deterministic execution and simpler debugging.
 - Higher worker counts are accepted for configuration compatibility.
 
@@ -785,9 +782,9 @@ The scheduler owns a reusable per-processor workspace:
   `runtimevars.TypedVariables` / `runtimevars.TypedResolver[T]` channel to
   avoid scalar `any` boxing.
 
-Default runtime graph routing benchmarks, including the expression branch, should
-remain allocation-free. Expression routes are still measured separately because
-custom providers, converters, or resolvers can have their own allocation profile.
+Default runtime graph routing benchmarks, including the expression branch,
+remain allocation-free. Expression routes are measured separately because custom
+providers, converters, or resolvers can have their own allocation profile.
 
 The state can be released when the event reaches `END`, completes by configured
 NoRoute action, or halts.
@@ -865,10 +862,10 @@ only to handler errors. Condition, NoRoute, and panic failures use
 
 Runtime graph behavior must be observable without forcing metrics on users.
 
-The implementation should extend the metrics surface through optional
-interfaces, preserving existing `MetricsSink` compatibility.
+The implementation extends the metrics surface through optional interfaces while
+preserving existing `MetricsSink` compatibility.
 
-Recommended runtime graph signals:
+Runtime graph signals:
 
 - edge condition evaluated
 - edge selected
@@ -903,7 +900,7 @@ Typed `EdgeCondition[T]` values are validated for non-nil presence only.
 
 ## Tests
 
-### Phase 1 Tests
+### Checkpoint 1 Tests
 
 - `Graph.Node` rejects `START` and `END`.
 - `Graph.Edge` allows `START -> real`.
@@ -919,7 +916,7 @@ Typed `EdgeCondition[T]` values are validated for non-nil presence only.
 - `HandleGraph` ignores terminal edges for barriers and producer gating.
 - Examples use explicit terminal edges.
 
-### Phase 2 Tests
+### Checkpoint 2 Tests
 
 - `RuntimeGraph` validates explicit terminal edges.
 - `RuntimeGraph` compiles expressions before start.
@@ -947,7 +944,7 @@ Typed `EdgeCondition[T]` values are validated for non-nil presence only.
 
 ## Benchmarks
 
-Existing static graph benchmarks must remain.
+Existing static graph benchmarks remain.
 
 New runtime graph benchmarks:
 
@@ -985,12 +982,12 @@ Required examples:
 - runtime graph bitwise expression
 - runtime graph no-route complete action
 
-## Implementation Plan Boundary
+## Implementation Boundaries
 
-Implementation should happen in two separate checkpoints:
+Implementation is split into two checkpoints:
 
-1. Phase 1: static `Graph[T]` terminal edge semantics and migration docs.
-2. Phase 2: `RuntimeGraph[T]` runtime routing engine.
+1. Checkpoint 1: static `Graph[T]` terminal edge semantics and migration docs.
+2. Checkpoint 2: `RuntimeGraph[T]` runtime routing engine.
 
 Each checkpoint must include tests, examples, docs, and benchmark coverage before
 being considered complete.

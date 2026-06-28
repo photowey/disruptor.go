@@ -2,20 +2,21 @@
 
 Date: 2026-06-23
 
-## Goal
+## Objective
 
 Build a Go implementation of the LMAX Disruptor pattern for high-performance in-process event exchange.
 
 The design favors Go idioms over a direct Java class mirror. Public APIs are interface-oriented and replaceable where users need extension, while core sequencing algorithms stay internal so they can be rewritten, optimized, or accelerated without breaking users.
 
-## Non-Goals For V1
+## Out Of Scope For V1
 
-- No consumer dependency graph DSL such as `After` or `Then`.
-- No pull-style `Poller`.
-- No public custom sequencer injection.
-- No SIMD or AVX implementation in V1, only an internal extension point.
-- No direct dependency on Prometheus, OpenTelemetry, or any metrics backend.
-- No complex batch rewind implementation.
+- Consumer dependency graph DSLs such as `After` or `Then`.
+- Pull-style `Poller`.
+- Public custom sequencer injection.
+- SIMD and AVX scanner implementations. V1 retains only internal scanner
+  extension points.
+- Direct dependencies on Prometheus, OpenTelemetry, or metrics backends.
+- Complex batch rewind.
 
 ## Project Layout
 
@@ -83,7 +84,7 @@ import "github.com/photowey/disruptor.go/pkg/disruptor"
 
 - Public API is interface-oriented where substitution is useful.
 - Constructors return concrete types, not interfaces.
-- Public function parameters do not expose bare anonymous function types.
+- Public function parameters use named function adapter types.
 - Callback-style APIs use named interfaces plus `XxxFunc` adapters.
 - `context.Context` is passed explicitly and is never stored in structs.
 - Blocking producer and consumer paths support cancellation.
@@ -91,9 +92,9 @@ import "github.com/photowey/disruptor.go/pkg/disruptor"
 - Hot-path defaults are allocation-conscious and metrics use a nil fast path unless configured.
 - Internal packages may define additional interfaces for implementation flexibility, but those interfaces are not compatibility promises.
 
-## Party Mode Review Decisions
+## Design Decisions
 
-The BMAD-style roundtable accepted the overall direction and locked the following adjustments before implementation:
+The V1 engineering specification defines the following decisions:
 
 - V1 uses value slots in `[]T` and exposes `*T` through `Get`, `TranslateRequest`, `EventRequest`, and `EventException`.
 - `internal/sequencer` never imports `pkg/disruptor`; public `Sequence` is re-exported from the internal primitive and barrier construction stays in the public package.
@@ -102,26 +103,38 @@ The BMAD-style roundtable accepted the overall direction and locked the followin
 - Benchmarking is a V1 release gate with channel comparison groups, baseline comparison, allocation checks, and tail-latency reporting.
 - SIMD or AVX scanning, timeout handlers, custom sequencer injection, and dependency graph DSL remain V2 extension points.
 
-## Reference Implementation Learnings
+## Reference Implementation Inputs
 
-The local `github.com/smarty/go-disruptor` implementation has a different API philosophy, but several design choices are worth learning from.
+The local `github.com/smarty/go-disruptor` implementation provides reference points for producer flow, sequencing, barriers, and benchmark coverage.
 
-Adopt these ideas:
+Applied inputs:
 
-- Keep the producer path conceptually simple: claim one or more slots, mutate the ring slots, then publish the claimed sequence range.
-- Treat batched claims as first-class. `NextN(ctx, n)` plus `PublishRange(lo, hi)` should be benchmarked and documented as a core performance path.
-- Keep single-producer and multi-producer sequencers as separate implementations. The single-producer path can cache the slowest consumer sequence and avoid unnecessary atomics; the multi-producer path needs explicit per-slot availability tracking.
-- Use a composite barrier abstraction for “minimum sequence across many consumers”. Even if V1 only exposes parallel consumers, the internal shape should leave room for handler groups and dependency graphs.
+- Producer flow: claim one or more slots, mutate the ring slots, then publish
+  the claimed sequence range.
+- Batched claims: `NextN(ctx, n)` plus `PublishRange(lo, hi)` is a documented
+  core performance path with benchmark coverage.
+- Sequencer separation: single-producer and multi-producer sequencers use
+  separate implementations. The single-producer path can cache the slowest
+  consumer sequence and reduce atomics. The multi-producer path uses explicit
+  per-slot availability tracking.
+- Composite barrier abstraction: dependency resolution uses a minimum sequence
+  across many consumers. The internal shape supports handler groups and
+  dependency graphs.
 - Benchmark sequence operations, single barrier reads, composite barrier reads, claim/publish, channel comparisons, single-producer flows, multi-producer flows, and batched publish flows separately.
 - Explain clearly that channels are still the default Go tool for ordinary ownership transfer; this library exists for measured high-throughput, low-allocation, fan-out and controlled-backpressure cases.
 
-Do not inherit these parts:
+Excluded inputs:
 
-- Do not make users manage the ring buffer directly in normal usage. V1 owns preallocated `[]T` slots and exposes `*T` safely through `RingBuffer[T]`.
-- Do not use magic negative sequence values as errors. Public APIs return `error`.
-- Do not use an irrevocable multi-producer atomic add that can spin forever after shutdown. Blocking producer APIs must be cancellable through `context.Context`.
-- Do not let handler panics kill processor goroutines without recovery. Handler failures go through `ExceptionHandler[T]`.
-- Do not rely on `go:linkname` to reach runtime internals for acquire/release atomics in V1. Race-detector compatibility and Go-version stability matter more than a narrow optimization.
+- User-managed ring buffers in normal usage. V1 owns preallocated `[]T` slots
+  and exposes `*T` through `RingBuffer[T]`.
+- Magic negative sequence values as errors. Public APIs return `error`.
+- Irrevocable multi-producer atomic add loops after shutdown. Blocking producer
+  APIs are cancellable through `context.Context`.
+- Unrecovered handler panics in processor goroutines. Handler failures pass
+  through `ExceptionHandler[T]`.
+- `go:linkname` access to runtime internals for acquire/release atomics in V1.
+  Race-detector compatibility and Go-version stability take precedence over
+  narrow optimization.
 
 ## V1 Scope
 
@@ -133,7 +146,7 @@ V1 implements a complete push-based production and consumption flow:
 - Blocking and busy-spin wait strategies.
 - Batch event processors managed by the library.
 - Multiple parallel consumers, each receiving all events.
-- Gating sequences so producers do not overwrite unconsumed events.
+- Gating sequences that protect unconsumed events from producer overwrite.
 - Low-level `RingBuffer` API and high-level `Disruptor` facade.
 - Metrics hooks.
 - Benchmarks with Go channel comparison groups.
@@ -142,9 +155,10 @@ V1 implements a complete push-based production and consumption flow:
 
 ## Event Storage
 
-`RingBuffer[T]` stores `[]T` and exposes mutable slots as `*T`. This avoids the common Go generic trap where returning `T` copies the value and mutations do not update the ring slot.
+`RingBuffer[T]` stores `[]T` and exposes mutable slots as `*T`. Returning a
+slot pointer preserves in-place mutation of the ring slot.
 
-The recommended event model is a value slot:
+The default event model is a value slot:
 
 ```go
 type LongEvent struct {
@@ -158,7 +172,9 @@ factory := disruptor.EventFactoryFunc[LongEvent](func() LongEvent {
 
 `RingBuffer[LongEvent].Get(sequence)` returns `*LongEvent`, so producers and consumers mutate or read the preallocated slot directly.
 
-Pointer event types are allowed for adapter use cases, but then `Get` returns `*T`, which is a pointer to the stored pointer. V1 examples and benchmarks should prefer value slot events unless there is a measured reason not to.
+Pointer event types are supported for adapter use cases. With pointer event
+types, `Get` returns `*T`, a pointer to the stored pointer. V1 examples and
+benchmarks use value slot events by default.
 
 ## Named Function Adapters
 
@@ -218,7 +234,7 @@ func (r *RingBuffer[T]) NewBarrier(dependencies ...*Sequence) Barrier
 
 ## Event Translator
 
-Translators use a request payload and do not return errors.
+Translators use a request payload and have no error return.
 
 ```go
 type EventTranslator[T any] interface {
@@ -238,7 +254,7 @@ type TranslateRequest[T any] struct {
 }
 ```
 
-Work that can fail should happen before claiming a sequence.
+Fallible work happens before claiming a sequence.
 
 ```go
 value, err := parse(input)
@@ -250,7 +266,10 @@ err = rb.PublishEvent(ctx, disruptor.EventTranslatorFunc[LongEvent](func(request
 }))
 ```
 
-`PublishEvent` must guarantee publication after a successful claim. Its implementation should use `defer r.Publish(sequence)` immediately after `Next(ctx)` succeeds. If a translator panics, the sequence is still published and the panic is re-raised; leaving a claimed but unpublished sequence would break consumer progress.
+`PublishEvent` guarantees publication after a successful claim. Its
+implementation uses `defer r.Publish(sequence)` immediately after `Next(ctx)`
+succeeds. If a translator panics, the sequence is still published and the panic
+is re-raised; a claimed but unpublished sequence blocks consumer progress.
 
 ## Producer Type And Options
 
@@ -351,9 +370,11 @@ The public API lets users select `ProducerTypeSingle` or `ProducerTypeMulti`, bu
 Sequencer implementation rules:
 
 - Single-producer sequencer may use plain producer-owned fields for claimed sequence state, with atomic publication for consumer visibility.
-- Single-producer capacity checks should cache the slowest gating sequence and refresh it only on possible wrap contention.
+- Single-producer capacity checks cache the slowest gating sequence and refresh
+  it only on possible wrap contention.
 - Multi-producer sequencer must represent claimed versus published slots separately, so consumers never observe a claimed-but-unpublished sequence.
-- Multi-producer availability should use per-slot round or lap metadata indexed by `sequence & mask` and scanned contiguously from the requested lower bound.
+- Multi-producer availability uses per-slot round or lap metadata indexed by
+  `sequence & mask` and scanned contiguously from the requested lower bound.
 - Blocking `Next(ctx)` and `NextN(ctx, n)` must remain interruptible while waiting for capacity.
 - `TryNext()` and `TryNextN(n)` perform bounded non-blocking attempts and return `ErrInsufficientCapacity` rather than spinning.
 
@@ -400,7 +421,8 @@ type Barrier interface {
 
 ## Wait Strategy
 
-`WaitStrategy` uses a request payload to avoid long parameter lists and support future extension.
+`WaitStrategy` uses a request payload for stable interface shape and extension
+fields.
 
 ```go
 type SequenceReader interface {
@@ -514,7 +536,7 @@ Default behavior is fail-fast:
 
 - `Halt`: store the failed sequence, stop the processor, and return the error from `Wait`.
 - `Continue`: store the failed sequence and continue with the next event.
-- `Retry`: do not store the failed sequence and process it again.
+- `Retry`: leave the failed sequence unstored and process it again.
 
 Processors recover panics from `OnEvent`, `OnStart`, and `OnShutdown`, wrap the recovered value in an error, and route it through the same exception handler path. Producer-side translator panics are different: the claimed sequence is published, then the panic is re-raised to the caller.
 
@@ -642,7 +664,8 @@ type ProcessorMetric struct {
 }
 ```
 
-Core does not import Prometheus or OpenTelemetry. Adapters can be added later in separate packages, such as:
+Core has no Prometheus or OpenTelemetry dependency. Backend adapters live in
+separate packages, such as:
 
 ```text
 pkg/observability/prometheus
@@ -711,7 +734,7 @@ Benchmarks are a V1 requirement because this library is high-performance infrast
 
 ### Go Channel Comparison Groups
 
-Channel comparison groups are required so users can see when Disruptor is worth the complexity.
+Channel comparison groups define the performance context for Disruptor.
 
 - Unbuffered `chan T`.
 - Buffered `chan T` with capacity equal to ring buffer size.
@@ -723,7 +746,8 @@ The benchmark docs must explain that channels remain the right tool for general 
 
 ### Benchmark Matrix
 
-Each benchmark family should be runnable across a stable matrix so results stay comparable over time.
+Each benchmark family runs across a stable matrix so results stay comparable
+over time.
 
 - Ring size: `1024`, `65536`, `1048576`.
 - Payload shape: small value slots, padded value slots, and pointer-adapter events.
@@ -734,7 +758,7 @@ Each benchmark family should be runnable across a stable matrix so results stay 
 
 ### Release Gate
 
-Benchmarking is part of V1 release readiness, not a later nice-to-have.
+Benchmarking is part of V1 release readiness.
 
 - `go test ./...`
 - `go test -race ./...`
@@ -748,7 +772,7 @@ Benchmarking is part of V1 release readiness, not a later nice-to-have.
 
 ### Benchmark Commands
 
-Because the module targets Go 1.26, new benchmarks should use `b.Loop()`.
+The module targets Go 1.26. New benchmarks use `b.Loop()`.
 
 ```bash
 go test -run '^$' -bench=. -benchmem -benchtime=100ms -count=10 ./...
@@ -756,14 +780,14 @@ go test -run '^$' -bench=BenchmarkE2E -benchmem -count=10 ./benchmarks | tee /tm
 benchstat benchmarks/baseline/baseline.txt /tmp/disruptor-new.txt
 ```
 
-Benchmarks should report:
+Benchmarks report:
 
 - `ns/op`
 - `B/op`
 - `allocs/op`
 - custom `events/s`
 
-Important runs should include:
+Release runs include:
 
 ```bash
 go test -run '^$' -bench=. -benchmem -benchtime=100ms -count=10 -cpu=1,2,4,8 ./...
@@ -789,9 +813,9 @@ Tests are executable specifications.
 - Leak checks for processor shutdown paths, using `go.uber.org/goleak` or an equivalent pattern.
 - Memory-ordering and false-sharing regression coverage around sequence publication and cacheline padding.
 
-## V2 Backlog
+## Extension Backlog
 
-Deferred items are explicitly tracked so the V1 API can leave room for them.
+Deferred items are tracked as compatibility-aware extension points.
 
 - Consumer dependency graph DSL: `After`, `Then`, and dependency-aware barriers.
 - Pull-style `Poller[T]`.
@@ -803,6 +827,6 @@ Deferred items are explicitly tracked so the V1 API can leave room for them.
 - `TimeoutHandler` and `ErrTimeout` support paired with timeout-aware wait strategies.
 - Rich examples for pipeline and diamond topologies after DSL support exists.
 
-## Open Decisions
+## Decision Status
 
-There are no blocking open decisions for V1 design. Remaining choices are implementation-level details to settle during the implementation plan, such as exact file split, benchmark names, and internal struct layout.
+The V1 design has no unresolved product-level decisions. Implementation-level details include file split, benchmark names, and internal struct layout.

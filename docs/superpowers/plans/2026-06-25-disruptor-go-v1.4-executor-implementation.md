@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a public `pkg/executor` package with typed Future/Promise composition and use it to enable optional parallel RuntimeGraph node execution.
+**Objective:** Add a public `pkg/executor` package with typed Future/Promise
+composition and use it to enable optional parallel RuntimeGraph node execution.
 
 **Architecture:** `pkg/executor` owns bounded task execution, typed read-only futures, producer-owned promises, composition helpers, and executor metrics. RuntimeGraph keeps one scheduler as route-state owner and delegates only handler execution to an executor; workers return internal completion envelopes.
 
@@ -34,7 +35,7 @@
 
 ## Task 1: Revise Design And Add Executor RED Tests
 
-- [x] **Step 1: Apply BMAD Party Mode revisions to spec**
+- [x] **Step 1: Revise executor specification**
 
 Updated `docs/superpowers/specs/2026-06-25-disruptor-go-v1.4-executor-design.md` with Future ownership, executor lifecycle ownership, RuntimeGraph completion envelope, compatibility notes, failure matrix, and quality gates.
 

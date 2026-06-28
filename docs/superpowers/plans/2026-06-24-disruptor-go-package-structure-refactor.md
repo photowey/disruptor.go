@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Split implementation-heavy code out of `pkg/disruptor` into focused internal packages while preserving the existing public API and import path.
+**Objective:** Split implementation-heavy code out of `pkg/disruptor` into
+focused internal packages while preserving the existing public API and import
+path.
 
 **Architecture:** Keep `pkg/disruptor` as a stable public facade. Move low-cycle helpers into `internal/runtimevars` first, then extract the expression engine into `internal/expression`, then review whether static graph helpers can move into `internal/graph` without creating import cycles. Public constructors, interfaces, and option functions stay in `pkg/disruptor`; internal packages own algorithms and state.
 
@@ -88,7 +90,8 @@ Confirm whether the graph helpers can move without importing `pkg/disruptor` fro
 
 - [x] **Step 2: Extract only if the boundary is clean**
 
-Move node/edge normalization, snapshot building, and rendering helpers first. Do not extract if the facade would become a cyclic adapter.
+Move node/edge normalization, snapshot building, and rendering helpers first.
+Extraction requires a clean boundary that avoids cyclic adapters.
 
 Result for this pass: not extracted. The current graph boundary is not clean
 enough for a safe mechanical move because static graph, runtime graph, and

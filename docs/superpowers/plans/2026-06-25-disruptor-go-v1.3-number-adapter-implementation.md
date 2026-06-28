@@ -1,6 +1,6 @@
 # Disruptor.go V1.3 NumberAdapter Implementation Plan
 
-## Goal
+## Objective
 
 Implement the V1.3.0 NumberAdapter design so expression runtime values can be
 extended with decimal-like, money-like, and big-number-like custom values
@@ -65,8 +65,7 @@ the built-in scalar fast path.
 
 - Core module does not import decimal dependencies.
 - Existing V1.2 scalar expression behavior remains unchanged.
-- Built-in `int`, `uint`, and `float` comparisons do not route through adapter
-  chains.
+- Built-in `int`, `uint`, and `float` comparisons use the scalar fast path.
 - Ordinary and typed variables can become `ValueNumber`.
 - Number adapter ordering is deterministic.
 - Adapter errors in RuntimeGraph conditions are recoverable through the
