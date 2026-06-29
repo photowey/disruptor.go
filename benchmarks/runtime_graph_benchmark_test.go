@@ -17,12 +17,13 @@ package benchmarks
 import (
 	"context"
 	"errors"
-	topology "github.com/photowey/disruptor.go/pkg/graph"
-	"github.com/photowey/disruptor.go/pkg/runtimegraph"
 	"sync/atomic"
 	"testing"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
+	topology "github.com/photowey/disruptor.go/pkg/graph"
+	"github.com/photowey/disruptor.go/pkg/runtimegraph"
 )
 
 func BenchmarkRuntimeGraphRouting(b *testing.B) {
@@ -44,7 +45,7 @@ func benchmarkRuntimeGraphRouting(b *testing.B, shape string, workers int) {
 	defer cancel()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
+		event.FactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
 		65536,
 	)
 	if err != nil {

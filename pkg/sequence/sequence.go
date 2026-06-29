@@ -12,13 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package sequence
 
-type minimumSequenceReader struct {
+import sequencer "github.com/photowey/disruptor.go/internal/sequencer"
+
+// InitialValue is the value used before any event has been published.
+const InitialValue = sequencer.InitialSequenceValue
+
+// Sequence is the padded atomic sequence primitive.
+type Sequence = sequencer.Sequence
+
+// Reader exposes a readable sequence value.
+type Reader = sequencer.SequenceReader
+
+// New creates a sequence initialized to the provided value.
+func New(initial int64) *Sequence {
+	return sequencer.NewSequence(initial)
+}
+
+type minimumReader struct {
 	sequences []*Sequence
 }
 
-func newMinimumSequenceReader(sequences []*Sequence) SequenceReader {
+// NewMinimumReader returns a reader that observes the minimum non-nil sequence.
+func NewMinimumReader(sequences ...*Sequence) Reader {
 	nonNil := make([]*Sequence, 0, len(sequences))
 	for _, sequence := range sequences {
 		if sequence == nil {
@@ -33,13 +50,13 @@ func newMinimumSequenceReader(sequences []*Sequence) SequenceReader {
 	case 1:
 		return nonNil[0]
 	default:
-		return minimumSequenceReader{sequences: nonNil}
+		return minimumReader{sequences: nonNil}
 	}
 }
 
-func (r minimumSequenceReader) Value() int64 {
+func (r minimumReader) Value() int64 {
 	if len(r.sequences) == 0 {
-		return InitialSequenceValue
+		return InitialValue
 	}
 
 	minimum := r.sequences[0].Value()

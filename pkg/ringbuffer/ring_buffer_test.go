@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor_test
+package ringbuffer_test
 
 import (
 	"context"
@@ -20,7 +20,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/ringbuffer"
+	"github.com/photowey/disruptor.go/pkg/sequence"
 )
 
 type longEvent struct {
@@ -39,11 +41,11 @@ func TestNewRingBufferRejectsInvalidSizes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := disruptor.NewRingBuffer(
-				disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+			_, err := ringbuffer.New(
+				event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 				tt.size,
 			)
-			if !errors.Is(err, disruptor.ErrInvalidBufferSize) {
+			if !errors.Is(err, ringbuffer.ErrInvalidBufferSize) {
 				t.Fatalf("error = %v, want ErrInvalidBufferSize", err)
 			}
 		})
@@ -52,8 +54,8 @@ func TestNewRingBufferRejectsInvalidSizes(t *testing.T) {
 
 func TestRingBufferPreallocatesValueSlotsAndReturnsPointers(t *testing.T) {
 	var nextValue int64
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent {
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent {
 			nextValue++
 			return longEvent{Value: nextValue}
 		}),
@@ -106,10 +108,10 @@ func TestNextNReturnsHighSequenceAndPublishRangeAdvancesBarrier(t *testing.T) {
 
 func TestRingBufferSingleProducerOptionPublishesEvents(t *testing.T) {
 	ctx := context.Background()
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		8,
-		disruptor.WithProducerType(disruptor.ProducerTypeSingle),
+		ringbuffer.WithProducerType(ringbuffer.ProducerTypeSingle),
 	)
 	if err != nil {
 		t.Fatalf("new ring buffer: %v", err)
@@ -138,20 +140,20 @@ func TestRingBufferSingleProducerOptionPublishesEvents(t *testing.T) {
 func TestNewRingBufferRejectsInvalidProducerType(t *testing.T) {
 	tests := []struct {
 		name         string
-		producerType disruptor.ProducerType
+		producerType ringbuffer.ProducerType
 	}{
-		{name: "unknown", producerType: disruptor.ProducerTypeUnknown},
-		{name: "out of range", producerType: disruptor.ProducerType(99)},
+		{name: "unknown", producerType: ringbuffer.ProducerTypeUnknown},
+		{name: "out of range", producerType: ringbuffer.ProducerType(99)},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := disruptor.NewRingBuffer(
-				disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+			_, err := ringbuffer.New(
+				event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 				8,
-				disruptor.WithProducerType(tt.producerType),
+				ringbuffer.WithProducerType(tt.producerType),
 			)
-			if !errors.Is(err, disruptor.ErrInvalidSequence) {
+			if !errors.Is(err, ringbuffer.ErrInvalidSequence) {
 				t.Fatalf("error = %v, want ErrInvalidSequence", err)
 			}
 		})
@@ -162,23 +164,9 @@ func TestPublishEventPublishesClaimedSequenceWhenTranslatorPanics(t *testing.T) 
 	ctx := context.Background()
 	rb := newTestRingBuffer(t, 4)
 
-	defer func() {
-		recovered := recover()
-		if recovered == nil {
-			t.Fatal("expected translator panic")
-		}
+	defer expectTranslatorPanicPublished(t, ctx, rb)
 
-		barrier := rb.NewBarrier()
-		available, err := barrier.WaitFor(ctx, 0)
-		if err != nil {
-			t.Fatalf("wait for panic-published sequence: %v", err)
-		}
-		if available != 0 {
-			t.Fatalf("available sequence = %d, want 0", available)
-		}
-	}()
-
-	_ = rb.PublishEvent(ctx, disruptor.EventTranslatorFunc[longEvent](func(request disruptor.TranslateRequest[longEvent]) {
+	_ = rb.PublishEvent(ctx, event.TranslatorFunc[longEvent](func(request event.TranslateRequest[longEvent]) {
 		request.Event.Value = 7
 		panic("translator failed")
 	}))
@@ -186,7 +174,7 @@ func TestPublishEventPublishesClaimedSequenceWhenTranslatorPanics(t *testing.T) 
 
 func TestTryNextReturnsInsufficientCapacityWhenGatingSequenceBlocks(t *testing.T) {
 	rb := newTestRingBuffer(t, 2)
-	gating := disruptor.NewSequence(disruptor.InitialSequenceValue)
+	gating := sequence.New(sequence.InitialValue)
 	rb.AddGatingSequences(gating)
 
 	if _, err := rb.TryNext(); err != nil {
@@ -195,7 +183,7 @@ func TestTryNextReturnsInsufficientCapacityWhenGatingSequenceBlocks(t *testing.T
 	if _, err := rb.TryNext(); err != nil {
 		t.Fatalf("second try next: %v", err)
 	}
-	if _, err := rb.TryNext(); !errors.Is(err, disruptor.ErrInsufficientCapacity) {
+	if _, err := rb.TryNext(); !errors.Is(err, ringbuffer.ErrInsufficientCapacity) {
 		t.Fatalf("third try next error = %v, want ErrInsufficientCapacity", err)
 	}
 
@@ -207,7 +195,7 @@ func TestTryNextReturnsInsufficientCapacityWhenGatingSequenceBlocks(t *testing.T
 
 func TestNextReturnsContextErrorWhenCapacityWaitIsCancelled(t *testing.T) {
 	rb := newTestRingBuffer(t, 1)
-	gating := disruptor.NewSequence(disruptor.InitialSequenceValue)
+	gating := sequence.New(sequence.InitialValue)
 	rb.AddGatingSequences(gating)
 
 	if _, err := rb.Next(context.Background()); err != nil {
@@ -224,7 +212,7 @@ func TestNextReturnsContextErrorWhenCapacityWaitIsCancelled(t *testing.T) {
 
 func TestRemoveGatingSequence(t *testing.T) {
 	rb := newTestRingBuffer(t, 1)
-	gating := disruptor.NewSequence(disruptor.InitialSequenceValue)
+	gating := sequence.New(sequence.InitialValue)
 	rb.AddGatingSequences(gating)
 
 	if removed := rb.RemoveGatingSequence(gating); !removed {
@@ -247,7 +235,7 @@ func TestNextUnblocksWhenGatingSequenceIsRemoved(t *testing.T) {
 	defer cancel()
 
 	rb := newTestRingBuffer(t, 1)
-	gating := disruptor.NewSequence(disruptor.InitialSequenceValue)
+	gating := sequence.New(sequence.InitialValue)
 	rb.AddGatingSequences(gating)
 
 	if _, err := rb.Next(ctx); err != nil {
@@ -255,10 +243,12 @@ func TestNextUnblocksWhenGatingSequenceIsRemoved(t *testing.T) {
 	}
 
 	result := make(chan error, 1)
-	go func() {
-		_, err := rb.Next(ctx)
-		result <- err
-	}()
+	task := ringBufferNextTask{
+		ctx:    ctx,
+		buffer: rb,
+		result: result,
+	}
+	go task.run()
 
 	select {
 	case err := <-result:
@@ -280,7 +270,7 @@ func TestNextUnblocksWhenGatingSequenceIsRemoved(t *testing.T) {
 	}
 }
 
-func newTestRingBuffer(t *testing.T, size int) *disruptor.RingBuffer[longEvent] {
+func newTestRingBuffer(t *testing.T, size int) *ringbuffer.RingBuffer[longEvent] {
 	t.Helper()
 
 	return newTestRingBufferWithOptions(t, size)
@@ -289,12 +279,12 @@ func newTestRingBuffer(t *testing.T, size int) *disruptor.RingBuffer[longEvent] 
 func newTestRingBufferWithOptions(
 	t *testing.T,
 	size int,
-	opts ...disruptor.RingBufferOption,
-) *disruptor.RingBuffer[longEvent] {
+	opts ...ringbuffer.Option,
+) *ringbuffer.RingBuffer[longEvent] {
 	t.Helper()
 
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		size,
 		opts...,
 	)
@@ -303,4 +293,36 @@ func newTestRingBufferWithOptions(
 	}
 
 	return rb
+}
+
+func expectTranslatorPanicPublished(
+	t *testing.T,
+	ctx context.Context,
+	rb *ringbuffer.RingBuffer[longEvent],
+) {
+	t.Helper()
+	recovered := recover()
+	if recovered == nil {
+		t.Fatal("expected translator panic")
+	}
+
+	barrier := rb.NewBarrier()
+	available, err := barrier.WaitFor(ctx, 0)
+	if err != nil {
+		t.Fatalf("wait for panic-published sequence: %v", err)
+	}
+	if available != 0 {
+		t.Fatalf("available sequence = %d, want 0", available)
+	}
+}
+
+type ringBufferNextTask struct {
+	ctx    context.Context
+	buffer *ringbuffer.RingBuffer[longEvent]
+	result chan<- error
+}
+
+func (task ringBufferNextTask) run() {
+	_, err := task.buffer.Next(task.ctx)
+	task.result <- err
 }

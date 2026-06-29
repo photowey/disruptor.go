@@ -14,6 +14,6 @@
 
 // Package availability scans multi-producer publication metadata.
 //
-// The package is internal so scalar scanning can later be replaced or augmented
-// by architecture-specific implementations without changing the public API.
+// The package is internal so architecture-specific scanners stay behind the
+// public ring buffer API.
 package availability

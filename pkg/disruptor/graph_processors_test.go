@@ -23,6 +23,8 @@ import (
 	"github.com/photowey/disruptor.go/pkg/disruptor"
 	"github.com/photowey/disruptor.go/pkg/event"
 	topology "github.com/photowey/disruptor.go/pkg/graph"
+	"github.com/photowey/disruptor.go/pkg/ringbuffer"
+	"github.com/photowey/disruptor.go/pkg/sequence"
 )
 
 func TestDisruptorHandleGraphPipelineOrdersConsumers(t *testing.T) {
@@ -146,7 +148,7 @@ func TestDisruptorHandleGraphOnlyLeavesGateProducers(t *testing.T) {
 	if _, err := d.RingBuffer().TryNext(); err != nil {
 		t.Fatalf("first try next: %v", err)
 	}
-	if _, err := d.RingBuffer().TryNext(); !errors.Is(err, disruptor.ErrInsufficientCapacity) {
+	if _, err := d.RingBuffer().TryNext(); !errors.Is(err, ringbuffer.ErrInsufficientCapacity) {
 		t.Fatalf("second try next error = %v, want ErrInsufficientCapacity", err)
 	}
 
@@ -154,7 +156,7 @@ func TestDisruptorHandleGraphOnlyLeavesGateProducers(t *testing.T) {
 	if _, err := d.RingBuffer().TryNext(); err != nil {
 		t.Fatalf("try next after leaf sequence advanced: %v", err)
 	}
-	if got := aSequence.Value(); got != disruptor.InitialSequenceValue {
+	if got := aSequence.Value(); got != sequence.InitialValue {
 		t.Fatalf("A sequence = %d, want initial value to prove A did not gate", got)
 	}
 }
@@ -191,7 +193,7 @@ func TestDisruptorHandleGraphHaltStopsGraphWithoutAdvancingFailedSequence(t *tes
 	if err := d.Wait(); !errors.Is(err, handlerErr) {
 		t.Fatalf("wait error = %v, want handler error", err)
 	}
-	if got := aSequence.Value(); got != disruptor.InitialSequenceValue {
+	if got := aSequence.Value(); got != sequence.InitialValue {
 		t.Fatalf("A sequence = %d, want initial value", got)
 	}
 	select {
@@ -274,7 +276,7 @@ func TestDisruptorHandleGraphNodeExceptionHandlerOverridesGraphHandler(t *testin
 	if err := d.Wait(); !errors.Is(err, handlerErr) {
 		t.Fatalf("wait error = %v, want handler error", err)
 	}
-	if got := aSequence.Value(); got != disruptor.InitialSequenceValue {
+	if got := aSequence.Value(); got != sequence.InitialValue {
 		t.Fatalf("A sequence = %d, want initial value", got)
 	}
 }
@@ -397,7 +399,7 @@ func newGraphTestDisruptor(t *testing.T, size int) *disruptor.Disruptor[longEven
 	t.Helper()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		size,
 	)
 	if err != nil {
@@ -420,7 +422,7 @@ func waitForGraphHandler(t *testing.T, handled <-chan string) string {
 	return ""
 }
 
-func waitForSequenceValue(t *testing.T, sequence *disruptor.Sequence, want int64) {
+func waitForSequenceValue(t *testing.T, sequence *sequence.Sequence, want int64) {
 	t.Helper()
 
 	deadline := time.After(200 * time.Millisecond)

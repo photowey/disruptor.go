@@ -60,12 +60,15 @@ func TestNewRuntimeGraphValidatesNameAndMustPanics(t *testing.T) {
 		t.Fatalf("runtime graph name = %q, want orders", got)
 	}
 
-	defer func() {
-		if recovered := recover(); recovered == nil {
-			t.Fatal("expected MustRuntimeGraph to panic")
-		}
-	}()
+	defer expectMustRuntimeGraphPanic(t)
 	_ = MustRuntimeGraph[runtimeGraphTestEvent]("")
+}
+
+func expectMustRuntimeGraphPanic(t *testing.T) {
+	t.Helper()
+	if recovered := recover(); recovered == nil {
+		t.Fatal("expected MustRuntimeGraph to panic")
+	}
 }
 
 func TestRuntimeGraphNodeOptionsAndSnapshot(t *testing.T) {

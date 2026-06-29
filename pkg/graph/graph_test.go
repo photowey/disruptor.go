@@ -38,12 +38,15 @@ func TestNewGraphValidatesName(t *testing.T) {
 		t.Fatalf("graph name = %q, want orders", got)
 	}
 
-	defer func() {
-		if recovered := recover(); recovered == nil {
-			t.Fatal("expected Must to panic")
-		}
-	}()
+	defer expectMustGraphPanic(t)
 	_ = Must[longEvent]("")
+}
+
+func expectMustGraphPanic(t *testing.T) {
+	t.Helper()
+	if recovered := recover(); recovered == nil {
+		t.Fatal("expected Must to panic")
+	}
 }
 
 func TestGraphNodeValidatesNameAndHandler(t *testing.T) {

@@ -30,7 +30,7 @@ func TestDisruptorFacadeStartsParallelConsumers(t *testing.T) {
 	defer cancel()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		8,
 	)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestDisruptorFacadeStartsParallelConsumers(t *testing.T) {
 
 func TestDisruptorHandleEventsWithRequiresHandler(t *testing.T) {
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		8,
 	)
 	if err != nil {
@@ -109,7 +109,7 @@ func TestDisruptorHandleEventsWithRequiresHandler(t *testing.T) {
 func TestDisruptorHandleEventsWithRollsBackAfterNilHandler(t *testing.T) {
 	t.Run("producer gating", func(t *testing.T) {
 		d, err := disruptor.New(
-			disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+			event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 			1,
 		)
 		if err != nil {
@@ -138,7 +138,7 @@ func TestDisruptorHandleEventsWithRollsBackAfterNilHandler(t *testing.T) {
 		defer cancel()
 
 		d, err := disruptor.New(
-			disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+			event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 			8,
 		)
 		if err != nil {
@@ -186,7 +186,7 @@ func TestDisruptorRejectsHandlerRegistrationAfterStart(t *testing.T) {
 	defer cancel()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		8,
 	)
 	if err != nil {
@@ -213,7 +213,7 @@ func TestDisruptorWaitReturnsProcessorError(t *testing.T) {
 	defer cancel()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		8,
 	)
 	if err != nil {
@@ -242,7 +242,7 @@ func TestDisruptorWaitStopsPeerProcessorsWhenOneFails(t *testing.T) {
 	defer cancel()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		8,
 	)
 	if err != nil {
@@ -268,9 +268,11 @@ func TestDisruptorWaitStopsPeerProcessorsWhenOneFails(t *testing.T) {
 	publishValues(t, d.RingBuffer(), 100)
 
 	waitDone := make(chan error, 1)
-	go func() {
-		waitDone <- d.Wait()
-	}()
+	task := disruptorWaitTask{
+		disruptor: d,
+		done:      waitDone,
+	}
+	go task.run()
 
 	select {
 	case err := <-waitDone:
@@ -282,6 +284,15 @@ func TestDisruptorWaitStopsPeerProcessorsWhenOneFails(t *testing.T) {
 		<-waitDone
 		t.Fatal("wait should stop peer processors after one processor fails")
 	}
+}
+
+type disruptorWaitTask struct {
+	disruptor *disruptor.Disruptor[longEvent]
+	done      chan<- error
+}
+
+func (task disruptorWaitTask) run() {
+	task.done <- task.disruptor.Wait()
 }
 
 var errDisruptorTestHandler = &testHandlerError{}

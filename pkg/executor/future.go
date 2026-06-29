@@ -188,13 +188,19 @@ func (f promiseFuture[T]) ObserveAny(observer FutureObserver[any]) Subscription 
 		return noopSubscription{}
 	}
 
-	return f.Observe(FutureObserverFunc[T](func(result Result[T]) {
-		observer.OnFutureComplete(Result[any]{
-			Value:    result.Value,
-			Err:      result.Err,
-			Canceled: result.Canceled,
-		})
-	}))
+	return f.Observe(anyFutureObserver[T]{observer: observer})
+}
+
+type anyFutureObserver[T any] struct {
+	observer FutureObserver[any]
+}
+
+func (observer anyFutureObserver[T]) OnFutureComplete(result Result[T]) {
+	observer.observer.OnFutureComplete(Result[any]{
+		Value:    result.Value,
+		Err:      result.Err,
+		Canceled: result.Canceled,
+	})
 }
 
 type futureSubscription[T any] struct {
@@ -204,16 +210,18 @@ type futureSubscription[T any] struct {
 }
 
 func (s *futureSubscription[T]) Unsubscribe() bool {
-	s.once.Do(func() {
-		s.state.mu.Lock()
-		defer s.state.mu.Unlock()
-		if _, exists := s.state.observers[s]; exists {
-			delete(s.state.observers, s)
-			s.ok = true
-		}
-	})
+	s.once.Do(s.unsubscribe)
 
 	return s.ok
+}
+
+func (s *futureSubscription[T]) unsubscribe() {
+	s.state.mu.Lock()
+	defer s.state.mu.Unlock()
+	if _, exists := s.state.observers[s]; exists {
+		delete(s.state.observers, s)
+		s.ok = true
+	}
 }
 
 type noopSubscription struct{}

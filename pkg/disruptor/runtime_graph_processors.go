@@ -23,8 +23,10 @@ import (
 
 	"github.com/photowey/disruptor.go/pkg/event"
 	"github.com/photowey/disruptor.go/pkg/executor"
+	"github.com/photowey/disruptor.go/pkg/processor"
 	topology "github.com/photowey/disruptor.go/pkg/runtimegraph"
 	"github.com/photowey/disruptor.go/pkg/runtimevars"
+	"github.com/photowey/disruptor.go/pkg/sequence"
 )
 
 // RuntimeGraphExceptionKind classifies runtime graph failures.
@@ -90,12 +92,10 @@ const (
 	RuntimeNoRouteActionComplete
 )
 
-// RuntimeGraphHandleOption configures runtime graph registration.
-type RuntimeGraphHandleOption[T any] interface {
-	applyRuntimeGraphHandle(config *runtimeGraphHandleConfig[T]) error
-}
+// RuntimeGraphOption configures runtime graph registration.
+type RuntimeGraphOption[T any] func(options *runtimeGraphOptions[T]) error
 
-type runtimeGraphHandleConfig[T any] struct {
+type runtimeGraphOptions[T any] struct {
 	exceptionHandler RuntimeGraphExceptionHandler[T]
 	noRouteAction    RuntimeNoRouteAction
 	workers          int
@@ -107,45 +107,30 @@ type runtimeGraphHandleConfig[T any] struct {
 	metricsSink      RuntimeGraphMetricsSink
 }
 
-type runtimeGraphHandleOptionFunc[T any] struct {
-	applyFunc func(*runtimeGraphHandleConfig[T]) error
-}
-
-//nolint:unused // The method satisfies RuntimeGraphHandleOption[T] and is called through the interface.
-func (fn runtimeGraphHandleOptionFunc[T]) applyRuntimeGraphHandle(
-	config *runtimeGraphHandleConfig[T],
-) error {
-	return fn.applyFunc(config)
-}
-
 // WithRuntimeGraphExceptionHandler sets the runtime graph failure handler.
 func WithRuntimeGraphExceptionHandler[T any](
 	handler RuntimeGraphExceptionHandler[T],
-) RuntimeGraphHandleOption[T] {
-	return runtimeGraphHandleOptionFunc[T]{
-		applyFunc: func(config *runtimeGraphHandleConfig[T]) error {
-			if handler == nil {
-				return fmt.Errorf("%w: runtime graph exception handler is nil", topology.ErrInvalid)
-			}
+) RuntimeGraphOption[T] {
+	return func(options *runtimeGraphOptions[T]) error {
+		if handler == nil {
+			return fmt.Errorf("%w: runtime graph exception handler is nil", topology.ErrInvalid)
+		}
 
-			config.exceptionHandler = handler
-			return nil
-		},
+		options.exceptionHandler = handler
+		return nil
 	}
 }
 
 // WithRuntimeGraphWorkers configures the runtime graph worker count.
-func WithRuntimeGraphWorkers[T any](workers int) RuntimeGraphHandleOption[T] {
-	return runtimeGraphHandleOptionFunc[T]{
-		applyFunc: func(config *runtimeGraphHandleConfig[T]) error {
-			if workers < 1 {
-				return fmt.Errorf("%w: runtime graph workers must be positive", topology.ErrInvalid)
-			}
+func WithRuntimeGraphWorkers[T any](workers int) RuntimeGraphOption[T] {
+	return func(options *runtimeGraphOptions[T]) error {
+		if workers < 1 {
+			return fmt.Errorf("%w: runtime graph workers must be positive", topology.ErrInvalid)
+		}
 
-			config.workers = workers
-			config.workersSet = true
-			return nil
-		},
+		options.workers = workers
+		options.workersSet = true
+		return nil
 	}
 }
 
@@ -154,70 +139,60 @@ func WithRuntimeGraphWorkers[T any](workers int) RuntimeGraphHandleOption[T] {
 // not shut it down.
 func WithRuntimeGraphExecutor[T any](
 	executor executor.Executor,
-) RuntimeGraphHandleOption[T] {
-	return runtimeGraphHandleOptionFunc[T]{
-		applyFunc: func(config *runtimeGraphHandleConfig[T]) error {
-			if executor == nil {
-				return fmt.Errorf("%w: runtime graph executor is nil", topology.ErrInvalid)
-			}
+) RuntimeGraphOption[T] {
+	return func(options *runtimeGraphOptions[T]) error {
+		if executor == nil {
+			return fmt.Errorf("%w: runtime graph executor is nil", topology.ErrInvalid)
+		}
 
-			config.executor = executor
-			config.executorSet = true
-			return nil
-		},
+		options.executor = executor
+		options.executorSet = true
+		return nil
 	}
 }
 
 // WithRuntimeGraphNoRouteAction configures the runtime graph no-route action.
 func WithRuntimeGraphNoRouteAction[T any](
 	action RuntimeNoRouteAction,
-) RuntimeGraphHandleOption[T] {
-	return runtimeGraphHandleOptionFunc[T]{
-		applyFunc: func(config *runtimeGraphHandleConfig[T]) error {
-			switch action {
-			case RuntimeNoRouteActionHalt, RuntimeNoRouteActionComplete:
-				config.noRouteAction = action
-				return nil
-			default:
-				return fmt.Errorf("%w: invalid runtime graph no-route action", topology.ErrInvalid)
-			}
-		},
+) RuntimeGraphOption[T] {
+	return func(options *runtimeGraphOptions[T]) error {
+		switch action {
+		case RuntimeNoRouteActionHalt, RuntimeNoRouteActionComplete:
+			options.noRouteAction = action
+			return nil
+		default:
+			return fmt.Errorf("%w: invalid runtime graph no-route action", topology.ErrInvalid)
+		}
 	}
 }
 
 // WithRuntimeGraphVariablesProvider sets a runtime variables provider.
 func WithRuntimeGraphVariablesProvider[T any](
 	provider runtimevars.Provider[T],
-) RuntimeGraphHandleOption[T] {
-	return runtimeGraphHandleOptionFunc[T]{
-		applyFunc: func(config *runtimeGraphHandleConfig[T]) error {
-			config.provider = provider
-			return nil
-		},
+) RuntimeGraphOption[T] {
+	return func(options *runtimeGraphOptions[T]) error {
+		options.provider = provider
+		return nil
 	}
 }
 
 // WithRuntimeGraphEventValueResolver sets the event value resolver.
 func WithRuntimeGraphEventValueResolver[T any](
 	resolver runtimevars.Resolver[T],
-) RuntimeGraphHandleOption[T] {
-	return runtimeGraphHandleOptionFunc[T]{
-		applyFunc: func(config *runtimeGraphHandleConfig[T]) error {
-			config.resolver = resolver
-			return nil
-		},
+) RuntimeGraphOption[T] {
+	return func(options *runtimeGraphOptions[T]) error {
+		options.resolver = resolver
+		return nil
 	}
 }
 
 // WithRuntimeGraphMetricsSink sets the runtime graph metrics sink.
 func WithRuntimeGraphMetricsSink[T any](
 	sink RuntimeGraphMetricsSink,
-) RuntimeGraphHandleOption[T] {
-	return runtimeGraphHandleOptionFunc[T]{
-		applyFunc: func(config *runtimeGraphHandleConfig[T]) error {
-			config.metricsSink = sink
-			return nil
-		},
+) RuntimeGraphOption[T] {
+	return func(options *runtimeGraphOptions[T]) error {
+		options.metricsSink = sink
+		return nil
 	}
 }
 
@@ -241,21 +216,21 @@ type RuntimeGraphMetric struct {
 
 // RuntimeGraphProcessors exposes the processors created from a handled runtime graph.
 type RuntimeGraphProcessors interface {
-	Processor() EventProcessor
-	Sequence() *Sequence
+	Processor() processor.EventProcessor
+	Sequence() *sequence.Sequence
 	Snapshot() topology.RuntimeGraphSnapshot
 }
 
 type handledRuntimeGraphProcessors struct {
-	processor EventProcessor
+	processor processor.EventProcessor
 	snapshot  topology.RuntimeGraphSnapshot
 }
 
-func (p *handledRuntimeGraphProcessors) Processor() EventProcessor {
+func (p *handledRuntimeGraphProcessors) Processor() processor.EventProcessor {
 	return p.processor
 }
 
-func (p *handledRuntimeGraphProcessors) Sequence() *Sequence {
+func (p *handledRuntimeGraphProcessors) Sequence() *sequence.Sequence {
 	if p == nil || p.processor == nil {
 		return nil
 	}
@@ -270,13 +245,13 @@ func (p *handledRuntimeGraphProcessors) Snapshot() topology.RuntimeGraphSnapshot
 // HandleRuntimeGraph registers a runtime graph scheduler.
 func (d *Disruptor[T]) HandleRuntimeGraph(
 	runtimeGraph *topology.RuntimeGraph[T],
-	opts ...RuntimeGraphHandleOption[T],
+	opts ...RuntimeGraphOption[T],
 ) (RuntimeGraphProcessors, error) {
 	if runtimeGraph == nil {
 		return nil, fmt.Errorf("%w: runtime graph is nil", topology.ErrInvalid)
 	}
 
-	handleConfig := runtimeGraphHandleConfig[T]{
+	options := runtimeGraphOptions[T]{
 		exceptionHandler: NewFatalRuntimeGraphExceptionHandler[T](),
 		noRouteAction:    RuntimeNoRouteActionHalt,
 		workers:          1,
@@ -286,11 +261,11 @@ func (d *Disruptor[T]) HandleRuntimeGraph(
 		if opt == nil {
 			continue
 		}
-		if err := opt.applyRuntimeGraphHandle(&handleConfig); err != nil {
-			return nil, fmt.Errorf("applying runtime graph handle option: %w", err)
+		if err := opt(&options); err != nil {
+			return nil, fmt.Errorf("applying runtime graph option: %w", err)
 		}
 	}
-	if handleConfig.workersSet && handleConfig.executorSet {
+	if options.workersSet && options.executorSet {
 		return nil, fmt.Errorf(
 			"%w: runtime graph workers and executor cannot both be configured",
 			topology.ErrInvalid,
@@ -314,62 +289,70 @@ func (d *Disruptor[T]) HandleRuntimeGraph(
 		return nil, err
 	}
 
-	if handleConfig.metricsSink == nil {
-		if metricsSink, ok := d.ringBuffer.metrics.(RuntimeGraphMetricsSink); ok {
-			handleConfig.metricsSink = metricsSink
+	if options.metricsSink == nil {
+		if metricsSink, ok := d.ringBuffer.Metrics().(RuntimeGraphMetricsSink); ok {
+			options.metricsSink = metricsSink
 		}
 	}
 
 	handler := &runtimeGraphEventHandler[T]{
 		graphName:        plan.Name,
 		plan:             plan,
-		exceptionHandler: handleConfig.exceptionHandler,
-		noRouteAction:    handleConfig.noRouteAction,
-		provider:         handleConfig.provider,
-		resolver:         handleConfig.resolver,
-		metricsSink:      handleConfig.metricsSink,
-		workers:          handleConfig.workers,
-		executor:         handleConfig.executor,
+		exceptionHandler: options.exceptionHandler,
+		noRouteAction:    options.noRouteAction,
+		provider:         options.provider,
+		resolver:         options.resolver,
+		metricsSink:      options.metricsSink,
+		workers:          options.workers,
+		executor:         options.executor,
 		executorOwned:    false,
 	}
 
-	stopOnce := &sync.Once{}
-	var processor *BatchEventProcessor[T]
-	stopGraph := func() {
-		stopOnce.Do(func() {
-			if processor != nil {
-				processor.Stop()
-			}
-		})
-	}
+	haltNotifier := &runtimeGraphHaltNotifier[T]{}
 
-	processor, err = newBatchEventProcessor(
+	eventProcessor, err := processor.NewBatchEventProcessorWithConfig(
 		d.ringBuffer,
 		d.ringBuffer.NewBarrier(),
 		handler,
-		batchEventProcessorConfig[T]{
-			exceptionHandler: defaultProcessorConfig[T]().exceptionHandler,
-			producerGating:   true,
-			haltAdvances:     false,
-			node: event.Node{
+		processor.BatchConfig[T]{
+			ExceptionHandler: event.NewFatalExceptionHandler[T](),
+			ProducerGating:   true,
+			HaltAdvances:     false,
+			Node: event.Node{
 				GraphName: plan.Name,
 				NodeName:  "scheduler",
 				NodeLabel: plan.Name,
 			},
-			onHalt: stopGraph,
+			HaltNotifier: haltNotifier,
 		},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating runtime graph processor: %w", err)
 	}
+	haltNotifier.processor = eventProcessor
 
 	d.mode = consumerModeGraph
-	d.processors = append(d.processors, processor)
+	d.processors = append(d.processors, eventProcessor)
 
 	return &handledRuntimeGraphProcessors{
-		processor: processor,
+		processor: eventProcessor,
 		snapshot:  plan.Snapshot,
 	}, nil
+}
+
+type runtimeGraphHaltNotifier[T any] struct {
+	once      sync.Once
+	processor *processor.BatchEventProcessor[T]
+}
+
+func (notifier *runtimeGraphHaltNotifier[T]) NotifyHalt() {
+	notifier.once.Do(notifier.stopProcessor)
+}
+
+func (notifier *runtimeGraphHaltNotifier[T]) stopProcessor() {
+	if notifier.processor != nil {
+		notifier.processor.Stop()
+	}
 }
 
 type runtimeGraphEventHandler[T any] struct {
@@ -947,14 +930,16 @@ func invokeRuntimeGraphHandler[T any](
 	handler event.Handler[T],
 	request event.Request[T],
 ) (err error, panicked bool) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("disruptor: runtime graph handler panic: %v", recovered)
-			panicked = true
-		}
-	}()
+	defer recoverRuntimeGraphHandlerPanic(&err, &panicked)
 
 	return handler.OnEvent(request), false
+}
+
+func recoverRuntimeGraphHandlerPanic(err *error, panicked *bool) {
+	if recovered := recover(); recovered != nil {
+		*err = fmt.Errorf("disruptor: runtime graph handler panic: %v", recovered)
+		*panicked = true
+	}
 }
 
 func (s *runtimeGraphRunState[T]) handleNodeFailure(
@@ -1014,21 +999,15 @@ func resetNodeRetry[T any](handler event.ExceptionHandler[T], sequence int64) {
 
 // NewFatalRuntimeGraphExceptionHandler returns a handler that halts on every failure.
 func NewFatalRuntimeGraphExceptionHandler[T any]() RuntimeGraphExceptionHandler[T] {
-	return runtimeGraphExceptionHandlerFunc[T](func(RuntimeGraphExceptionRequest[T]) event.ExceptionAction {
-		return event.ExceptionActionHalt
-	})
+	return fatalRuntimeGraphExceptionHandler[T]{}
 }
 
-type runtimeGraphExceptionHandlerFunc[T any] func(RuntimeGraphExceptionRequest[T]) event.ExceptionAction
+type fatalRuntimeGraphExceptionHandler[T any] struct{}
 
-func (fn runtimeGraphExceptionHandlerFunc[T]) HandleRuntimeGraphException(
-	request RuntimeGraphExceptionRequest[T],
+func (fatalRuntimeGraphExceptionHandler[T]) HandleRuntimeGraphException(
+	RuntimeGraphExceptionRequest[T],
 ) event.ExceptionAction {
-	if fn == nil {
-		return event.ExceptionActionHalt
-	}
-
-	return fn(request)
+	return event.ExceptionActionHalt
 }
 
 func runtimeGraphEdgeMetricKind(selected bool) string {

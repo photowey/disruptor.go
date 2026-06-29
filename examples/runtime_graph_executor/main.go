@@ -43,7 +43,7 @@ type routedOrderTranslator struct {
 }
 
 func (t routedOrderTranslator) Translate(
-	request disruptor.TranslateRequest[routedOrderEvent],
+	request event.TranslateRequest[routedOrderEvent],
 ) {
 	request.Event.OrderID = t.orderID
 }

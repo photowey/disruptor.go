@@ -37,7 +37,7 @@ type diamondTranslator struct {
 	id int64
 }
 
-func (t diamondTranslator) Translate(request disruptor.TranslateRequest[diamondEvent]) {
+func (t diamondTranslator) Translate(request event.TranslateRequest[diamondEvent]) {
 	request.Event.ID = t.id
 }
 

@@ -12,63 +12,65 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor_test
+package ringbuffer_test
 
 import (
 	"context"
 	"fmt"
 	"testing"
 
-	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/ringbuffer"
+	"github.com/photowey/disruptor.go/pkg/sequence"
 )
 
 var benchmarkIntSink int64
 var benchmarkEventSink *longEvent
 
 func BenchmarkSequenceValue(b *testing.B) {
-	sequence := disruptor.NewSequence(1024)
+	seq := sequence.New(1024)
 
 	b.ReportAllocs()
 	for b.Loop() {
-		benchmarkIntSink = sequence.Value()
+		benchmarkIntSink = seq.Value()
 	}
 }
 
 func BenchmarkSequenceStore(b *testing.B) {
-	sequence := disruptor.NewSequence(disruptor.InitialSequenceValue)
+	seq := sequence.New(sequence.InitialValue)
 	var value int64
 
 	b.ReportAllocs()
 	for b.Loop() {
-		sequence.Store(value)
+		seq.Store(value)
 		value++
 	}
 }
 
 func BenchmarkSequenceAdd(b *testing.B) {
-	sequence := disruptor.NewSequence(disruptor.InitialSequenceValue)
+	seq := sequence.New(sequence.InitialValue)
 
 	b.ReportAllocs()
 	for b.Loop() {
-		benchmarkIntSink = sequence.Add(1)
+		benchmarkIntSink = seq.Add(1)
 	}
 }
 
 func BenchmarkSequenceCompareAndSwap(b *testing.B) {
-	sequence := disruptor.NewSequence(disruptor.InitialSequenceValue)
-	value := disruptor.InitialSequenceValue
+	seq := sequence.New(sequence.InitialValue)
+	value := sequence.InitialValue
 
 	b.ReportAllocs()
 	for b.Loop() {
-		if sequence.CompareAndSwap(value, value+1) {
+		if seq.CompareAndSwap(value, value+1) {
 			value++
 		}
 	}
 }
 
 func BenchmarkRingBufferGet(b *testing.B) {
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		65536,
 	)
 	if err != nil {
@@ -84,8 +86,8 @@ func BenchmarkRingBufferGet(b *testing.B) {
 }
 
 func BenchmarkRingBufferNextPublish(b *testing.B) {
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		65536,
 	)
 	if err != nil {
@@ -106,8 +108,8 @@ func BenchmarkRingBufferNextPublish(b *testing.B) {
 }
 
 func BenchmarkRingBufferTryNextPublish(b *testing.B) {
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		65536,
 	)
 	if err != nil {
@@ -128,8 +130,8 @@ func BenchmarkRingBufferTryNextPublish(b *testing.B) {
 func BenchmarkRingBufferNextNPublishRange(b *testing.B) {
 	for _, batchSize := range []int64{1, 4, 16, 64, 256} {
 		b.Run(fmt.Sprintf("batch_%d", batchSize), func(b *testing.B) {
-			rb, err := disruptor.NewRingBuffer(
-				disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+			rb, err := ringbuffer.New(
+				event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 				65536,
 			)
 			if err != nil {
@@ -155,8 +157,8 @@ func BenchmarkRingBufferNextNPublishRange(b *testing.B) {
 }
 
 func BenchmarkBarrierWaitForPublishedSequence(b *testing.B) {
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		65536,
 	)
 	if err != nil {

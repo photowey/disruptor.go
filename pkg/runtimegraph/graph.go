@@ -93,106 +93,74 @@ type runtimeGraphEdge[T any] struct {
 }
 
 // RuntimeGraphOption configures a RuntimeGraph builder.
-type RuntimeGraphOption interface {
-	applyRuntimeGraph(config *runtimeGraphConfig) error
-}
+type RuntimeGraphOption func(config *runtimeGraphConfig) error
 
 type runtimeGraphConfig struct {
 	compiler expression.Compiler
 }
 
-type runtimeGraphOptionFunc struct {
-	applyFunc func(*runtimeGraphConfig) error
-}
-
-//nolint:unused // The method satisfies RuntimeGraphOption and is called through the interface.
-func (fn runtimeGraphOptionFunc) applyRuntimeGraph(config *runtimeGraphConfig) error {
-	return fn.applyFunc(config)
-}
-
 // WithExpressionCompiler replaces the graph expression compiler.
 func WithExpressionCompiler(compiler expression.Compiler) RuntimeGraphOption {
-	return runtimeGraphOptionFunc{
-		applyFunc: func(config *runtimeGraphConfig) error {
-			if compiler == nil {
-				return fmt.Errorf("%w: runtime expression compiler is nil", ErrInvalid)
-			}
+	return func(config *runtimeGraphConfig) error {
+		if compiler == nil {
+			return fmt.Errorf("%w: runtime expression compiler is nil", ErrInvalid)
+		}
 
-			config.compiler = compiler
-			return nil
-		},
+		config.compiler = compiler
+		return nil
 	}
 }
 
 // RuntimeNodeOption configures one runtime graph node.
-type RuntimeNodeOption[T any] interface {
-	applyNode(config *nodeConfig[T]) error
-}
-
-type runtimeNodeOptionFunc[T any] struct {
-	applyFunc func(*nodeConfig[T]) error
-}
-
-//nolint:unused // The method satisfies RuntimeNodeOption[T] and is called through the interface.
-func (fn runtimeNodeOptionFunc[T]) applyNode(config *nodeConfig[T]) error {
-	return fn.applyFunc(config)
-}
+type RuntimeNodeOption[T any] func(config *nodeConfig[T]) error
 
 // WithNodeExceptionHandler sets the exception handler for one runtime graph node.
 func WithNodeExceptionHandler[T any](handler event.ExceptionHandler[T]) RuntimeNodeOption[T] {
-	return runtimeNodeOptionFunc[T]{
-		applyFunc: func(config *nodeConfig[T]) error {
-			if handler == nil {
-				return fmt.Errorf("%w: runtime node exception handler is nil", ErrInvalid)
-			}
+	return func(config *nodeConfig[T]) error {
+		if handler == nil {
+			return fmt.Errorf("%w: runtime node exception handler is nil", ErrInvalid)
+		}
 
-			config.exceptionHandler = handler
-			return nil
-		},
+		config.exceptionHandler = handler
+		return nil
 	}
 }
 
 // WithNodeLabel sets the display label for one runtime graph node.
 func WithNodeLabel[T any](label string) RuntimeNodeOption[T] {
-	return runtimeNodeOptionFunc[T]{
-		applyFunc: func(config *nodeConfig[T]) error {
-			normalized, err := normalizeGraphName("node label", label)
-			if err != nil {
-				return err
-			}
+	return func(config *nodeConfig[T]) error {
+		normalized, err := normalizeGraphName("node label", label)
+		if err != nil {
+			return err
+		}
 
-			config.label = normalized
-			return nil
-		},
+		config.label = normalized
+		return nil
 	}
 }
 
 // WithNodeMetadata adds one metadata key-value pair to a runtime graph node.
 func WithNodeMetadata[T any](key string, value string) RuntimeNodeOption[T] {
-	return runtimeNodeOptionFunc[T]{
-		applyFunc: func(config *nodeConfig[T]) error {
-			normalizedKey, err := normalizeGraphName("metadata key", key)
-			if err != nil {
-				return err
-			}
-			normalizedValue, err := normalizeGraphName("metadata value", value)
-			if err != nil {
-				return err
-			}
+	return func(config *nodeConfig[T]) error {
+		normalizedKey, err := normalizeGraphName("metadata key", key)
+		if err != nil {
+			return err
+		}
+		normalizedValue, err := normalizeGraphName("metadata value", value)
+		if err != nil {
+			return err
+		}
 
-			if config.metadata == nil {
-				config.metadata = make(map[string]string)
-			}
-			config.metadata[normalizedKey] = normalizedValue
-			return nil
-		},
+		if config.metadata == nil {
+			config.metadata = make(map[string]string)
+		}
+		config.metadata[normalizedKey] = normalizedValue
+		return nil
 	}
 }
 
 // RuntimeEdgeOption configures one runtime graph edge.
-type RuntimeEdgeOption[T any] interface {
-	applyRuntimeEdge(config *runtimeEdgeConfig[T]) error
-}
+type RuntimeEdgeOption[T any] func(config *runtimeEdgeConfig[T]) error
 
 type runtimeEdgeConfig[T any] struct {
 	condition      EdgeCondition[T]
@@ -201,45 +169,32 @@ type runtimeEdgeConfig[T any] struct {
 	hasExpression  bool
 }
 
-type runtimeEdgeOptionFunc[T any] struct {
-	applyFunc func(*runtimeEdgeConfig[T]) error
-}
-
-//nolint:unused // The method satisfies RuntimeEdgeOption[T] and is called through the interface.
-func (fn runtimeEdgeOptionFunc[T]) applyRuntimeEdge(config *runtimeEdgeConfig[T]) error {
-	return fn.applyFunc(config)
-}
-
 // WhenCondition sets a typed runtime graph edge condition.
 func WhenCondition[T any](condition EdgeCondition[T]) RuntimeEdgeOption[T] {
-	return runtimeEdgeOptionFunc[T]{
-		applyFunc: func(config *runtimeEdgeConfig[T]) error {
-			if condition == nil {
-				return fmt.Errorf("%w: runtime edge condition is nil", ErrInvalid)
-			}
+	return func(config *runtimeEdgeConfig[T]) error {
+		if condition == nil {
+			return fmt.Errorf("%w: runtime edge condition is nil", ErrInvalid)
+		}
 
-			config.condition = condition
-			config.conditionLabel = "custom"
-			config.hasExpression = false
-			return nil
-		},
+		config.condition = condition
+		config.conditionLabel = "custom"
+		config.hasExpression = false
+		return nil
 	}
 }
 
 // WhenExpression sets an expression runtime graph edge condition.
 func WhenExpression[T any](runtimeExpression expression.Expression) RuntimeEdgeOption[T] {
-	return runtimeEdgeOptionFunc[T]{
-		applyFunc: func(config *runtimeEdgeConfig[T]) error {
-			if strings.TrimSpace(string(runtimeExpression)) == "" {
-				return fmt.Errorf("%w: runtime edge expression is empty", ErrInvalid)
-			}
+	return func(config *runtimeEdgeConfig[T]) error {
+		if strings.TrimSpace(string(runtimeExpression)) == "" {
+			return fmt.Errorf("%w: runtime edge expression is empty", ErrInvalid)
+		}
 
-			config.expression = runtimeExpression
-			config.conditionLabel = string(runtimeExpression)
-			config.hasExpression = true
-			config.condition = nil
-			return nil
-		},
+		config.expression = runtimeExpression
+		config.conditionLabel = string(runtimeExpression)
+		config.hasExpression = true
+		config.condition = nil
+		return nil
 	}
 }
 
@@ -257,7 +212,7 @@ func NewRuntimeGraph[T any](name string, opts ...RuntimeGraphOption) (*RuntimeGr
 		if opt == nil {
 			continue
 		}
-		if err := opt.applyRuntimeGraph(&config); err != nil {
+		if err := opt(&config); err != nil {
 			return nil, fmt.Errorf("applying runtime graph option: %w", err)
 		}
 	}
@@ -326,7 +281,7 @@ func (g *RuntimeGraph[T]) Node(
 		if opt == nil {
 			continue
 		}
-		if err := opt.applyNode(&config); err != nil {
+		if err := opt(&config); err != nil {
 			return fmt.Errorf("applying runtime node option: %w", err)
 		}
 	}
@@ -397,7 +352,7 @@ func (g *RuntimeGraph[T]) Edge(
 		if opt == nil {
 			continue
 		}
-		if err := opt.applyRuntimeEdge(&config); err != nil {
+		if err := opt(&config); err != nil {
 			return fmt.Errorf("applying runtime edge option: %w", err)
 		}
 	}
@@ -602,39 +557,63 @@ func (g *RuntimeGraph[T]) freezeHandledLocked() {
 
 func (g *RuntimeGraph[T]) findCycleLocked() []string {
 	snapshot := g.processingSnapshotLocked()
-	adjacency := graphAdjacency(snapshot.Edges)
-	state := make(map[string]uint8, len(snapshot.Nodes))
-	stack := make([]string, 0, len(snapshot.Nodes))
-
-	var visit func(name string) []string
-	visit = func(name string) []string {
-		state[name] = 1
-		stack = append(stack, name)
-		for _, next := range adjacency[name] {
-			switch state[next] {
-			case 0:
-				if cycle := visit(next); len(cycle) > 0 {
-					return cycle
-				}
-			case 1:
-				for i, stacked := range stack {
-					if stacked == next {
-						return append(append([]string(nil), stack[i:]...), next)
-					}
-				}
-			}
-		}
-		stack = stack[:len(stack)-1]
-		state[name] = 2
-		return nil
-	}
+	finder := newRuntimeGraphCycleFinder(snapshot)
 
 	for _, node := range snapshot.Nodes {
-		if state[node.Name] != 0 {
+		if finder.seen(node.Name) {
 			continue
 		}
-		if cycle := visit(node.Name); len(cycle) > 0 {
+		if cycle := finder.visit(node.Name); len(cycle) > 0 {
 			return cycle
+		}
+	}
+
+	return nil
+}
+
+type runtimeGraphCycleFinder struct {
+	adjacency map[string][]string
+	state     map[string]uint8
+	stack     []string
+}
+
+func newRuntimeGraphCycleFinder(snapshot graph.Snapshot) *runtimeGraphCycleFinder {
+	return &runtimeGraphCycleFinder{
+		adjacency: graphAdjacency(snapshot.Edges),
+		state:     make(map[string]uint8, len(snapshot.Nodes)),
+		stack:     make([]string, 0, len(snapshot.Nodes)),
+	}
+}
+
+func (finder *runtimeGraphCycleFinder) seen(name string) bool {
+	return finder.state[name] != 0
+}
+
+func (finder *runtimeGraphCycleFinder) visit(name string) []string {
+	finder.state[name] = 1
+	finder.stack = append(finder.stack, name)
+	for _, next := range finder.adjacency[name] {
+		switch finder.state[next] {
+		case 0:
+			if cycle := finder.visit(next); len(cycle) > 0 {
+				return cycle
+			}
+		case 1:
+			if cycle := finder.stackCycle(next); len(cycle) > 0 {
+				return cycle
+			}
+		}
+	}
+	finder.stack = finder.stack[:len(finder.stack)-1]
+	finder.state[name] = 2
+
+	return nil
+}
+
+func (finder *runtimeGraphCycleFinder) stackCycle(name string) []string {
+	for i, stacked := range finder.stack {
+		if stacked == name {
+			return append(append([]string(nil), finder.stack[i:]...), name)
 		}
 	}
 
@@ -710,9 +689,7 @@ func (g *RuntimeGraph[T]) processingSnapshotLocked() graph.Snapshot {
 			Metadata: copyStringMap(node.metadata),
 		})
 	}
-	sort.Slice(nodes, func(i, j int) bool {
-		return nodes[i].Name < nodes[j].Name
-	})
+	sort.Sort(nodeSnapshotsByName(nodes))
 
 	edges := make([]graph.EdgeSnapshot, 0, len(g.edges))
 	for edge := range g.edges {
@@ -810,13 +787,25 @@ func (e *runtimeGraphEdge[T]) snapshot() RuntimeGraphEdgeSnapshot {
 }
 
 func sortRuntimeEdges(edges []RuntimeGraphEdgeSnapshot) {
-	sort.Slice(edges, func(i, j int) bool {
-		if edges[i].From == edges[j].From {
-			return edges[i].To < edges[j].To
-		}
+	sort.Sort(runtimeGraphEdgeSnapshotsByEndpoints(edges))
+}
 
-		return edges[i].From < edges[j].From
-	})
+type runtimeGraphEdgeSnapshotsByEndpoints []RuntimeGraphEdgeSnapshot
+
+func (edges runtimeGraphEdgeSnapshotsByEndpoints) Len() int {
+	return len(edges)
+}
+
+func (edges runtimeGraphEdgeSnapshotsByEndpoints) Less(left int, right int) bool {
+	if edges[left].From == edges[right].From {
+		return edges[left].To < edges[right].To
+	}
+
+	return edges[left].From < edges[right].From
+}
+
+func (edges runtimeGraphEdgeSnapshotsByEndpoints) Swap(left int, right int) {
+	edges[left], edges[right] = edges[right], edges[left]
 }
 
 // Mermaid renders the runtime graph as a Mermaid flowchart.

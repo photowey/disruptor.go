@@ -17,7 +17,6 @@ package benchmarks
 import (
 	"context"
 	"errors"
-	"github.com/photowey/disruptor.go/pkg/event"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -25,6 +24,9 @@ import (
 	"time"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/ringbuffer"
+	"github.com/photowey/disruptor.go/pkg/wait"
 )
 
 const latencySampleLimit = 4096
@@ -36,15 +38,15 @@ type latencyEvent struct {
 func BenchmarkE2ELatencyQuantiles(b *testing.B) {
 	for _, tt := range []struct {
 		name         string
-		waitStrategy disruptor.WaitStrategy
+		waitStrategy wait.Strategy
 	}{
 		{
 			name:         "blocking_1p_1c",
-			waitStrategy: disruptor.NewBlockingWaitStrategy(),
+			waitStrategy: wait.NewBlockingStrategy(),
 		},
 		{
 			name:         "busy_spin_1p_1c",
-			waitStrategy: disruptor.NewBusySpinWaitStrategy(),
+			waitStrategy: wait.NewBusySpinStrategy(),
 		},
 	} {
 		b.Run(tt.name, func(b *testing.B) {
@@ -55,7 +57,7 @@ func BenchmarkE2ELatencyQuantiles(b *testing.B) {
 
 func benchmarkE2ELatencyQuantiles(
 	b *testing.B,
-	waitStrategy disruptor.WaitStrategy,
+	waitStrategy wait.Strategy,
 ) {
 	b.Helper()
 
@@ -63,11 +65,11 @@ func benchmarkE2ELatencyQuantiles(
 	defer cancel()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[latencyEvent](func() latencyEvent {
+		event.FactoryFunc[latencyEvent](func() latencyEvent {
 			return latencyEvent{}
 		}),
 		65536,
-		disruptor.WithWaitStrategy(waitStrategy),
+		ringbuffer.WithWaitStrategy(waitStrategy),
 	)
 	if err != nil {
 		b.Fatalf("new disruptor: %v", err)
@@ -120,9 +122,7 @@ func benchmarkE2ELatencyQuantiles(
 	}
 
 	latenciesMu.Lock()
-	sort.Slice(latencies, func(i, j int) bool {
-		return latencies[i] < latencies[j]
-	})
+	sort.Sort(latencySamplesByDuration(latencies))
 	reportLatencyQuantiles(b, latencies)
 	latenciesMu.Unlock()
 
@@ -130,6 +130,20 @@ func benchmarkE2ELatencyQuantiles(
 	if elapsed > 0 {
 		b.ReportMetric(float64(b.N)/elapsed, "events/s")
 	}
+}
+
+type latencySamplesByDuration []int64
+
+func (samples latencySamplesByDuration) Len() int {
+	return len(samples)
+}
+
+func (samples latencySamplesByDuration) Less(left int, right int) bool {
+	return samples[left] < samples[right]
+}
+
+func (samples latencySamplesByDuration) Swap(left int, right int) {
+	samples[left], samples[right] = samples[right], samples[left]
 }
 
 func latencySampleEvery(iterations int) int64 {

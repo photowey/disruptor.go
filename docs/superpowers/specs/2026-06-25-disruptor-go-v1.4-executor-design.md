@@ -103,9 +103,7 @@ type SubmitRequest struct {
     Name    string
 }
 
-type SubmitOption interface {
-    applySubmit(config *SubmitConfig) error
-}
+type SubmitOption func(config *SubmitConfig) error
 
 type SubmitConfig struct {
     Name string
@@ -317,9 +315,7 @@ tests, deterministic behavior, and RuntimeGraph defaults.
 `FixedWorkerExecutor` starts a fixed number of workers and uses a bounded queue.
 
 ```go
-type FixedWorkerOption interface {
-    applyFixedWorker(config *FixedWorkerConfig) error
-}
+type FixedWorkerOption func(config *FixedWorkerConfig) error
 
 type FixedWorkerConfig struct {
     Workers       int
@@ -415,7 +411,7 @@ RuntimeGraph adds:
 ```go
 func WithRuntimeGraphExecutor[T any](
     executor executor.Executor,
-) RuntimeGraphHandleOption[T]
+) RuntimeGraphOption[T]
 ```
 
 `WithRuntimeGraphWorkers[T](workers int)` remains supported:
@@ -503,11 +499,10 @@ When halting, the scheduler waits for in-flight tasks before returning so the
 ring-buffer event and runtime context are not reused while handlers still hold
 references to them.
 
-## Compatibility And Concurrency Notes
+## RuntimeGraph Concurrency Notes
 
 Default RuntimeGraph execution remains `workers == 1` and deterministic.
-`WithRuntimeGraphWorkers(workers > 1)` changes previously accepted configuration
-from a forward-compatible hook into active parallel execution.
+`WithRuntimeGraphWorkers(workers > 1)` enables active parallel execution.
 
 When `workers > 1` or `WithRuntimeGraphExecutor` is used:
 
@@ -551,8 +546,8 @@ Initial metric kinds:
 - `task_panicked`
 - `executor_shutdown`
 
-RuntimeGraph keeps its existing `RuntimeGraphMetricsSink`. Executor metrics are
-separate because executor usage is general-purpose.
+RuntimeGraph keeps `disruptor.RuntimeGraphMetricsSink[T]`. Executor metrics
+are separate because executor usage is general-purpose.
 
 ## Package Layout
 
@@ -668,11 +663,10 @@ Regression policy:
 CI must run ordinary tests, race tests, lint, vet, and a benchmark smoke target
 that includes executor benchmarks.
 
-## Compatibility
+## Release Surface
 
-- Existing V1.3 APIs remain compatible.
-- `WithRuntimeGraphWorkers` changes from a forward-compatible hook into an
-  active configuration option.
+- V1.3 public APIs remain source-compatible.
+- `WithRuntimeGraphWorkers` is an active RuntimeGraph execution option.
 - Default RuntimeGraph behavior remains deterministic and inline.
 - Public executor APIs are new and may be used independently of Disruptor.
 

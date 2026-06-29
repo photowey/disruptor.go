@@ -17,10 +17,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/photowey/disruptor.go/pkg/event"
 	"sync/atomic"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/metrics"
+	"github.com/photowey/disruptor.go/pkg/ringbuffer"
 )
 
 type metricEvent struct {
@@ -38,19 +40,19 @@ type counterMetricsSink struct {
 	handled   *atomic.Int64
 }
 
-func (s counterMetricsSink) OnPublish(request disruptor.PublishMetric) {
+func (s counterMetricsSink) OnPublish(request metrics.PublishMetric) {
 	s.published.Add(request.BatchSize)
 }
 
-func (s counterMetricsSink) OnBatchStart(request disruptor.BatchMetric) {}
+func (s counterMetricsSink) OnBatchStart(request metrics.BatchMetric) {}
 
-func (s counterMetricsSink) OnEventHandled(request disruptor.EventMetric) {
+func (s counterMetricsSink) OnEventHandled(request metrics.EventMetric) {
 	s.handled.Add(1)
 }
 
-func (s counterMetricsSink) OnWait(request disruptor.WaitMetric) {}
+func (s counterMetricsSink) OnWait(request metrics.WaitMetric) {}
 
-func (s counterMetricsSink) OnProcessorState(request disruptor.ProcessorMetric) {}
+func (s counterMetricsSink) OnProcessorState(request metrics.ProcessorMetric) {}
 
 type signalHandler struct {
 	done chan<- struct{}
@@ -65,7 +67,7 @@ type metricTranslator struct {
 	value int64
 }
 
-func (t metricTranslator) Translate(request disruptor.TranslateRequest[metricEvent]) {
+func (t metricTranslator) Translate(request event.TranslateRequest[metricEvent]) {
 	request.Event.Value = t.value
 }
 
@@ -75,7 +77,7 @@ func main() {
 
 	var published atomic.Int64
 	var handled atomic.Int64
-	metrics := counterMetricsSink{
+	metricSink := counterMetricsSink{
 		published: &published,
 		handled:   &handled,
 	}
@@ -83,7 +85,7 @@ func main() {
 	d, err := disruptor.New(
 		metricEventFactory{},
 		1024,
-		disruptor.WithMetricsSink(metrics),
+		ringbuffer.WithMetricsSink(metricSink),
 	)
 	if err != nil {
 		panic(err)

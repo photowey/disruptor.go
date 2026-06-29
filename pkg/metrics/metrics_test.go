@@ -12,26 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor_test
+package metrics_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/photowey/disruptor.go/pkg/disruptor"
 	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/metrics"
+	"github.com/photowey/disruptor.go/pkg/processor"
+	"github.com/photowey/disruptor.go/pkg/ringbuffer"
 )
 
 func TestRingBufferReportsPublishMetricWhenSinkConfigured(t *testing.T) {
-	metrics := make(chan disruptor.PublishMetric, 1)
+	publishMetrics := make(chan metrics.PublishMetric, 1)
 
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		4,
-		disruptor.WithMetricsSink(disruptor.MetricsSinkFunc{
-			Publish: func(metric disruptor.PublishMetric) {
-				metrics <- metric
+		ringbuffer.WithMetricsSink(metrics.SinkFunc{
+			Publish: func(metric metrics.PublishMetric) {
+				publishMetrics <- metric
 			},
 		}),
 	)
@@ -39,7 +41,7 @@ func TestRingBufferReportsPublishMetricWhenSinkConfigured(t *testing.T) {
 		t.Fatalf("new ring buffer: %v", err)
 	}
 
-	err = rb.PublishEvent(context.Background(), disruptor.EventTranslatorFunc[longEvent](func(request disruptor.TranslateRequest[longEvent]) {
+	err = rb.PublishEvent(context.Background(), event.TranslatorFunc[longEvent](func(request event.TranslateRequest[longEvent]) {
 		request.Event.Value = 42
 	}))
 	if err != nil {
@@ -47,7 +49,7 @@ func TestRingBufferReportsPublishMetricWhenSinkConfigured(t *testing.T) {
 	}
 
 	select {
-	case metric := <-metrics:
+	case metric := <-publishMetrics:
 		if metric.Sequence != 0 {
 			t.Fatalf("metric sequence = %d, want 0", metric.Sequence)
 		}
@@ -68,7 +70,7 @@ func TestRingBufferReportsPublishMetricWhenSinkConfigured(t *testing.T) {
 func TestRingBufferWorksWithoutMetricsSink(t *testing.T) {
 	rb := newTestRingBuffer(t, 4)
 
-	err := rb.PublishEvent(context.Background(), disruptor.EventTranslatorFunc[longEvent](func(request disruptor.TranslateRequest[longEvent]) {
+	err := rb.PublishEvent(context.Background(), event.TranslatorFunc[longEvent](func(request event.TranslateRequest[longEvent]) {
 		request.Event.Value = 42
 	}))
 	if err != nil {
@@ -77,53 +79,53 @@ func TestRingBufferWorksWithoutMetricsSink(t *testing.T) {
 }
 
 func TestMetricsSinkFuncSupportsOptionalCallbacks(t *testing.T) {
-	var sink disruptor.MetricsSink = disruptor.MetricsSinkFunc{
-		BatchStart: func(metric disruptor.BatchMetric) {
+	var sink metrics.Sink = metrics.SinkFunc{
+		BatchStart: func(metric metrics.BatchMetric) {
 			if metric.BatchSize != 2 {
 				t.Fatalf("batch size = %d, want 2", metric.BatchSize)
 			}
 		},
-		EventHandled: func(metric disruptor.EventMetric) {
+		EventHandled: func(metric metrics.EventMetric) {
 			if metric.Sequence != 3 {
 				t.Fatalf("event sequence = %d, want 3", metric.Sequence)
 			}
 		},
-		Wait: func(metric disruptor.WaitMetric) {
+		Wait: func(metric metrics.WaitMetric) {
 			if metric.RequestedSequence != 5 {
 				t.Fatalf("requested sequence = %d, want 5", metric.RequestedSequence)
 			}
 		},
-		ProcessorState: func(metric disruptor.ProcessorMetric) {
+		ProcessorState: func(metric metrics.ProcessorMetric) {
 			if metric.State != "running" {
 				t.Fatalf("processor state = %q, want running", metric.State)
 			}
 		},
 	}
 
-	sink.OnBatchStart(disruptor.BatchMetric{BatchSize: 2})
-	sink.OnEventHandled(disruptor.EventMetric{Sequence: 3})
-	sink.OnWait(disruptor.WaitMetric{RequestedSequence: 5})
-	sink.OnProcessorState(disruptor.ProcessorMetric{State: "running"})
-	sink.OnPublish(disruptor.PublishMetric{})
+	sink.OnBatchStart(metrics.BatchMetric{BatchSize: 2})
+	sink.OnEventHandled(metrics.EventMetric{Sequence: 3})
+	sink.OnWait(metrics.WaitMetric{RequestedSequence: 5})
+	sink.OnProcessorState(metrics.ProcessorMetric{State: "running"})
+	sink.OnPublish(metrics.PublishMetric{})
 }
 
 func TestNoopMetricsSinkImplementsMetricsSink(t *testing.T) {
-	var sink disruptor.MetricsSink = disruptor.NoopMetricsSink{}
+	var sink metrics.Sink = metrics.NoopSink{}
 
-	sink.OnPublish(disruptor.PublishMetric{})
-	sink.OnBatchStart(disruptor.BatchMetric{})
-	sink.OnEventHandled(disruptor.EventMetric{})
-	sink.OnWait(disruptor.WaitMetric{})
-	sink.OnProcessorState(disruptor.ProcessorMetric{})
+	sink.OnPublish(metrics.PublishMetric{})
+	sink.OnBatchStart(metrics.BatchMetric{})
+	sink.OnEventHandled(metrics.EventMetric{})
+	sink.OnWait(metrics.WaitMetric{})
+	sink.OnProcessorState(metrics.ProcessorMetric{})
 }
 
 func TestBatchEventProcessorReportsEventHandledMetric(t *testing.T) {
-	events := make(chan disruptor.EventMetric, 1)
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+	events := make(chan metrics.EventMetric, 1)
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		4,
-		disruptor.WithMetricsSink(disruptor.MetricsSinkFunc{
-			EventHandled: func(metric disruptor.EventMetric) {
+		ringbuffer.WithMetricsSink(metrics.SinkFunc{
+			EventHandled: func(metric metrics.EventMetric) {
 				events <- metric
 			},
 		}),
@@ -135,7 +137,7 @@ func TestBatchEventProcessorReportsEventHandledMetric(t *testing.T) {
 	handler := event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
 		return nil
 	})
-	processor, err := disruptor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
+	processor, err := processor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
 	if err != nil {
 		t.Fatalf("new processor: %v", err)
 	}
@@ -163,12 +165,12 @@ func TestBatchEventProcessorReportsEventHandledMetric(t *testing.T) {
 }
 
 func TestBatchEventProcessorReportsBatchStartMetric(t *testing.T) {
-	batches := make(chan disruptor.BatchMetric, 1)
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+	batches := make(chan metrics.BatchMetric, 1)
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		4,
-		disruptor.WithMetricsSink(disruptor.MetricsSinkFunc{
-			BatchStart: func(metric disruptor.BatchMetric) {
+		ringbuffer.WithMetricsSink(metrics.SinkFunc{
+			BatchStart: func(metric metrics.BatchMetric) {
 				batches <- metric
 			},
 		}),
@@ -177,7 +179,7 @@ func TestBatchEventProcessorReportsBatchStartMetric(t *testing.T) {
 		t.Fatalf("new ring buffer: %v", err)
 	}
 
-	processor, err := disruptor.NewBatchEventProcessor(
+	processor, err := processor.NewBatchEventProcessor(
 		rb,
 		rb.NewBarrier(),
 		event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
@@ -217,12 +219,12 @@ func TestBatchEventProcessorReportsBatchStartMetric(t *testing.T) {
 }
 
 func TestBatchEventProcessorReportsProcessorStateMetrics(t *testing.T) {
-	states := make(chan disruptor.ProcessorMetric, 2)
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+	states := make(chan metrics.ProcessorMetric, 2)
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		4,
-		disruptor.WithMetricsSink(disruptor.MetricsSinkFunc{
-			ProcessorState: func(metric disruptor.ProcessorMetric) {
+		ringbuffer.WithMetricsSink(metrics.SinkFunc{
+			ProcessorState: func(metric metrics.ProcessorMetric) {
 				states <- metric
 			},
 		}),
@@ -231,7 +233,7 @@ func TestBatchEventProcessorReportsProcessorStateMetrics(t *testing.T) {
 		t.Fatalf("new ring buffer: %v", err)
 	}
 
-	processor, err := disruptor.NewBatchEventProcessor(
+	processor, err := processor.NewBatchEventProcessor(
 		rb,
 		rb.NewBarrier(),
 		event.HandlerFunc[longEvent](func(request event.Request[longEvent]) error {
@@ -257,12 +259,12 @@ func TestBatchEventProcessorReportsProcessorStateMetrics(t *testing.T) {
 }
 
 func TestBarrierReportsWaitMetric(t *testing.T) {
-	waits := make(chan disruptor.WaitMetric, 8)
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+	waits := make(chan metrics.WaitMetric, 8)
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		4,
-		disruptor.WithMetricsSink(disruptor.MetricsSinkFunc{
-			Wait: func(metric disruptor.WaitMetric) {
+		ringbuffer.WithMetricsSink(metrics.SinkFunc{
+			Wait: func(metric metrics.WaitMetric) {
 				waits <- metric
 			},
 		}),
@@ -276,10 +278,12 @@ func TestBarrierReportsWaitMetric(t *testing.T) {
 	defer cancel()
 
 	errs := make(chan error, 1)
-	go func() {
-		_, waitErr := barrier.WaitFor(ctx, 0)
-		errs <- waitErr
-	}()
+	task := barrierWaitTask{
+		ctx:     ctx,
+		barrier: barrier,
+		result:  errs,
+	}
+	go task.run()
 
 	select {
 	case metric := <-waits:
@@ -313,7 +317,7 @@ func TestBarrierReportsWaitMetric(t *testing.T) {
 
 func assertProcessorState(
 	t *testing.T,
-	states <-chan disruptor.ProcessorMetric,
+	states <-chan metrics.ProcessorMetric,
 	expected string,
 ) {
 	t.Helper()
@@ -326,4 +330,47 @@ func assertProcessorState(
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for processor state %q", expected)
 	}
+}
+
+type longEvent struct {
+	Value int64
+}
+
+func newTestRingBuffer(t *testing.T, size int) *ringbuffer.RingBuffer[longEvent] {
+	t.Helper()
+
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		size,
+	)
+	if err != nil {
+		t.Fatalf("new ring buffer: %v", err)
+	}
+
+	return rb
+}
+
+func publishValues(t *testing.T, rb *ringbuffer.RingBuffer[longEvent], values ...int64) {
+	t.Helper()
+
+	ctx := context.Background()
+	for _, value := range values {
+		err := rb.PublishEvent(ctx, event.TranslatorFunc[longEvent](func(request event.TranslateRequest[longEvent]) {
+			request.Event.Value = value
+		}))
+		if err != nil {
+			t.Fatalf("publish event: %v", err)
+		}
+	}
+}
+
+type barrierWaitTask struct {
+	ctx     context.Context
+	barrier ringbuffer.Barrier
+	result  chan<- error
+}
+
+func (task barrierWaitTask) run() {
+	_, err := task.barrier.WaitFor(task.ctx, 0)
+	task.result <- err
 }

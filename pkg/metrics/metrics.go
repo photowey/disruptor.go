@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package metrics
 
 import (
 	"time"
@@ -20,8 +20,8 @@ import (
 	"github.com/photowey/disruptor.go/pkg/event"
 )
 
-// MetricsSink receives backend-neutral runtime metrics.
-type MetricsSink interface {
+// Sink receives optional instrumentation events.
+type Sink interface {
 	OnPublish(request PublishMetric)
 	OnBatchStart(request BatchMetric)
 	OnEventHandled(request EventMetric)
@@ -41,11 +41,11 @@ type EventMetricFunc func(EventMetric)
 // WaitMetricFunc adapts a function to wait metrics.
 type WaitMetricFunc func(WaitMetric)
 
-// ProcessorMetricFunc adapts a function to processor metrics.
+// ProcessorMetricFunc adapts a function to processor state metrics.
 type ProcessorMetricFunc func(ProcessorMetric)
 
-// MetricsSinkFunc combines optional metric callbacks into one sink.
-type MetricsSinkFunc struct {
+// SinkFunc groups optional metric callbacks.
+type SinkFunc struct {
 	Publish        PublishMetricFunc
 	BatchStart     BatchMetricFunc
 	EventHandled   EventMetricFunc
@@ -53,70 +53,69 @@ type MetricsSinkFunc struct {
 	ProcessorState ProcessorMetricFunc
 }
 
-// OnPublish dispatches the publish callback when configured.
-func (f MetricsSinkFunc) OnPublish(request PublishMetric) {
-	if f.Publish == nil {
-		return
+// OnPublish reports a publish metric when configured.
+func (f SinkFunc) OnPublish(request PublishMetric) {
+	if f.Publish != nil {
+		f.Publish(request)
 	}
-
-	f.Publish(request)
 }
 
-// OnBatchStart dispatches the batch-start callback when configured.
-func (f MetricsSinkFunc) OnBatchStart(request BatchMetric) {
-	if f.BatchStart == nil {
-		return
+// OnBatchStart reports a batch metric when configured.
+func (f SinkFunc) OnBatchStart(request BatchMetric) {
+	if f.BatchStart != nil {
+		f.BatchStart(request)
 	}
-
-	f.BatchStart(request)
 }
 
-// OnEventHandled dispatches the event-handled callback when configured.
-func (f MetricsSinkFunc) OnEventHandled(request EventMetric) {
-	if f.EventHandled == nil {
-		return
+// OnEventHandled reports an event metric when configured.
+func (f SinkFunc) OnEventHandled(request EventMetric) {
+	if f.EventHandled != nil {
+		f.EventHandled(request)
 	}
-
-	f.EventHandled(request)
 }
 
-// OnWait dispatches the wait callback when configured.
-func (f MetricsSinkFunc) OnWait(request WaitMetric) {
-	if f.Wait == nil {
-		return
+// OnWait reports a wait metric when configured.
+func (f SinkFunc) OnWait(request WaitMetric) {
+	if f.Wait != nil {
+		f.Wait(request)
 	}
-
-	f.Wait(request)
 }
 
-// OnProcessorState dispatches the processor-state callback when configured.
-func (f MetricsSinkFunc) OnProcessorState(request ProcessorMetric) {
-	if f.ProcessorState == nil {
-		return
+// OnProcessorState reports a processor state metric when configured.
+func (f SinkFunc) OnProcessorState(request ProcessorMetric) {
+	if f.ProcessorState != nil {
+		f.ProcessorState(request)
 	}
-
-	f.ProcessorState(request)
 }
 
-// NoopMetricsSink implements MetricsSink without recording anything.
-type NoopMetricsSink struct{}
+// NoopSink discards all metrics.
+type NoopSink struct{}
 
-func (NoopMetricsSink) OnPublish(request PublishMetric)          {}
-func (NoopMetricsSink) OnBatchStart(request BatchMetric)         {}
-func (NoopMetricsSink) OnEventHandled(request EventMetric)       {}
-func (NoopMetricsSink) OnWait(request WaitMetric)                {}
-func (NoopMetricsSink) OnProcessorState(request ProcessorMetric) {}
+// OnPublish discards publish metrics.
+func (NoopSink) OnPublish(PublishMetric) {}
 
-// PublishMetric describes a publish operation.
+// OnBatchStart discards batch metrics.
+func (NoopSink) OnBatchStart(BatchMetric) {}
+
+// OnEventHandled discards event metrics.
+func (NoopSink) OnEventHandled(EventMetric) {}
+
+// OnWait discards wait metrics.
+func (NoopSink) OnWait(WaitMetric) {}
+
+// OnProcessorState discards processor state metrics.
+func (NoopSink) OnProcessorState(ProcessorMetric) {}
+
+// PublishMetric describes a producer publish operation.
 type PublishMetric struct {
-	ProducerType ProducerType
+	ProducerType string
 	Sequence     int64
 	BatchSize    int64
 	Duration     time.Duration
 	Err          error
 }
 
-// BatchMetric describes a batch start notification.
+// BatchMetric describes the start of a batch.
 type BatchMetric struct {
 	BatchSize  int64
 	QueueDepth int64
@@ -131,7 +130,7 @@ type EventMetric struct {
 	Node     event.Node
 }
 
-// WaitMetric describes a wait operation.
+// WaitMetric describes a barrier or capacity wait.
 type WaitMetric struct {
 	RequestedSequence int64
 	AvailableSequence int64
@@ -140,7 +139,7 @@ type WaitMetric struct {
 	Err               error
 }
 
-// ProcessorMetric describes a processor lifecycle event.
+// ProcessorMetric describes processor lifecycle state.
 type ProcessorMetric struct {
 	State string
 	Err   error

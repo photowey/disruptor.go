@@ -56,18 +56,7 @@ type nodeConfig[T any] struct {
 }
 
 // NodeOption configures one graph node.
-type NodeOption[T any] interface {
-	applyNode(config *nodeConfig[T]) error
-}
-
-type nodeOptionFunc[T any] struct {
-	applyFunc func(*nodeConfig[T]) error
-}
-
-//nolint:unused // The method satisfies NodeOption[T] and is called through the interface.
-func (fn nodeOptionFunc[T]) applyNode(config *nodeConfig[T]) error {
-	return fn.applyFunc(config)
-}
+type NodeOption[T any] func(config *nodeConfig[T]) error
 
 // New creates a mutable graph builder.
 func New[T any](name string) (*Graph[T], error) {
@@ -139,7 +128,7 @@ func (g *Graph[T]) Node(
 		if opt == nil {
 			continue
 		}
-		if err := opt.applyNode(&config); err != nil {
+		if err := opt(&config); err != nil {
 			return fmt.Errorf("applying node option: %w", err)
 		}
 	}
@@ -381,52 +370,46 @@ func (g *Graph[T]) freezeHandledLocked() {
 
 // WithNodeExceptionHandler sets the exception handler for one graph node.
 func WithNodeExceptionHandler[T any](handler event.ExceptionHandler[T]) NodeOption[T] {
-	return nodeOptionFunc[T]{
-		applyFunc: func(config *nodeConfig[T]) error {
-			if handler == nil {
-				return fmt.Errorf("%w: node exception handler is nil", ErrInvalid)
-			}
+	return func(config *nodeConfig[T]) error {
+		if handler == nil {
+			return fmt.Errorf("%w: node exception handler is nil", ErrInvalid)
+		}
 
-			config.exceptionHandler = handler
-			return nil
-		},
+		config.exceptionHandler = handler
+		return nil
 	}
 }
 
 // WithNodeLabel sets the display label for one graph node.
 func WithNodeLabel[T any](label string) NodeOption[T] {
-	return nodeOptionFunc[T]{
-		applyFunc: func(config *nodeConfig[T]) error {
-			normalized, err := normalizeGraphName("node label", label)
-			if err != nil {
-				return err
-			}
+	return func(config *nodeConfig[T]) error {
+		normalized, err := normalizeGraphName("node label", label)
+		if err != nil {
+			return err
+		}
 
-			config.label = normalized
-			return nil
-		},
+		config.label = normalized
+		return nil
 	}
 }
 
 // WithNodeMetadata adds one metadata key-value pair to a graph node.
 func WithNodeMetadata[T any](key string, value string) NodeOption[T] {
-	return nodeOptionFunc[T]{
-		applyFunc: func(config *nodeConfig[T]) error {
-			normalizedKey, err := normalizeGraphName("metadata key", key)
-			if err != nil {
-				return err
-			}
-			normalizedValue, err := normalizeGraphName("metadata value", value)
-			if err != nil {
-				return err
-			}
+	return func(config *nodeConfig[T]) error {
+		normalizedKey, err := normalizeGraphName("metadata key", key)
+		if err != nil {
+			return err
+		}
+		normalizedValue, err := normalizeGraphName("metadata value", value)
+		if err != nil {
+			return err
+		}
 
-			if config.metadata == nil {
-				config.metadata = make(map[string]string)
-			}
-			config.metadata[normalizedKey] = normalizedValue
-			return nil
-		},
+		if config.metadata == nil {
+			config.metadata = make(map[string]string)
+		}
+		config.metadata[normalizedKey] = normalizedValue
+		return nil
 	}
 }
 

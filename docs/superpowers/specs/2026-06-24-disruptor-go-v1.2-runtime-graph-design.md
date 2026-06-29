@@ -291,12 +291,12 @@ func runtimegraph.WithExpressionCompiler(
 func (g *RuntimeGraph[T]) Name() string
 func (g *RuntimeGraph[T]) Node(
     name string,
-    handler EventHandler[T],
+    handler event.Handler[T],
     opts ...RuntimeNodeOption[T],
 ) error
 func (g *RuntimeGraph[T]) MustNode(
     name string,
-    handler EventHandler[T],
+    handler event.Handler[T],
     opts ...RuntimeNodeOption[T],
 ) *RuntimeGraph[T]
 func (g *RuntimeGraph[T]) Edge(
@@ -312,7 +312,7 @@ func (g *RuntimeGraph[T]) MustEdge(
 
 func (d *Disruptor[T]) HandleRuntimeGraph(
     graph *RuntimeGraph[T],
-    opts ...RuntimeGraphHandleOption[T],
+    opts ...RuntimeGraphOption[T],
 ) (RuntimeGraphProcessors, error)
 ```
 
@@ -740,7 +740,7 @@ RuntimeGraph uses:
 - default workers: `1`
 
 ```go
-func WithRuntimeGraphWorkers[T any](workers int) RuntimeGraphHandleOption[T]
+func WithRuntimeGraphWorkers[T any](workers int) RuntimeGraphOption[T]
 ```
 
 The scheduler owns route state. `WithRuntimeGraphWorkers` validates the runtime
@@ -794,7 +794,7 @@ sequenceDiagram
     participant Proc as Scheduler processor
     participant Bag as RuntimeBag
     participant Cond as Compiled condition
-    participant H as EventHandler T
+    participant H as event.Handler T
     participant End as END or NoRoute
 
     Proc->>Cond: evaluate START edge
@@ -862,8 +862,8 @@ only to handler errors. Condition, NoRoute, and panic failures use
 
 Runtime graph behavior must be observable without forcing metrics on users.
 
-The implementation extends the metrics surface through optional interfaces while
-preserving existing `MetricsSink` compatibility.
+Runtime graph metrics use optional `disruptor.RuntimeGraphMetricsSink[T]`.
+Standard producer, wait, and processor metrics continue to use `metrics.Sink`.
 
 Runtime graph signals:
 

@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/photowey/disruptor.go/pkg/event"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -26,6 +25,9 @@ import (
 	"time"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/ringbuffer"
+	"github.com/photowey/disruptor.go/pkg/wait"
 )
 
 type benchEvent struct {
@@ -80,8 +82,8 @@ func BenchmarkE2EDisruptorParallelProducers(b *testing.B) {
 func benchmarkRingBufferMatrixSmallValue(b *testing.B, ringSize int) {
 	b.Helper()
 
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
 		ringSize,
 	)
 	if err != nil {
@@ -103,8 +105,8 @@ func benchmarkRingBufferMatrixSmallValue(b *testing.B, ringSize int) {
 func benchmarkRingBufferMatrixPaddedValue(b *testing.B, ringSize int) {
 	b.Helper()
 
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[paddedBenchEvent](func() paddedBenchEvent {
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[paddedBenchEvent](func() paddedBenchEvent {
 			return paddedBenchEvent{}
 		}),
 		ringSize,
@@ -128,8 +130,8 @@ func benchmarkRingBufferMatrixPaddedValue(b *testing.B, ringSize int) {
 func benchmarkRingBufferMatrixPointerAdapter(b *testing.B, ringSize int) {
 	b.Helper()
 
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[*benchEvent](func() *benchEvent { return &benchEvent{} }),
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[*benchEvent](func() *benchEvent { return &benchEvent{} }),
 		ringSize,
 	)
 	if err != nil {
@@ -150,7 +152,7 @@ func benchmarkRingBufferMatrixPointerAdapter(b *testing.B, ringSize int) {
 
 func benchmarkDisruptorE2E(
 	b *testing.B,
-	waitStrategy disruptor.WaitStrategy,
+	waitStrategy wait.Strategy,
 	consumerCount int,
 ) {
 	b.Helper()
@@ -159,9 +161,9 @@ func benchmarkDisruptorE2E(
 	defer cancel()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
+		event.FactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
 		65536,
-		disruptor.WithWaitStrategy(waitStrategy),
+		ringbuffer.WithWaitStrategy(waitStrategy),
 	)
 	if err != nil {
 		b.Fatalf("new disruptor: %v", err)
@@ -217,7 +219,7 @@ func benchmarkDisruptorE2E(
 
 func benchmarkDisruptorParallelProducers(
 	b *testing.B,
-	waitStrategy disruptor.WaitStrategy,
+	waitStrategy wait.Strategy,
 	consumerCount int,
 ) {
 	b.Helper()
@@ -226,10 +228,10 @@ func benchmarkDisruptorParallelProducers(
 	defer cancel()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
+		event.FactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
 		65536,
-		disruptor.WithProducerType(disruptor.ProducerTypeMulti),
-		disruptor.WithWaitStrategy(waitStrategy),
+		ringbuffer.WithProducerType(ringbuffer.ProducerTypeMulti),
+		ringbuffer.WithWaitStrategy(waitStrategy),
 	)
 	if err != nil {
 		b.Fatalf("new disruptor: %v", err)
@@ -287,10 +289,10 @@ func benchmarkDisruptorParallelProducers(
 }
 
 func BenchmarkRingBufferParallelProducers(b *testing.B) {
-	rb, err := disruptor.NewRingBuffer(
-		disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
 		65536,
-		disruptor.WithProducerType(disruptor.ProducerTypeMulti),
+		ringbuffer.WithProducerType(ringbuffer.ProducerTypeMulti),
 	)
 	if err != nil {
 		b.Fatalf("new ring buffer: %v", err)
@@ -339,13 +341,11 @@ func benchmarkChannelValue(b *testing.B, capacity int) {
 
 	ch := make(chan benchEvent, capacity)
 	done := make(chan int64, 1)
-	go func() {
-		var sum int64
-		for event := range ch {
-			sum += event.Value
-		}
-		done <- sum
-	}()
+	task := channelValueConsumerTask{
+		events: ch,
+		done:   done,
+	}
+	go task.run()
 
 	var value int64
 	b.ReportAllocs()
@@ -363,13 +363,11 @@ func benchmarkChannelPointer(b *testing.B, capacity int) {
 
 	ch := make(chan *benchEvent, capacity)
 	done := make(chan int64, 1)
-	go func() {
-		var sum int64
-		for event := range ch {
-			sum += event.Value
-		}
-		done <- sum
-	}()
+	task := channelPointerConsumerTask{
+		events: ch,
+		done:   done,
+	}
+	go task.run()
 
 	var value int64
 	b.ReportAllocs()
@@ -387,18 +385,11 @@ func benchmarkChannelNonBlockingSpin(b *testing.B, capacity int) {
 
 	ch := make(chan benchEvent, capacity)
 	done := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-done:
-				return
-			case event := <-ch:
-				benchmarkValueSink.Store(event.Value)
-			default:
-				runtime.Gosched()
-			}
-		}
-	}()
+	task := channelNonBlockingSpinTask{
+		events: ch,
+		done:   done,
+	}
+	go task.run()
 
 	var dropped int64
 	var value int64
@@ -421,17 +412,11 @@ func benchmarkCondQueueValue(b *testing.B, capacity int) {
 
 	queue := newBenchmarkCondQueue(capacity)
 	done := make(chan int64, 1)
-	go func() {
-		var sum int64
-		for {
-			event, ok := queue.pop()
-			if !ok {
-				break
-			}
-			sum += event.Value
-		}
-		done <- sum
-	}()
+	task := condQueueValueConsumerTask{
+		queue: queue,
+		done:  done,
+	}
+	go task.run()
 
 	var value int64
 	b.ReportAllocs()
@@ -442,6 +427,67 @@ func benchmarkCondQueueValue(b *testing.B, capacity int) {
 
 	queue.close()
 	benchmarkValueSink.Store(<-done)
+}
+
+type channelValueConsumerTask struct {
+	events <-chan benchEvent
+	done   chan<- int64
+}
+
+func (task channelValueConsumerTask) run() {
+	var sum int64
+	for event := range task.events {
+		sum += event.Value
+	}
+	task.done <- sum
+}
+
+type channelPointerConsumerTask struct {
+	events <-chan *benchEvent
+	done   chan<- int64
+}
+
+func (task channelPointerConsumerTask) run() {
+	var sum int64
+	for event := range task.events {
+		sum += event.Value
+	}
+	task.done <- sum
+}
+
+type channelNonBlockingSpinTask struct {
+	events <-chan benchEvent
+	done   <-chan struct{}
+}
+
+func (task channelNonBlockingSpinTask) run() {
+	for {
+		select {
+		case <-task.done:
+			return
+		case event := <-task.events:
+			benchmarkValueSink.Store(event.Value)
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+type condQueueValueConsumerTask struct {
+	queue *benchmarkCondQueue
+	done  chan<- int64
+}
+
+func (task condQueueValueConsumerTask) run() {
+	var sum int64
+	for {
+		event, ok := task.queue.pop()
+		if !ok {
+			break
+		}
+		sum += event.Value
+	}
+	task.done <- sum
 }
 
 type benchmarkCondQueue struct {
@@ -535,8 +581,8 @@ func waitForBenchmarkEvents(
 func BenchmarkRingBufferBatchSizes(b *testing.B) {
 	for _, batchSize := range benchmarkBatchSizes() {
 		b.Run(fmt.Sprintf("batch_%d", batchSize), func(b *testing.B) {
-			rb, err := disruptor.NewRingBuffer(
-				disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
+			rb, err := ringbuffer.New(
+				event.FactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
 				65536,
 			)
 			if err != nil {

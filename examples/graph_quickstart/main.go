@@ -38,7 +38,7 @@ type quickTranslator struct {
 	value int64
 }
 
-func (t quickTranslator) Translate(request disruptor.TranslateRequest[quickEvent]) {
+func (t quickTranslator) Translate(request event.TranslateRequest[quickEvent]) {
 	request.Event.Value = t.value
 }
 

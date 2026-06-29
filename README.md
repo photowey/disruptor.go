@@ -22,8 +22,12 @@ Import the packages you use:
 import (
     "github.com/photowey/disruptor.go/pkg/disruptor"
     "github.com/photowey/disruptor.go/pkg/event"
+    "github.com/photowey/disruptor.go/pkg/metrics"
+    "github.com/photowey/disruptor.go/pkg/processor"
+    "github.com/photowey/disruptor.go/pkg/ringbuffer"
     topology "github.com/photowey/disruptor.go/pkg/graph"
     "github.com/photowey/disruptor.go/pkg/runtimegraph"
+    "github.com/photowey/disruptor.go/pkg/wait"
 )
 ```
 
@@ -68,7 +72,7 @@ type LongEventTranslator struct {
 }
 
 func (t LongEventTranslator) Translate(
-    request disruptor.TranslateRequest[LongEvent],
+    request event.TranslateRequest[LongEvent],
 ) {
     request.Event.Value = t.Value
 }
@@ -147,9 +151,9 @@ if err != nil {
 
 ## API Shape
 
-- `RingBuffer[T]` is the low-level API for claiming, mutating, and publishing
-  preallocated event slots.
-- `Disruptor[T]` is the high-level facade for one ring buffer with managed
+- `ringbuffer.RingBuffer[T]` is the low-level API for claiming, mutating, and
+  publishing preallocated event slots.
+- `disruptor.Disruptor[T]` is the high-level facade for one ring buffer with managed
   processors.
 - `HandleEventsWith` wires the V1 fan-out mode where every consumer receives
   every event.
@@ -157,9 +161,9 @@ if err != nil {
   pipelines, fan-in, fan-out, and diamond graphs.
 - `runtimegraph.RuntimeGraph[T]` and `HandleRuntimeGraph` wire V1.2 conditional
   routing graphs where each event may activate a different path.
-- `disruptor.EventFactory[T]`, `disruptor.EventTranslator[T]`,
-  `event.Handler[T]`, `event.ExceptionHandler[T]`, `disruptor.WaitStrategy`,
-  and `disruptor.MetricsSink` are interfaces.
+- `event.Factory[T]`, `event.Translator[T]`, `event.Handler[T]`,
+  `event.ExceptionHandler[T]`, `wait.Strategy`, and `metrics.Sink` are
+  interfaces.
 - `XxxFunc` adapters are available where callbacks are useful without exposing
   anonymous function types in public signatures.
 - `context.Context` is accepted by blocking producer and processor operations so
@@ -171,27 +175,37 @@ if err != nil {
 
 ```mermaid
 flowchart TB
-    App["Application"] --> D["Disruptor[T]"]
-    App --> RB["RingBuffer[T]"]
+    App["Application"] --> D["disruptor.Disruptor[T]"]
+    App --> RB["ringbuffer.RingBuffer[T]"]
     App --> EventPkg["pkg/event contracts"]
     App --> ExecutorAPI["pkg/executor"]
     App --> GraphPkg["pkg/graph"]
     App --> RuntimeGraphPkg["pkg/runtimegraph"]
+    App --> WaitPkg["pkg/wait"]
+    App --> MetricsPkg["pkg/metrics"]
     RuntimeGraphPkg --> ExprPkg["pkg/expression"]
     RuntimeGraphPkg --> VarsPkg["pkg/runtimevars"]
 
     subgraph DisruptorPkg["pkg/disruptor"]
         D --> RB
-        RB --> S["Sequencer"]
-        RB --> W["WaitStrategy"]
-        RB --> M["MetricsSink"]
-
         D --> Fanout["HandleEventsWith"]
         D --> StaticGraph["HandleGraph"]
         D --> RuntimeGraphMode["HandleRuntimeGraph"]
-        Fanout --> P["BatchEventProcessor[T]"]
         StaticGraph --> GP["GraphProcessors"]
         RuntimeGraphMode --> RSP["runtime graph scheduler"]
+    end
+
+    subgraph RingBufferPkg["pkg/ringbuffer"]
+        RB --> S["internal/sequencer"]
+        RB --> W["wait.Strategy"]
+        RB --> M["metrics.Sink"]
+        RB --> B["Barrier"]
+    end
+
+    subgraph ProcessorPkg["pkg/processor"]
+        Fanout --> P["BatchEventProcessor[T]"]
+        P --> B
+        P --> EventPkg
     end
 
     subgraph ExecutorInternals["pkg/executor"]
@@ -203,8 +217,6 @@ flowchart TB
         Pool --> Worker["worker goroutines"]
     end
 
-    P --> B["Barrier"]
-    P --> EventPkg
     GP --> B
     StaticGraph --> GraphPkg
     RuntimeGraphMode --> RuntimeGraphPkg
@@ -234,7 +246,7 @@ sequenceDiagram
     participant Proc as Processor
     participant Exec as Executor
     participant W as Worker
-    participant H as EventHandler T
+    participant H as event.Handler T
 
     App->>RB: PublishEvent(ctx, translator)
     RB->>Seq: Next(ctx)
@@ -431,11 +443,11 @@ flowchart LR
     G --> Slow["Slowest consumer sequence"]
     Slow --> Capacity{"Capacity available?"}
     Capacity -->|yes| Slot["RingBuffer[T] slot"]
-    Capacity -->|no| Wait["wait or ErrInsufficientCapacity"]
+    Capacity -->|no| Wait["wait or ringbuffer.ErrInsufficientCapacity"]
     Slot --> Pub["Publish"]
     Pub --> B["Barrier"]
     B --> EP["BatchEventProcessor[T]"]
-    EP --> H["EventHandler[T]"]
+    EP --> H["event.Handler[T]"]
     H --> Store["Store consumer sequence"]
     Store --> G
     Wait --> P
@@ -443,13 +455,18 @@ flowchart LR
 
 ## Layout
 
-Public packages are split by responsibility. `pkg/disruptor` owns ring-buffer
-and processor orchestration; the other packages own replaceable contracts and
-graph-specific builders:
+Public packages are split by responsibility. `pkg/disruptor` owns high-level
+orchestration; the other packages own low-level infrastructure, replaceable
+contracts, and graph-specific builders:
 
 ```text
-pkg/disruptor/    ring buffer, facade, barriers, processors, wait strategies, metrics
+pkg/disruptor/    facade orchestration for fan-out, static graph, and runtime graph
 pkg/event/        handler requests, lifecycle hooks, exception handlers
+pkg/sequence/     public sequence type and readers
+pkg/wait/         wait strategy interface and built-in blocking/busy-spin strategies
+pkg/metrics/      backend-neutral metrics sink and payloads
+pkg/ringbuffer/   preallocated event storage, barriers, producer options
+pkg/processor/    event processor lifecycle and processor options
 pkg/graph/        static dependency graph builder, validation, snapshots, export
 pkg/runtimegraph/ conditional routing graph builder and edge conditions
 pkg/expression/   bool expression compiler used by runtime graph edges
@@ -465,9 +482,8 @@ examples/         runnable usage examples
 docs/             API and design documentation
 ```
 
-`pkg/disruptor.Sequence` is re-exported from `internal/sequencer`, so external
-users get a stable public type while internal sequencing algorithms remain
-replaceable.
+`pkg/sequence.Sequence` is the stable public sequence type. The concrete
+single-producer and multi-producer sequencing algorithms remain in `internal`.
 
 Cache-line padding follows Go's per-architecture approximation by default:
 32-byte, 64-byte, 128-byte, and 256-byte layouts are selected at compile time.
@@ -491,7 +507,7 @@ if err != nil {
 
 _, err = d.HandleEventsWithOptions(
     []event.Handler[LongEvent]{handler},
-    disruptor.WithExceptionHandler[LongEvent](retryHandler),
+    processor.WithExceptionHandler[LongEvent](retryHandler),
 )
 ```
 
@@ -507,11 +523,11 @@ short-circuit before measuring or dispatching.
 ```go
 type CountingMetricsSink struct{}
 
-func (CountingMetricsSink) OnPublish(metric disruptor.PublishMetric) {}
-func (CountingMetricsSink) OnBatchStart(metric disruptor.BatchMetric) {}
-func (CountingMetricsSink) OnEventHandled(metric disruptor.EventMetric) {}
-func (CountingMetricsSink) OnWait(metric disruptor.WaitMetric) {}
-func (CountingMetricsSink) OnProcessorState(metric disruptor.ProcessorMetric) {}
+func (CountingMetricsSink) OnPublish(metric metrics.PublishMetric) {}
+func (CountingMetricsSink) OnBatchStart(metric metrics.BatchMetric) {}
+func (CountingMetricsSink) OnEventHandled(metric metrics.EventMetric) {}
+func (CountingMetricsSink) OnWait(metric metrics.WaitMetric) {}
+func (CountingMetricsSink) OnProcessorState(metric metrics.ProcessorMetric) {}
 ```
 
 ## Examples

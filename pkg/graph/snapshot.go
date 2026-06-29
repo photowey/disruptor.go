@@ -108,9 +108,7 @@ func (g *Graph[T]) processingSnapshotLocked() Snapshot {
 			Metadata: copyStringMap(node.metadata),
 		})
 	}
-	sort.Slice(nodes, func(i, j int) bool {
-		return nodes[i].Name < nodes[j].Name
-	})
+	sort.Sort(nodeSnapshotsByName(nodes))
 
 	edges := make([]EdgeSnapshot, 0, len(g.edges))
 	for edge := range g.edges {
@@ -219,6 +217,27 @@ func (g *Graph[T]) DOT() string {
 
 func (g *Graph[T]) findCycleLocked() []string {
 	snapshot := g.processingSnapshotLocked()
+	finder := newGraphCycleFinder(snapshot)
+
+	for _, node := range snapshot.Nodes {
+		if finder.seen(node.Name) {
+			continue
+		}
+		if cycle := finder.visit(node.Name); len(cycle) > 0 {
+			return cycle
+		}
+	}
+
+	return nil
+}
+
+type graphCycleFinder struct {
+	adjacency map[string][]string
+	state     map[string]uint8
+	stack     []string
+}
+
+func newGraphCycleFinder(snapshot Snapshot) *graphCycleFinder {
 	adjacency := make(map[string][]string, len(snapshot.Nodes))
 	for _, edge := range snapshot.Edges {
 		adjacency[edge.From] = append(adjacency[edge.From], edge.To)
@@ -227,38 +246,42 @@ func (g *Graph[T]) findCycleLocked() []string {
 		sort.Strings(adjacency[node])
 	}
 
-	state := make(map[string]uint8, len(snapshot.Nodes))
-	stack := make([]string, 0, len(snapshot.Nodes))
+	return &graphCycleFinder{
+		adjacency: adjacency,
+		state:     make(map[string]uint8, len(snapshot.Nodes)),
+		stack:     make([]string, 0, len(snapshot.Nodes)),
+	}
+}
 
-	var visit func(name string) []string
-	visit = func(name string) []string {
-		state[name] = 1
-		stack = append(stack, name)
-		for _, next := range adjacency[name] {
-			switch state[next] {
-			case 0:
-				if cycle := visit(next); len(cycle) > 0 {
-					return cycle
-				}
-			case 1:
-				for i, stacked := range stack {
-					if stacked == next {
-						return append(append([]string(nil), stack[i:]...), next)
-					}
-				}
+func (finder *graphCycleFinder) seen(name string) bool {
+	return finder.state[name] != 0
+}
+
+func (finder *graphCycleFinder) visit(name string) []string {
+	finder.state[name] = 1
+	finder.stack = append(finder.stack, name)
+	for _, next := range finder.adjacency[name] {
+		switch finder.state[next] {
+		case 0:
+			if cycle := finder.visit(next); len(cycle) > 0 {
+				return cycle
+			}
+		case 1:
+			if cycle := finder.stackCycle(next); len(cycle) > 0 {
+				return cycle
 			}
 		}
-		stack = stack[:len(stack)-1]
-		state[name] = 2
-		return nil
 	}
+	finder.stack = finder.stack[:len(finder.stack)-1]
+	finder.state[name] = 2
 
-	for _, node := range snapshot.Nodes {
-		if state[node.Name] != 0 {
-			continue
-		}
-		if cycle := visit(node.Name); len(cycle) > 0 {
-			return cycle
+	return nil
+}
+
+func (finder *graphCycleFinder) stackCycle(name string) []string {
+	for i, stacked := range finder.stack {
+		if stacked == name {
+			return append(append([]string(nil), finder.stack[i:]...), name)
 		}
 	}
 
@@ -387,13 +410,39 @@ func nodeLabel(node NodeSnapshot) string {
 }
 
 func sortEdges(edges []EdgeSnapshot) {
-	sort.Slice(edges, func(i, j int) bool {
-		if edges[i].From == edges[j].From {
-			return edges[i].To < edges[j].To
-		}
+	sort.Sort(edgeSnapshotsByEndpoints(edges))
+}
 
-		return edges[i].From < edges[j].From
-	})
+type nodeSnapshotsByName []NodeSnapshot
+
+func (nodes nodeSnapshotsByName) Len() int {
+	return len(nodes)
+}
+
+func (nodes nodeSnapshotsByName) Less(left int, right int) bool {
+	return nodes[left].Name < nodes[right].Name
+}
+
+func (nodes nodeSnapshotsByName) Swap(left int, right int) {
+	nodes[left], nodes[right] = nodes[right], nodes[left]
+}
+
+type edgeSnapshotsByEndpoints []EdgeSnapshot
+
+func (edges edgeSnapshotsByEndpoints) Len() int {
+	return len(edges)
+}
+
+func (edges edgeSnapshotsByEndpoints) Less(left int, right int) bool {
+	if edges[left].From == edges[right].From {
+		return edges[left].To < edges[right].To
+	}
+
+	return edges[left].From < edges[right].From
+}
+
+func (edges edgeSnapshotsByEndpoints) Swap(left int, right int) {
+	edges[left], edges[right] = edges[right], edges[left]
 }
 
 func escapeMermaidLabel(label string) string {

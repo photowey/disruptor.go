@@ -14,7 +14,7 @@
 
 package benchmarks
 
-import "github.com/photowey/disruptor.go/pkg/disruptor"
+import "github.com/photowey/disruptor.go/pkg/wait"
 
 func benchmarkRingSizes() []int {
 	return []int{1024, 65536, 1048576}
@@ -56,17 +56,17 @@ type benchmarkWaitStrategyCase struct {
 	factory benchmarkWaitStrategyFactory
 }
 
-type benchmarkWaitStrategyFactory func() disruptor.WaitStrategy
+type benchmarkWaitStrategyFactory func() wait.Strategy
 
 func benchmarkWaitStrategyCases() []benchmarkWaitStrategyCase {
 	return []benchmarkWaitStrategyCase{
 		{
 			name:    "blocking",
-			factory: disruptor.NewBlockingWaitStrategy,
+			factory: wait.NewBlockingStrategy,
 		},
 		{
 			name:    "busy_spin",
-			factory: disruptor.NewBusySpinWaitStrategy,
+			factory: wait.NewBusySpinStrategy,
 		},
 	}
 }

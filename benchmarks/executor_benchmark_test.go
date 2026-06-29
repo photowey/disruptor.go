@@ -50,9 +50,7 @@ func BenchmarkPromiseComplete(b *testing.B) {
 func BenchmarkExecutorSubmitInline(b *testing.B) {
 	ctx := context.Background()
 	inline := executor.NewInlineExecutor()
-	task := executor.TaskFunc[int](func(context.Context) (int, error) {
-		return 42, nil
-	})
+	task := benchmarkIntTask{value: 42}
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -80,9 +78,7 @@ func BenchmarkExecutorSubmitFixedWorker(b *testing.B) {
 		executor: pool,
 	}.cleanup)
 
-	task := executor.TaskFunc[int](func(context.Context) (int, error) {
-		return 42, nil
-	})
+	task := benchmarkIntTask{value: 42}
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -105,6 +101,14 @@ func (c benchmarkExecutorCleanup) cleanup() {
 	if err := c.executor.Shutdown(context.Background()); err != nil {
 		c.b.Fatalf("shutdown fixed worker: %v", err)
 	}
+}
+
+type benchmarkIntTask struct {
+	value int
+}
+
+func (task benchmarkIntTask) Execute(context.Context) (int, error) {
+	return task.value, nil
 }
 
 func BenchmarkFutureAllOf(b *testing.B) {

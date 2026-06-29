@@ -145,7 +145,7 @@ type routeTranslator struct {
 	value int64
 }
 
-func (t routeTranslator) Translate(request disruptor.TranslateRequest[routeEvent]) {
+func (t routeTranslator) Translate(request event.TranslateRequest[routeEvent]) {
 	request.Event.Value = t.value
 }
 

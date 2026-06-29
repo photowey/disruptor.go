@@ -41,7 +41,7 @@ The graph is the primary topology abstraction. Nodes are named processors. Edges
 describe sequence dependencies between nodes.
 
 ```go
-graph, err := disruptor.NewGraph[OrderEvent]("order-pipeline")
+graph, err := graph.New[OrderEvent]("order-pipeline")
 if err != nil {
     return err
 }
@@ -71,7 +71,7 @@ if err != nil {
 Static examples and tests can use `Must*` helpers:
 
 ```go
-graph := disruptor.MustGraph[OrderEvent]("order-pipeline").
+graph := graph.Must[OrderEvent]("order-pipeline").
     MustNode("validate", validateHandler).
     MustNode("enrich", enrichHandler).
     MustNode("persist", persistHandler)
@@ -84,34 +84,32 @@ if err != nil {
 }
 ```
 
-The first V1.1 API surface uses `*Graph[T]` as the concrete graph builder and
-registration object. Earlier drafts considered `HandleGraph(EventGraph[T])`,
-but freeze and handled-once guarantees require internal graph state that an
-arbitrary external implementation cannot provide safely.
+The V1.1 API surface uses `*graph.Graph[T]` as the concrete graph builder and
+registration object.
 
 ```go
-const GraphStartNode = "START"
-const GraphEndNode = "END"
+const StartNode = "START"
+const EndNode = "END"
 
-func NewGraph[T any](name string) (*Graph[T], error)
-func MustGraph[T any](name string) *Graph[T]
+func New[T any](name string) (*Graph[T], error)
+func Must[T any](name string) *Graph[T]
 
 func (g *Graph[T]) Name() string
 func (g *Graph[T]) Node(
     name string,
-    handler EventHandler[T],
+    handler event.Handler[T],
     opts ...NodeOption[T],
 ) error
 func (g *Graph[T]) MustNode(
     name string,
-    handler EventHandler[T],
+    handler event.Handler[T],
     opts ...NodeOption[T],
 ) *Graph[T]
 func (g *Graph[T]) Edge(from string, to string) error
 func (g *Graph[T]) MustEdge(from string, to string) *Graph[T]
 func (g *Graph[T]) Join(sources ...string) JoinBuilder[T]
 func (g *Graph[T]) Validate() error
-func (g *Graph[T]) Snapshot() GraphSnapshot
+func (g *Graph[T]) Snapshot() Snapshot
 func (g *Graph[T]) Mermaid() string
 func (g *Graph[T]) DOT() string
 
@@ -120,14 +118,14 @@ type JoinBuilder[T any] interface {
     MustTo(targets ...string) *Graph[T]
 }
 
-func (d *Disruptor[T]) HandleGraph(
-    graph *Graph[T],
-    opts ...GraphHandleOption[T],
+func (d *disruptor.Disruptor[T]) HandleGraph(
+    graph *graph.Graph[T],
+    opts ...GraphOption[T],
 ) (GraphProcessors, error)
 ```
 
-`GraphStartNode` and `GraphEndNode` are reserved virtual topology nodes used by
-snapshot and export output. They are not valid real handler node names.
+`graph.StartNode` and `graph.EndNode` are reserved virtual topology nodes used
+by snapshot and export output. They are not valid real handler node names.
 
 `Join` is syntax sugar over edges:
 
@@ -147,9 +145,9 @@ B -> D
 `Join` does not add a separate runtime join counter. Fan-in behavior comes from
 the downstream barrier depending on all upstream sequences.
 
-The scheduler reads unexported graph state from `*Graph[T]` inside
-`pkg/disruptor`. Public inspection goes through `Snapshot()`, `Mermaid()`, and
-`DOT()`, none of which expose handler values.
+The scheduler consumes a built `*graph.Graph[T]` from `pkg/graph`. Public
+inspection goes through `Snapshot()`, `Mermaid()`, and `DOT()`, none of which
+expose handler values.
 
 ## Node Options
 
@@ -157,9 +155,7 @@ Node-level configuration is required in V1.1 so complex graphs can tune
 exception handling and observability per node.
 
 ```go
-type NodeOption[T any] interface {
-    applyNode(config *nodeConfig[T]) error
-}
+type NodeOption[T any] func(config *nodeConfig[T]) error
 
 func WithNodeExceptionHandler[T any](
     handler ExceptionHandler[T],
@@ -195,22 +191,20 @@ Rules:
 Graph registration can provide graph-level processor defaults:
 
 ```go
-type GraphHandleOption[T any] interface {
-    applyGraphHandle(config *graphHandleConfig[T]) error
-}
+type GraphOption[T any] func(options *graphOptions[T]) error
 
 func WithGraphExceptionHandler[T any](
     handler ExceptionHandler[T],
-) GraphHandleOption[T]
+) GraphOption[T]
 ```
 
 Exception handler precedence is:
 
 ```text
-node option > graph handle option > default processor config
+node option > graph option > default processor config
 ```
 
-Nil node exception handlers mean "inherit from graph handle options or the
+Nil node exception handlers mean "inherit from graph options or the
 default processor config".
 
 ## Scheduling Semantics
@@ -325,9 +319,9 @@ Errors wrap sentinel values and include graph and node or edge details:
 
 ```go
 var (
-    ErrInvalidGraph         = errors.New("disruptor: invalid graph")
-    ErrGraphFrozen          = errors.New("disruptor: graph is frozen")
-    ErrGraphHandled         = errors.New("disruptor: graph already handled")
+    graph.ErrInvalid
+    graph.ErrFrozen
+    graph.ErrHandled
     ErrConsumerModeConflict = errors.New("disruptor: consumer mode conflict")
 )
 ```
@@ -346,7 +340,7 @@ disruptor: invalid graph: graph order-pipeline: node audit is isolated
 Graph lifecycle:
 
 ```text
-NewGraph -> Node/Edge/Join -> Validate -> HandleGraph -> Freeze -> Start
+graph.New -> Node/Edge/Join -> Validate -> HandleGraph -> Freeze -> Start
 ```
 
 Rules:
@@ -354,8 +348,7 @@ Rules:
 - `Validate()` checks structure and can be called repeatedly.
 - `Validate()` does not freeze the graph.
 - `HandleGraph()` validates and freezes the graph.
-- After freeze, `Node`, `Edge`, and `Join(...).To(...)` return
-  `ErrGraphFrozen`.
+- After freeze, `Node`, `Edge`, and `Join(...).To(...)` return `graph.ErrFrozen`.
 - The same graph cannot be handled twice.
 - `HandleGraph()` cannot be called after `Disruptor.Start`.
 - `Mermaid()`, `DOT()`, and `Snapshot()` are read-only and remain valid after
@@ -376,10 +369,10 @@ Mixing modes returns `ErrConsumerModeConflict`.
 
 Error precedence:
 
-- `HandleGraph(nil)` returns `ErrInvalidGraph`.
+- `HandleGraph(nil)` returns `graph.ErrInvalid`.
 - `HandleGraph` after `Start` returns `ErrClosed`.
 - Mode mixing returns `ErrConsumerModeConflict`.
-- A second successful handle of the same graph returns `ErrGraphHandled`.
+- A second successful handle of the same graph returns `graph.ErrHandled`.
 
 ## GraphProcessors
 
@@ -413,22 +406,23 @@ stable output.
 V1.1 adds lightweight node context to consumer-side payloads.
 
 ```go
-type NodeContext struct {
+type Node struct {
     GraphName string
     NodeName  string
     NodeLabel string
 }
 ```
 
-`EventRequest` gains a `Node` field:
+`event.Request[T]` carries node context:
 
 ```go
-type EventRequest[T any] struct {
+type Request[T any] struct {
     Context    context.Context
     Event      *T
     Sequence   int64
     EndOfBatch bool
-    Node       NodeContext
+    Node       Node
+    Runtime    runtimevars.ContextView
 }
 ```
 
@@ -436,54 +430,54 @@ Rules:
 
 - V1 fan-out processors set `Node` to the zero value.
 - V1.1 graph processors set `Node` before invoking the handler.
-- The complete graph object is not stored in `EventRequest`.
-- Node metadata is not stored in `EventRequest`; it remains available through
+- The complete graph object is not stored in `event.Request[T]`.
+- Node metadata is not stored in `event.Request[T]`; it remains available through
   snapshots and graph export.
 - User tests use named fields when constructing request payloads.
-  `EventRequest` is primarily constructed by the library and may gain metadata
+  `event.Request[T]` is primarily constructed by the library and may gain metadata
   fields across minor versions.
 
 Node context also appears in consumer-side errors and metrics:
 
 ```go
-type EventException[T any] struct {
+type Exception[T any] struct {
     Context  context.Context
     Event    *T
     Sequence int64
     Err      error
-    Node     NodeContext
+    Node     Node
 }
 
 type LifecycleException struct {
     Context context.Context
     Err     error
-    Node    NodeContext
+    Node    Node
 }
 
 type BatchStartRequest struct {
     Context    context.Context
     BatchSize  int64
     QueueDepth int64
-    Node       NodeContext
+    Node       Node
 }
 
 type EventMetric struct {
     Sequence int64
     Duration time.Duration
     Err      error
-    Node     NodeContext
+    Node     Node
 }
 
 type BatchMetric struct {
     BatchSize  int64
     QueueDepth int64
-    Node       NodeContext
+    Node       Node
 }
 
 type ProcessorMetric struct {
     State string
     Err   error
-    Node  NodeContext
+    Node  Node
 }
 ```
 
@@ -515,7 +509,7 @@ Rules:
 - A leaf node retry keeps producer backpressure until the retry succeeds or the
   policy changes.
 - `Disruptor.Wait()` continues to aggregate terminal processor errors.
-- `EventException` and `LifecycleException` include `NodeContext`.
+- `event.Exception[T]` and `event.LifecycleException` include `event.Node`.
 - V1 fan-out processors keep the existing behavior where `Halt` stores the
   failed sequence before exit. The graph-specific halt rule is internal to
   `HandleGraph`.
@@ -554,12 +548,11 @@ Rules:
 
 - `Snapshot()` works before and after freeze.
 - `Snapshot()` returns the structure currently built, even if validation fails.
-- `GraphStartNode` is the reserved virtual entry node with value `START`.
-- `GraphEndNode` is the reserved virtual exit node with value `END`.
+- `graph.StartNode` is the reserved virtual entry node with value `START`.
+- `graph.EndNode` is the reserved virtual exit node with value `END`.
 - `Nodes` and `Edges` include virtual `START` and `END` terminals.
-- Virtual entries are identified by the reserved `GraphStartNode` and
-  `GraphEndNode` names instead of extra struct fields, preserving existing
-  snapshot struct compatibility.
+- Virtual entries are identified by the reserved `graph.StartNode` and
+  `graph.EndNode` names.
 - `Sources` and `Leaves` list real handler nodes only.
 - Real nodes, real edges, sources, and leaves use stable sorting.
 - Metadata maps are copied.
@@ -625,7 +618,7 @@ Example tests verify output and use named handlers in public examples.
 The diamond example must include a full lifecycle:
 
 ```go
-graph := disruptor.MustGraph[OrderEvent]("diamond").
+graph := graph.Must[OrderEvent]("diamond").
     MustNode("A", handlerA).
     MustNode("B", handlerB).
     MustNode("C", handlerC).
@@ -654,9 +647,9 @@ Topology behavior is specified through tests.
 
 Required coverage:
 
-- `NewGraph` rejects empty names.
-- `NewGraph` trims names and rejects control characters.
-- `MustGraph` panics on invalid names.
+- `graph.New` rejects empty names.
+- `graph.New` trims names and rejects control characters.
+- `graph.Must` panics on invalid names.
 - `Node` rejects empty names, duplicates, and nil handlers.
 - `Node` trims names and rejects control characters.
 - `Edge` rejects unknown nodes and self-edges.
@@ -672,8 +665,8 @@ Required coverage:
 - `Mermaid` and `DOT` are deterministic.
 - `Mermaid` and `DOT` escape labels and use generated node IDs.
 - `HandleGraph` freezes the graph.
-- Mutating a frozen graph returns `ErrGraphFrozen`.
-- Handling a graph twice returns `ErrGraphHandled`.
+- Mutating a frozen graph returns `graph.ErrFrozen`.
+- Handling a graph twice returns `graph.ErrHandled`.
 - Mixing `HandleEventsWith` and `HandleGraph` returns
   `ErrConsumerModeConflict`.
 - `HandleGraph` cannot run after `Start`.
@@ -682,14 +675,14 @@ Required coverage:
 - Intermediate graph node sequences are barrier dependencies only.
 - `ExceptionActionHalt` in graph mode stops the graph without advancing the
   failed sequence.
-- V1 `NewBatchEventProcessor` still gates producers and still advances the
+- V1 `processor.NewBatchEventProcessor` still gates producers and still advances the
   failed sequence on halt.
 - Node-level exception handler overrides graph-level exception handler.
 - Graph-level exception handler overrides the default processor handler.
-- `EventRequest.Node` is populated for graph processors.
-- Consumer metrics and exceptions include `NodeContext`.
+- `event.Request.Node` is populated for graph processors.
+- Consumer metrics and exceptions include `event.Node`.
 - `GraphProcessors` lookup methods behave for known and unknown node names.
-- `HandleGraph(nil)` returns `ErrInvalidGraph`.
+- `HandleGraph(nil)` returns `graph.ErrInvalid`.
 - `HandleGraph` after `Start` returns `ErrClosed`.
 - `GraphProcessors.Snapshot()` returns defensive copies.
 - Processor shutdown paths remain leak-free.
@@ -714,11 +707,11 @@ topic routing or ownership transfer.
 - Existing V1 `HandleEventsWith` and `HandleEventsWithOptions` behavior remains
   unchanged.
 - Existing producers and translators remain unchanged.
-- Existing V1 consumers see zero-value `EventRequest.Node`.
+- Existing V1 consumers see zero-value `event.Request.Node`.
 - New graph users must build topology before `Start`.
 - A single `Disruptor` instance cannot mix fan-out and graph modes.
-- V1.1 adds `NodeContext` fields to exported consumer-side payload structs:
-  `EventRequest`, `EventException`, `LifecycleException`, `BatchStartRequest`,
+- V1.1 adds `event.Node` fields to exported consumer-side payload structs:
+  `event.Request`, `event.Exception`, `event.LifecycleException`, `event.BatchStartRequest`,
   `BatchMetric`, `EventMetric`, and `ProcessorMetric`.
 - This is a source compatibility risk for external code using unkeyed composite
   literals. The project accepts this V1.1 risk because these structs are

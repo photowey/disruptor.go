@@ -48,7 +48,7 @@ type orderTranslator struct {
 	id int64
 }
 
-func (t orderTranslator) Translate(request disruptor.TranslateRequest[orderEvent]) {
+func (t orderTranslator) Translate(request event.TranslateRequest[orderEvent]) {
 	request.Event.ID = t.id
 }
 

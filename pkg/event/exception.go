@@ -57,64 +57,42 @@ type LifecycleException struct {
 	Node    Node
 }
 
-type exceptionHandlerFunc[T any] struct {
-	handleEvent    func(Exception[T]) ExceptionAction
-	handleStart    func(LifecycleException) ExceptionAction
-	handleShutdown func(LifecycleException) ExceptionAction
-}
-
-func (f exceptionHandlerFunc[T]) HandleEventException(request Exception[T]) ExceptionAction {
-	if f.handleEvent == nil {
-		return ExceptionActionHalt
-	}
-
-	return f.handleEvent(request)
-}
-
-func (f exceptionHandlerFunc[T]) HandleStartException(request LifecycleException) ExceptionAction {
-	if f.handleStart == nil {
-		return ExceptionActionHalt
-	}
-
-	return f.handleStart(request)
-}
-
-func (f exceptionHandlerFunc[T]) HandleShutdownException(request LifecycleException) ExceptionAction {
-	if f.handleShutdown == nil {
-		return ExceptionActionHalt
-	}
-
-	return f.handleShutdown(request)
-}
-
 // NewFatalExceptionHandler returns a handler that halts on every failure.
 func NewFatalExceptionHandler[T any]() ExceptionHandler[T] {
-	return exceptionHandlerFunc[T]{
-		handleEvent: func(Exception[T]) ExceptionAction {
-			return ExceptionActionHalt
-		},
-		handleStart: func(LifecycleException) ExceptionAction {
-			return ExceptionActionHalt
-		},
-		handleShutdown: func(LifecycleException) ExceptionAction {
-			return ExceptionActionHalt
-		},
-	}
+	return fatalExceptionHandler[T]{}
 }
 
 // NewIgnoreExceptionHandler returns a handler that continues after failures.
 func NewIgnoreExceptionHandler[T any]() ExceptionHandler[T] {
-	return exceptionHandlerFunc[T]{
-		handleEvent: func(Exception[T]) ExceptionAction {
-			return ExceptionActionContinue
-		},
-		handleStart: func(LifecycleException) ExceptionAction {
-			return ExceptionActionContinue
-		},
-		handleShutdown: func(LifecycleException) ExceptionAction {
-			return ExceptionActionContinue
-		},
-	}
+	return ignoreExceptionHandler[T]{}
+}
+
+type fatalExceptionHandler[T any] struct{}
+
+func (fatalExceptionHandler[T]) HandleEventException(Exception[T]) ExceptionAction {
+	return ExceptionActionHalt
+}
+
+func (fatalExceptionHandler[T]) HandleStartException(LifecycleException) ExceptionAction {
+	return ExceptionActionHalt
+}
+
+func (fatalExceptionHandler[T]) HandleShutdownException(LifecycleException) ExceptionAction {
+	return ExceptionActionHalt
+}
+
+type ignoreExceptionHandler[T any] struct{}
+
+func (ignoreExceptionHandler[T]) HandleEventException(Exception[T]) ExceptionAction {
+	return ExceptionActionContinue
+}
+
+func (ignoreExceptionHandler[T]) HandleStartException(LifecycleException) ExceptionAction {
+	return ExceptionActionContinue
+}
+
+func (ignoreExceptionHandler[T]) HandleShutdownException(LifecycleException) ExceptionAction {
+	return ExceptionActionContinue
 }
 
 // RetryExceptionHandler retries failed events before using an exhausted action.

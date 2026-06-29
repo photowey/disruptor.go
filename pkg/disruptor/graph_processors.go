@@ -21,73 +21,62 @@ import (
 
 	"github.com/photowey/disruptor.go/pkg/event"
 	topology "github.com/photowey/disruptor.go/pkg/graph"
+	"github.com/photowey/disruptor.go/pkg/processor"
+	"github.com/photowey/disruptor.go/pkg/sequence"
 )
 
-// GraphHandleOption configures graph processor registration.
-type GraphHandleOption[T any] interface {
-	applyGraphHandle(config *graphHandleConfig[T]) error
-}
+// GraphOption configures graph processor registration.
+type GraphOption[T any] func(options *graphOptions[T]) error
 
-type graphHandleConfig[T any] struct {
+type graphOptions[T any] struct {
 	exceptionHandler event.ExceptionHandler[T]
 }
 
-type graphHandleOptionFunc[T any] struct {
-	applyFunc func(*graphHandleConfig[T]) error
-}
-
-//nolint:unused // The method satisfies GraphHandleOption[T] and is called through the interface.
-func (fn graphHandleOptionFunc[T]) applyGraphHandle(config *graphHandleConfig[T]) error {
-	return fn.applyFunc(config)
-}
-
 // WithGraphExceptionHandler sets the default exception handler for graph nodes.
-func WithGraphExceptionHandler[T any](handler event.ExceptionHandler[T]) GraphHandleOption[T] {
-	return graphHandleOptionFunc[T]{
-		applyFunc: func(config *graphHandleConfig[T]) error {
-			if handler == nil {
-				return fmt.Errorf("%w: graph exception handler is nil", topology.ErrInvalid)
-			}
+func WithGraphExceptionHandler[T any](handler event.ExceptionHandler[T]) GraphOption[T] {
+	return func(options *graphOptions[T]) error {
+		if handler == nil {
+			return fmt.Errorf("%w: graph exception handler is nil", topology.ErrInvalid)
+		}
 
-			config.exceptionHandler = handler
-			return nil
-		},
+		options.exceptionHandler = handler
+		return nil
 	}
 }
 
 // GraphProcessors exposes processors created from a handled graph.
 type GraphProcessors interface {
 	Names() []string
-	Processors() []EventProcessor
-	Processor(name string) (EventProcessor, bool)
-	Sequence(name string) (*Sequence, bool)
+	Processors() []processor.EventProcessor
+	Processor(name string) (processor.EventProcessor, bool)
+	Sequence(name string) (*sequence.Sequence, bool)
 	Snapshot() topology.Snapshot
 }
 
 type handledGraphProcessors struct {
 	names      []string
-	processors map[string]EventProcessor
+	processors map[string]processor.EventProcessor
 	snapshot   topology.Snapshot
 }
 
 // HandleGraph registers a named dependency graph of event handlers.
 func (d *Disruptor[T]) HandleGraph(
 	topologyGraph *topology.Graph[T],
-	opts ...GraphHandleOption[T],
+	opts ...GraphOption[T],
 ) (GraphProcessors, error) {
 	if topologyGraph == nil {
 		return nil, fmt.Errorf("%w: graph is nil", topology.ErrInvalid)
 	}
 
-	handleConfig := graphHandleConfig[T]{
-		exceptionHandler: defaultProcessorConfig[T]().exceptionHandler,
+	options := graphOptions[T]{
+		exceptionHandler: event.NewFatalExceptionHandler[T](),
 	}
 	for _, opt := range opts {
 		if opt == nil {
 			continue
 		}
-		if err := opt.applyGraphHandle(&handleConfig); err != nil {
-			return nil, fmt.Errorf("applying graph handle option: %w", err)
+		if err := opt(&options); err != nil {
+			return nil, fmt.Errorf("applying graph option: %w", err)
 		}
 	}
 
@@ -108,22 +97,17 @@ func (d *Disruptor[T]) HandleGraph(
 		return nil, err
 	}
 
-	var stopOnce sync.Once
-	createdProcessors := make([]EventProcessor, 0, len(plan.Order))
-	stopGraph := func() {
-		stopOnce.Do(func() {
-			for _, processor := range createdProcessors {
-				processor.Stop()
-			}
-		})
+	createdProcessors := make([]processor.EventProcessor, 0, len(plan.Order))
+	haltNotifier := &graphProcessorHaltNotifier{
+		processors: &createdProcessors,
 	}
 
-	processorByName := make(map[string]EventProcessor, len(plan.Order))
+	processorByName := make(map[string]processor.EventProcessor, len(plan.Order))
 	for _, name := range plan.Order {
 		node := plan.Nodes[name]
-		dependencies := make([]*Sequence, 0, len(plan.Upstream[name]))
+		dependencies := make([]*sequence.Sequence, 0, len(plan.Upstream[name]))
 		for _, upstreamName := range plan.Upstream[name] {
-			processor, ok := processorByName[upstreamName]
+			eventProcessor, ok := processorByName[upstreamName]
 			if !ok {
 				return nil, fmt.Errorf(
 					"%w: graph %s: missing upstream processor %s",
@@ -132,36 +116,36 @@ func (d *Disruptor[T]) HandleGraph(
 					upstreamName,
 				)
 			}
-			dependencies = append(dependencies, processor.Sequence())
+			dependencies = append(dependencies, eventProcessor.Sequence())
 		}
 
 		exceptionHandler := node.ExceptionHandler
 		if exceptionHandler == nil {
-			exceptionHandler = handleConfig.exceptionHandler
+			exceptionHandler = options.exceptionHandler
 		}
 
-		processor, err := newBatchEventProcessor(
+		eventProcessor, err := processor.NewBatchEventProcessorWithConfig(
 			d.ringBuffer,
 			d.ringBuffer.NewBarrier(dependencies...),
 			node.Handler,
-			batchEventProcessorConfig[T]{
-				exceptionHandler: exceptionHandler,
-				producerGating:   plan.Leaves[name],
-				haltAdvances:     false,
-				node: event.Node{
+			processor.BatchConfig[T]{
+				ExceptionHandler: exceptionHandler,
+				ProducerGating:   plan.Leaves[name],
+				HaltAdvances:     false,
+				Node: event.Node{
 					GraphName: plan.Name,
 					NodeName:  node.Name,
 					NodeLabel: node.Label,
 				},
-				onHalt: stopGraph,
+				HaltNotifier: haltNotifier,
 			},
 		)
 		if err != nil {
 			return nil, fmt.Errorf("creating graph processor %s: %w", name, err)
 		}
 
-		processorByName[name] = processor
-		createdProcessors = append(createdProcessors, processor)
+		processorByName[name] = eventProcessor
+		createdProcessors = append(createdProcessors, eventProcessor)
 	}
 
 	d.mode = consumerModeGraph
@@ -170,15 +154,30 @@ func (d *Disruptor[T]) HandleGraph(
 	return newHandledGraphProcessors(plan.Snapshot, processorByName), nil
 }
 
+type graphProcessorHaltNotifier struct {
+	once       sync.Once
+	processors *[]processor.EventProcessor
+}
+
+func (notifier *graphProcessorHaltNotifier) NotifyHalt() {
+	notifier.once.Do(notifier.stopProcessors)
+}
+
+func (notifier *graphProcessorHaltNotifier) stopProcessors() {
+	for _, processor := range *notifier.processors {
+		processor.Stop()
+	}
+}
+
 func newHandledGraphProcessors(
 	snapshot topology.Snapshot,
-	processors map[string]EventProcessor,
+	processors map[string]processor.EventProcessor,
 ) *handledGraphProcessors {
 	names := make([]string, 0, len(processors))
-	copiedProcessors := make(map[string]EventProcessor, len(processors))
-	for name, processor := range processors {
+	copiedProcessors := make(map[string]processor.EventProcessor, len(processors))
+	for name, eventProcessor := range processors {
 		names = append(names, name)
-		copiedProcessors[name] = processor
+		copiedProcessors[name] = eventProcessor
 	}
 	sort.Strings(names)
 
@@ -193,8 +192,8 @@ func (p *handledGraphProcessors) Names() []string {
 	return append([]string(nil), p.names...)
 }
 
-func (p *handledGraphProcessors) Processors() []EventProcessor {
-	processors := make([]EventProcessor, 0, len(p.names))
+func (p *handledGraphProcessors) Processors() []processor.EventProcessor {
+	processors := make([]processor.EventProcessor, 0, len(p.names))
 	for _, name := range p.names {
 		processors = append(processors, p.processors[name])
 	}
@@ -202,18 +201,18 @@ func (p *handledGraphProcessors) Processors() []EventProcessor {
 	return processors
 }
 
-func (p *handledGraphProcessors) Processor(name string) (EventProcessor, bool) {
-	processor, ok := p.processors[name]
-	return processor, ok
+func (p *handledGraphProcessors) Processor(name string) (processor.EventProcessor, bool) {
+	eventProcessor, ok := p.processors[name]
+	return eventProcessor, ok
 }
 
-func (p *handledGraphProcessors) Sequence(name string) (*Sequence, bool) {
-	processor, ok := p.processors[name]
+func (p *handledGraphProcessors) Sequence(name string) (*sequence.Sequence, bool) {
+	eventProcessor, ok := p.processors[name]
 	if !ok {
 		return nil, false
 	}
 
-	return processor.Sequence(), true
+	return eventProcessor.Sequence(), true
 }
 
 func (p *handledGraphProcessors) Snapshot() topology.Snapshot {

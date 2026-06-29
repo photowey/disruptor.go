@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor_test
+package processor_test
 
 import (
 	"context"
@@ -21,8 +21,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/photowey/disruptor.go/pkg/disruptor"
 	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/processor"
+	"github.com/photowey/disruptor.go/pkg/ringbuffer"
 )
 
 func TestBatchEventProcessorHandlesPublishedEventsAndAdvancesSequence(t *testing.T) {
@@ -45,7 +46,7 @@ func TestBatchEventProcessorHandlesPublishedEventsAndAdvancesSequence(t *testing
 		return nil
 	})
 
-	processor, err := disruptor.NewBatchEventProcessor(
+	processor, err := processor.NewBatchEventProcessor(
 		rb,
 		rb.NewBarrier(),
 		handler,
@@ -103,11 +104,11 @@ func TestBatchEventProcessorContinuesWhenExceptionHandlerRequestsContinue(t *tes
 	})
 
 	exceptions := make(chan event.Exception[longEvent], 1)
-	processor, err := disruptor.NewBatchEventProcessor(
+	processor, err := processor.NewBatchEventProcessor(
 		rb,
 		rb.NewBarrier(),
 		handler,
-		disruptor.WithExceptionHandler[longEvent](continueExceptionHandler[longEvent]{
+		processor.WithExceptionHandler[longEvent](continueExceptionHandler[longEvent]{
 			events: exceptions,
 		}),
 	)
@@ -154,7 +155,7 @@ func TestBatchEventProcessorDefaultHandlerHaltsOnError(t *testing.T) {
 		return handlerErr
 	})
 
-	processor, err := disruptor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
+	processor, err := processor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
 	if err != nil {
 		t.Fatalf("new processor: %v", err)
 	}
@@ -195,11 +196,11 @@ func TestRetryExceptionHandlerRetriesUntilSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new retry exception handler: %v", err)
 	}
-	processor, err := disruptor.NewBatchEventProcessor(
+	processor, err := processor.NewBatchEventProcessor(
 		rb,
 		rb.NewBarrier(),
 		handler,
-		disruptor.WithExceptionHandler[longEvent](retryHandler),
+		processor.WithExceptionHandler[longEvent](retryHandler),
 	)
 	if err != nil {
 		t.Fatalf("new processor: %v", err)
@@ -239,11 +240,11 @@ func TestRetryExceptionHandlerHaltsAfterMaxRetries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new retry exception handler: %v", err)
 	}
-	processor, err := disruptor.NewBatchEventProcessor(
+	processor, err := processor.NewBatchEventProcessor(
 		rb,
 		rb.NewBarrier(),
 		handler,
-		disruptor.WithExceptionHandler[longEvent](retryHandler),
+		processor.WithExceptionHandler[longEvent](retryHandler),
 	)
 	if err != nil {
 		t.Fatalf("new processor: %v", err)
@@ -270,7 +271,7 @@ func TestBatchEventProcessorRemovesGatingSequenceOnExit(t *testing.T) {
 		return nil
 	})
 
-	processor, err := disruptor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
+	processor, err := processor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
 	if err != nil {
 		t.Fatalf("new processor: %v", err)
 	}
@@ -308,7 +309,7 @@ func TestBatchEventProcessorSignalsCapacityWaitersAfterAdvancing(t *testing.T) {
 		<-release
 		return nil
 	})
-	processor, err := disruptor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
+	processor, err := processor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
 	if err != nil {
 		t.Fatalf("new processor: %v", err)
 	}
@@ -321,10 +322,12 @@ func TestBatchEventProcessorSignalsCapacityWaitersAfterAdvancing(t *testing.T) {
 	waitForSignal(t, entered)
 
 	nextResult := make(chan error, 1)
-	go func() {
-		_, err := rb.Next(ctx)
-		nextResult <- err
-	}()
+	task := ringBufferNextTask{
+		ctx:    ctx,
+		buffer: rb,
+		result: nextResult,
+	}
+	go task.run()
 
 	select {
 	case err := <-nextResult:
@@ -350,7 +353,7 @@ func TestBatchEventProcessorInvokesBatchStartHandler(t *testing.T) {
 		batches: make(chan event.BatchStartRequest, 1),
 		events:  make(chan int64, 3),
 	}
-	processor, err := disruptor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
+	processor, err := processor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
 	if err != nil {
 		t.Fatalf("new processor: %v", err)
 	}
@@ -398,7 +401,7 @@ func TestBatchEventProcessorInvokesLifecycleHandler(t *testing.T) {
 		started:  make(chan struct{}, 1),
 		shutdown: make(chan struct{}, 1),
 	}
-	processor, err := disruptor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
+	processor, err := processor.NewBatchEventProcessor(rb, rb.NewBarrier(), handler)
 	if err != nil {
 		t.Fatalf("new processor: %v", err)
 	}
@@ -477,12 +480,12 @@ func (h continueExceptionHandler[T]) HandleShutdownException(
 	return event.ExceptionActionHalt
 }
 
-func publishValues(t *testing.T, rb *disruptor.RingBuffer[longEvent], values ...int64) {
+func publishValues(t *testing.T, rb *ringbuffer.RingBuffer[longEvent], values ...int64) {
 	t.Helper()
 
 	ctx := context.Background()
 	for _, value := range values {
-		err := rb.PublishEvent(ctx, disruptor.EventTranslatorFunc[longEvent](func(request disruptor.TranslateRequest[longEvent]) {
+		err := rb.PublishEvent(ctx, event.TranslatorFunc[longEvent](func(request event.TranslateRequest[longEvent]) {
 			request.Event.Value = value
 		}))
 		if err != nil {
@@ -499,4 +502,33 @@ func waitForSignal(t *testing.T, done <-chan struct{}) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for signal")
 	}
+}
+
+type longEvent struct {
+	Value int64
+}
+
+func newTestRingBuffer(t *testing.T, size int) *ringbuffer.RingBuffer[longEvent] {
+	t.Helper()
+
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		size,
+	)
+	if err != nil {
+		t.Fatalf("new ring buffer: %v", err)
+	}
+
+	return rb
+}
+
+type ringBufferNextTask struct {
+	ctx    context.Context
+	buffer *ringbuffer.RingBuffer[longEvent]
+	result chan<- error
+}
+
+func (task ringBufferNextTask) run() {
+	_, err := task.buffer.Next(task.ctx)
+	task.result <- err
 }

@@ -18,10 +18,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/photowey/disruptor.go/pkg/event"
 	"sync/atomic"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/processor"
 )
 
 type recoveryEvent struct {
@@ -53,7 +54,7 @@ type recoveryTranslator struct {
 	value int64
 }
 
-func (t recoveryTranslator) Translate(request disruptor.TranslateRequest[recoveryEvent]) {
+func (t recoveryTranslator) Translate(request event.TranslateRequest[recoveryEvent]) {
 	request.Event.Value = t.value
 }
 
@@ -82,7 +83,7 @@ func main() {
 	}
 	_, err = d.HandleEventsWithOptions(
 		[]event.Handler[recoveryEvent]{handler},
-		disruptor.WithExceptionHandler[recoveryEvent](retryHandler),
+		processor.WithExceptionHandler[recoveryEvent](retryHandler),
 	)
 	if err != nil {
 		panic(err)

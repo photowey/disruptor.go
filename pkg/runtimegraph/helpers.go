@@ -181,13 +181,39 @@ func nodeLabel(node graph.NodeSnapshot) string {
 }
 
 func sortEdges(edges []graph.EdgeSnapshot) {
-	sort.Slice(edges, func(i, j int) bool {
-		if edges[i].From == edges[j].From {
-			return edges[i].To < edges[j].To
-		}
+	sort.Sort(edgeSnapshotsByEndpoints(edges))
+}
 
-		return edges[i].From < edges[j].From
-	})
+type nodeSnapshotsByName []graph.NodeSnapshot
+
+func (nodes nodeSnapshotsByName) Len() int {
+	return len(nodes)
+}
+
+func (nodes nodeSnapshotsByName) Less(left int, right int) bool {
+	return nodes[left].Name < nodes[right].Name
+}
+
+func (nodes nodeSnapshotsByName) Swap(left int, right int) {
+	nodes[left], nodes[right] = nodes[right], nodes[left]
+}
+
+type edgeSnapshotsByEndpoints []graph.EdgeSnapshot
+
+func (edges edgeSnapshotsByEndpoints) Len() int {
+	return len(edges)
+}
+
+func (edges edgeSnapshotsByEndpoints) Less(left int, right int) bool {
+	if edges[left].From == edges[right].From {
+		return edges[left].To < edges[right].To
+	}
+
+	return edges[left].From < edges[right].From
+}
+
+func (edges edgeSnapshotsByEndpoints) Swap(left int, right int) {
+	edges[left], edges[right] = edges[right], edges[left]
 }
 
 func escapeMermaidLabel(label string) string {

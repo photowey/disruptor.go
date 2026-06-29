@@ -102,18 +102,13 @@ func AllOf(futures ...FutureView) Future[struct{}] {
 	remaining := len(active)
 	var canceled bool
 	for _, future := range active {
-		future.ObserveAny(FutureObserverFunc[any](func(result Result[any]) {
-			mu.Lock()
-			defer mu.Unlock()
-			if result.Canceled {
-				canceled = true
-			}
-			if err := resultError(result); err != nil {
-				joined = errors.Join(joined, err)
-			}
-			remaining--
-			completeAllOf(promise, remaining, joined, canceled)
-		}))
+		future.ObserveAny(allOfObserver{
+			mu:        &mu,
+			remaining: &remaining,
+			joined:    &joined,
+			canceled:  &canceled,
+			promise:   promise,
+		})
 	}
 
 	return promise.Future()
@@ -169,32 +164,15 @@ func All[T any](futures ...Future[T]) Future[[]T] {
 	var canceled bool
 	for activeIndex, future := range active {
 		resultIndex := indexes[activeIndex]
-		future.Observe(FutureObserverFunc[T](func(result Result[T]) {
-			mu.Lock()
-			defer mu.Unlock()
-			if result.OK() {
-				values[resultIndex] = result.Value
-			}
-			if result.Canceled {
-				canceled = true
-			}
-			if err := resultError(result); err != nil {
-				joined = errors.Join(joined, err)
-			}
-			remaining--
-			if remaining > 0 {
-				return
-			}
-			if joined != nil {
-				if canceled {
-					promise.Cancel(joined)
-					return
-				}
-				promise.Fail(joined)
-				return
-			}
-			promise.Complete(values)
-		}))
+		future.Observe(allObserver[T]{
+			mu:          &mu,
+			remaining:   &remaining,
+			joined:      &joined,
+			canceled:    &canceled,
+			values:      values,
+			resultIndex: resultIndex,
+			promise:     promise,
+		})
 	}
 
 	return promise.Future()
@@ -225,22 +203,12 @@ func AnyOf(futures ...FutureView) Future[any] {
 	var mu sync.Mutex
 	remaining := len(active)
 	for _, future := range active {
-		future.ObserveAny(FutureObserverFunc[any](func(result Result[any]) {
-			mu.Lock()
-			defer mu.Unlock()
-			if promiseCompleted(promise.Future()) {
-				return
-			}
-			if result.OK() {
-				promise.Complete(result.Value)
-				return
-			}
-			joined = errors.Join(joined, resultError(result))
-			remaining--
-			if remaining == 0 {
-				completeAnyOf(promise, joined)
-			}
-		}))
+		future.ObserveAny(anyOfObserver{
+			mu:        &mu,
+			remaining: &remaining,
+			joined:    &joined,
+			promise:   promise,
+		})
 	}
 
 	return promise.Future()
@@ -271,22 +239,12 @@ func Any[T any](futures ...Future[T]) Future[T] {
 	var mu sync.Mutex
 	remaining := len(active)
 	for _, future := range active {
-		future.Observe(FutureObserverFunc[T](func(result Result[T]) {
-			mu.Lock()
-			defer mu.Unlock()
-			if promiseCompleted(promise.Future()) {
-				return
-			}
-			if result.OK() {
-				promise.Complete(result.Value)
-				return
-			}
-			joined = errors.Join(joined, resultError(result))
-			remaining--
-			if remaining == 0 {
-				completeAny(promise, joined)
-			}
-		}))
+		future.Observe(anyObserver[T]{
+			mu:        &mu,
+			remaining: &remaining,
+			joined:    &joined,
+			promise:   promise,
+		})
 	}
 
 	return promise.Future()
@@ -305,21 +263,13 @@ func ThenApply[T, R any](
 	}
 
 	promise := NewPromise[R]()
-	parent.Observe(FutureObserverFunc[T](func(result Result[T]) {
-		if !result.OK() {
-			completeFromResult(promise, result)
-			return
-		}
-		future, err := Submit(
-			ctx,
-			executor,
-			TaskFunc[R](func(ctx context.Context) (R, error) {
-				return task.Apply(ctx, result.Value)
-			}),
-			opts...,
-		)
-		chainFuture(promise, future, err)
-	}))
+	parent.Observe(thenApplyObserver[T, R]{
+		ctx:      ctx,
+		executor: executor,
+		task:     task,
+		opts:     opts,
+		promise:  promise,
+	})
 
 	return promise.Future(), nil
 }
@@ -337,31 +287,13 @@ func ThenCompose[T, R any](
 	}
 
 	promise := NewPromise[R]()
-	parent.Observe(FutureObserverFunc[T](func(result Result[T]) {
-		if !result.OK() {
-			completeFromResult(promise, result)
-			return
-		}
-		future, err := Submit(
-			ctx,
-			executor,
-			TaskFunc[Future[R]](func(ctx context.Context) (Future[R], error) {
-				return task.Compose(ctx, result.Value)
-			}),
-			opts...,
-		)
-		if err != nil {
-			promise.Fail(err)
-			return
-		}
-		future.Observe(FutureObserverFunc[Future[R]](func(result Result[Future[R]]) {
-			if !result.OK() {
-				completeFromResult(promise, result)
-				return
-			}
-			chainFuture(promise, result.Value, nil)
-		}))
-	}))
+	parent.Observe(thenComposeObserver[T, R]{
+		ctx:      ctx,
+		executor: executor,
+		task:     task,
+		opts:     opts,
+		promise:  promise,
+	})
 
 	return promise.Future(), nil
 }
@@ -379,21 +311,13 @@ func Exceptionally[T any](
 	}
 
 	promise := NewPromise[T]()
-	parent.Observe(FutureObserverFunc[T](func(result Result[T]) {
-		if result.OK() {
-			promise.Complete(result.Value)
-			return
-		}
-		future, err := Submit(
-			ctx,
-			executor,
-			TaskFunc[T](func(ctx context.Context) (T, error) {
-				return task.Recover(ctx, resultError(result))
-			}),
-			opts...,
-		)
-		chainFuture(promise, future, err)
-	}))
+	parent.Observe(exceptionallyObserver[T]{
+		ctx:      ctx,
+		executor: executor,
+		task:     task,
+		opts:     opts,
+		promise:  promise,
+	})
 
 	return promise.Future(), nil
 }
@@ -407,17 +331,252 @@ func chainFuture[T any](promise Promise[T], future Future[T], err error) {
 		promise.Fail(fmt.Errorf("%w: future is nil", ErrInvalid))
 		return
 	}
-	future.Observe(FutureObserverFunc[T](func(result Result[T]) {
-		if result.OK() {
-			promise.Complete(result.Value)
+	future.Observe(chainFutureObserver[T]{promise: promise})
+}
+
+type allOfObserver struct {
+	mu        *sync.Mutex
+	remaining *int
+	joined    *error
+	canceled  *bool
+	promise   Promise[struct{}]
+}
+
+func (observer allOfObserver) OnFutureComplete(result Result[any]) {
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if result.Canceled {
+		*observer.canceled = true
+	}
+	if err := resultError(result); err != nil {
+		*observer.joined = errors.Join(*observer.joined, err)
+	}
+	*observer.remaining--
+	completeAllOf(
+		observer.promise,
+		*observer.remaining,
+		*observer.joined,
+		*observer.canceled,
+	)
+}
+
+type allObserver[T any] struct {
+	mu          *sync.Mutex
+	remaining   *int
+	joined      *error
+	canceled    *bool
+	values      []T
+	resultIndex int
+	promise     Promise[[]T]
+}
+
+func (observer allObserver[T]) OnFutureComplete(result Result[T]) {
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if result.OK() {
+		observer.values[observer.resultIndex] = result.Value
+	}
+	if result.Canceled {
+		*observer.canceled = true
+	}
+	if err := resultError(result); err != nil {
+		*observer.joined = errors.Join(*observer.joined, err)
+	}
+	*observer.remaining--
+	if *observer.remaining > 0 {
+		return
+	}
+	if *observer.joined != nil {
+		if *observer.canceled {
+			observer.promise.Cancel(*observer.joined)
 			return
 		}
-		if result.Canceled {
-			promise.Cancel(resultError(result))
-			return
-		}
-		promise.Fail(resultError(result))
-	}))
+		observer.promise.Fail(*observer.joined)
+		return
+	}
+	observer.promise.Complete(observer.values)
+}
+
+type anyOfObserver struct {
+	mu        *sync.Mutex
+	remaining *int
+	joined    *error
+	promise   Promise[any]
+}
+
+func (observer anyOfObserver) OnFutureComplete(result Result[any]) {
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if promiseCompleted(observer.promise.Future()) {
+		return
+	}
+	if result.OK() {
+		observer.promise.Complete(result.Value)
+		return
+	}
+	*observer.joined = errors.Join(*observer.joined, resultError(result))
+	*observer.remaining--
+	if *observer.remaining == 0 {
+		completeAnyOf(observer.promise, *observer.joined)
+	}
+}
+
+type anyObserver[T any] struct {
+	mu        *sync.Mutex
+	remaining *int
+	joined    *error
+	promise   Promise[T]
+}
+
+func (observer anyObserver[T]) OnFutureComplete(result Result[T]) {
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if promiseCompleted(observer.promise.Future()) {
+		return
+	}
+	if result.OK() {
+		observer.promise.Complete(result.Value)
+		return
+	}
+	*observer.joined = errors.Join(*observer.joined, resultError(result))
+	*observer.remaining--
+	if *observer.remaining == 0 {
+		completeAny(observer.promise, *observer.joined)
+	}
+}
+
+type thenApplyObserver[T, R any] struct {
+	ctx      context.Context
+	executor Executor
+	task     ApplyTask[T, R]
+	opts     []SubmitOption
+	promise  Promise[R]
+}
+
+func (observer thenApplyObserver[T, R]) OnFutureComplete(result Result[T]) {
+	if !result.OK() {
+		completeFromResult(observer.promise, result)
+		return
+	}
+	future, err := Submit(
+		observer.ctx,
+		observer.executor,
+		thenApplyTask[T, R]{
+			task:  observer.task,
+			value: result.Value,
+		},
+		observer.opts...,
+	)
+	chainFuture(observer.promise, future, err)
+}
+
+type thenApplyTask[T, R any] struct {
+	task  ApplyTask[T, R]
+	value T
+}
+
+func (task thenApplyTask[T, R]) Execute(ctx context.Context) (R, error) {
+	return task.task.Apply(ctx, task.value)
+}
+
+type thenComposeObserver[T, R any] struct {
+	ctx      context.Context
+	executor Executor
+	task     ComposeTask[T, R]
+	opts     []SubmitOption
+	promise  Promise[R]
+}
+
+func (observer thenComposeObserver[T, R]) OnFutureComplete(result Result[T]) {
+	if !result.OK() {
+		completeFromResult(observer.promise, result)
+		return
+	}
+	future, err := Submit(
+		observer.ctx,
+		observer.executor,
+		thenComposeTask[T, R]{
+			task:  observer.task,
+			value: result.Value,
+		},
+		observer.opts...,
+	)
+	if err != nil {
+		observer.promise.Fail(err)
+		return
+	}
+	future.Observe(thenComposeFutureObserver[R]{promise: observer.promise})
+}
+
+type thenComposeTask[T, R any] struct {
+	task  ComposeTask[T, R]
+	value T
+}
+
+func (task thenComposeTask[T, R]) Execute(ctx context.Context) (Future[R], error) {
+	return task.task.Compose(ctx, task.value)
+}
+
+type thenComposeFutureObserver[T any] struct {
+	promise Promise[T]
+}
+
+func (observer thenComposeFutureObserver[T]) OnFutureComplete(result Result[Future[T]]) {
+	if !result.OK() {
+		completeFromResult(observer.promise, result)
+		return
+	}
+	chainFuture(observer.promise, result.Value, nil)
+}
+
+type exceptionallyObserver[T any] struct {
+	ctx      context.Context
+	executor Executor
+	task     RecoverTask[T]
+	opts     []SubmitOption
+	promise  Promise[T]
+}
+
+func (observer exceptionallyObserver[T]) OnFutureComplete(result Result[T]) {
+	if result.OK() {
+		observer.promise.Complete(result.Value)
+		return
+	}
+	future, err := Submit(
+		observer.ctx,
+		observer.executor,
+		recoverTaskExecution[T]{
+			task: observer.task,
+			err:  resultError(result),
+		},
+		observer.opts...,
+	)
+	chainFuture(observer.promise, future, err)
+}
+
+type recoverTaskExecution[T any] struct {
+	task RecoverTask[T]
+	err  error
+}
+
+func (task recoverTaskExecution[T]) Execute(ctx context.Context) (T, error) {
+	return task.task.Recover(ctx, task.err)
+}
+
+type chainFutureObserver[T any] struct {
+	promise Promise[T]
+}
+
+func (observer chainFutureObserver[T]) OnFutureComplete(result Result[T]) {
+	if result.OK() {
+		observer.promise.Complete(result.Value)
+		return
+	}
+	if result.Canceled {
+		observer.promise.Cancel(resultError(result))
+		return
+	}
+	observer.promise.Fail(resultError(result))
 }
 
 func completeFromResult[T, R any](promise Promise[R], result Result[T]) {

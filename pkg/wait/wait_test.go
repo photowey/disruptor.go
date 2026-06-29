@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor_test
+package wait_test
 
 import (
 	"context"
@@ -21,7 +21,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/ringbuffer"
+	"github.com/photowey/disruptor.go/pkg/sequence"
+	"github.com/photowey/disruptor.go/pkg/wait"
 )
 
 func TestBarrierWaitRequestIncludesDependentSequence(t *testing.T) {
@@ -29,26 +32,26 @@ func TestBarrierWaitRequestIncludesDependentSequence(t *testing.T) {
 	defer cancel()
 
 	waitStrategy := &capturingWaitStrategy{
-		waitFor: func(request disruptor.WaitRequest) (int64, error) {
+		waitFor: func(request wait.Request) (int64, error) {
 			cancel()
-			return disruptor.InitialSequenceValue, nil
+			return sequence.InitialValue, nil
 		},
 	}
 	rb := newTestRingBufferWithOptions(
 		t,
 		8,
-		disruptor.WithWaitStrategy(waitStrategy),
+		ringbuffer.WithWaitStrategy(waitStrategy),
 	)
-	dependency := disruptor.NewSequence(disruptor.InitialSequenceValue)
+	dependency := sequence.New(sequence.InitialValue)
 	barrier := rb.NewBarrier(dependency)
 
-	sequence, err := rb.Next(context.Background())
+	sequenceValue, err := rb.Next(context.Background())
 	if err != nil {
 		t.Fatalf("next: %v", err)
 	}
-	rb.Publish(sequence)
+	rb.Publish(sequenceValue)
 
-	_, err = barrier.WaitFor(ctx, sequence)
+	_, err = barrier.WaitFor(ctx, sequenceValue)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("wait error = %v, want context.Canceled", err)
 	}
@@ -57,7 +60,7 @@ func TestBarrierWaitRequestIncludesDependentSequence(t *testing.T) {
 	if request.DependentSequence == nil {
 		t.Fatal("dependent sequence should be passed to wait strategy")
 	}
-	if got := request.DependentSequence.Value(); got != disruptor.InitialSequenceValue {
+	if got := request.DependentSequence.Value(); got != sequence.InitialValue {
 		t.Fatalf("dependent sequence value = %d, want initial sequence", got)
 	}
 }
@@ -67,7 +70,7 @@ func TestCapacityWaitRequestUsesSlowestGatingSequence(t *testing.T) {
 	defer cancel()
 
 	waitStrategy := &capturingWaitStrategy{
-		waitForCapacity: func(request disruptor.CapacityWaitRequest) error {
+		waitForCapacity: func(request wait.CapacityRequest) error {
 			cancel()
 			return context.Canceled
 		},
@@ -75,10 +78,10 @@ func TestCapacityWaitRequestUsesSlowestGatingSequence(t *testing.T) {
 	rb := newTestRingBufferWithOptions(
 		t,
 		1,
-		disruptor.WithWaitStrategy(waitStrategy),
+		ringbuffer.WithWaitStrategy(waitStrategy),
 	)
-	fastConsumer := disruptor.NewSequence(0)
-	slowestConsumer := disruptor.NewSequence(disruptor.InitialSequenceValue)
+	fastConsumer := sequence.New(0)
+	slowestConsumer := sequence.New(sequence.InitialValue)
 	rb.AddGatingSequences(fastConsumer, slowestConsumer)
 
 	if _, err := rb.Next(context.Background()); err != nil {
@@ -93,7 +96,7 @@ func TestCapacityWaitRequestUsesSlowestGatingSequence(t *testing.T) {
 	if request.GatingSequence == nil {
 		t.Fatal("gating sequence should be passed to wait strategy")
 	}
-	if got := request.GatingSequence.Value(); got != disruptor.InitialSequenceValue {
+	if got := request.GatingSequence.Value(); got != sequence.InitialValue {
 		t.Fatalf("gating sequence value = %d, want slowest consumer", got)
 	}
 }
@@ -102,17 +105,16 @@ func TestBlockingWaitStrategyWaitsUntilSignal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	strategy := disruptor.NewBlockingWaitStrategy()
-	cursor := disruptor.NewSequence(disruptor.InitialSequenceValue)
+	strategy := wait.NewBlockingStrategy()
+	cursor := sequence.New(sequence.InitialValue)
 	done := make(chan error, 1)
-	go func() {
-		_, err := strategy.WaitFor(disruptor.WaitRequest{
-			Context:           ctx,
-			RequestedSequence: 0,
-			CursorSequence:    cursor,
-		})
-		done <- err
-	}()
+	task := blockingWaitStrategyTask{
+		ctx:      ctx,
+		strategy: strategy,
+		cursor:   cursor,
+		done:     done,
+	}
+	go task.run()
 
 	select {
 	case err := <-done:
@@ -133,19 +135,35 @@ func TestBlockingWaitStrategyWaitsUntilSignal(t *testing.T) {
 	}
 }
 
+type blockingWaitStrategyTask struct {
+	ctx      context.Context
+	strategy wait.Strategy
+	cursor   *sequence.Sequence
+	done     chan<- error
+}
+
+func (task blockingWaitStrategyTask) run() {
+	_, err := task.strategy.WaitFor(wait.Request{
+		Context:           task.ctx,
+		RequestedSequence: 0,
+		CursorSequence:    task.cursor,
+	})
+	task.done <- err
+}
+
 func TestBlockingWaitStrategyCapacitySignalCannotBeLost(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	strategy := disruptor.NewBlockingWaitStrategy()
+	strategy := wait.NewBlockingStrategy()
 	reader := &signalingSequenceReader{
-		value: disruptor.InitialSequenceValue,
+		value: sequence.InitialValue,
 		signal: func() {
 			strategy.SignalAll()
 		},
 	}
 
-	err := strategy.WaitForCapacity(disruptor.CapacityWaitRequest{
+	err := strategy.WaitForCapacity(wait.CapacityRequest{
 		Context:        ctx,
 		WrapPoint:      0,
 		GatingSequence: reader,
@@ -158,14 +176,14 @@ func TestBlockingWaitStrategyCapacitySignalCannotBeLost(t *testing.T) {
 type capturingWaitStrategy struct {
 	mu sync.Mutex
 
-	capturedWaitRequest     disruptor.WaitRequest
-	capturedCapacityRequest disruptor.CapacityWaitRequest
-	waitFor                 func(disruptor.WaitRequest) (int64, error)
-	waitForCapacity         func(disruptor.CapacityWaitRequest) error
+	capturedWaitRequest     wait.Request
+	capturedCapacityRequest wait.CapacityRequest
+	waitFor                 func(wait.Request) (int64, error)
+	waitForCapacity         func(wait.CapacityRequest) error
 }
 
 func (s *capturingWaitStrategy) WaitFor(
-	request disruptor.WaitRequest,
+	request wait.Request,
 ) (int64, error) {
 	s.mu.Lock()
 	s.capturedWaitRequest = request
@@ -175,11 +193,11 @@ func (s *capturingWaitStrategy) WaitFor(
 		return s.waitFor(request)
 	}
 
-	return disruptor.InitialSequenceValue, nil
+	return sequence.InitialValue, nil
 }
 
 func (s *capturingWaitStrategy) WaitForCapacity(
-	request disruptor.CapacityWaitRequest,
+	request wait.CapacityRequest,
 ) error {
 	s.mu.Lock()
 	s.capturedCapacityRequest = request
@@ -194,14 +212,14 @@ func (s *capturingWaitStrategy) WaitForCapacity(
 
 func (s *capturingWaitStrategy) SignalAll() {}
 
-func (s *capturingWaitStrategy) waitRequest() disruptor.WaitRequest {
+func (s *capturingWaitStrategy) waitRequest() wait.Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return s.capturedWaitRequest
 }
 
-func (s *capturingWaitStrategy) capacityRequest() disruptor.CapacityWaitRequest {
+func (s *capturingWaitStrategy) capacityRequest() wait.CapacityRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -213,6 +231,27 @@ type signalingSequenceReader struct {
 
 	value  int64
 	signal func()
+}
+
+type waitEvent struct{}
+
+func newTestRingBufferWithOptions(
+	t *testing.T,
+	size int,
+	opts ...ringbuffer.Option,
+) *ringbuffer.RingBuffer[waitEvent] {
+	t.Helper()
+
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[waitEvent](func() waitEvent { return waitEvent{} }),
+		size,
+		opts...,
+	)
+	if err != nil {
+		t.Fatalf("new ring buffer: %v", err)
+	}
+
+	return rb
 }
 
 func (r *signalingSequenceReader) Value() int64 {

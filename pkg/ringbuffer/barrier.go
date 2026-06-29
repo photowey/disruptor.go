@@ -12,12 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package ringbuffer
 
 import (
 	"context"
 	"sync/atomic"
 	"time"
+
+	"github.com/photowey/disruptor.go/pkg/metrics"
+	"github.com/photowey/disruptor.go/pkg/sequence"
+	"github.com/photowey/disruptor.go/pkg/wait"
 )
 
 // Barrier waits for available sequences and supports cooperative alerts.
@@ -31,42 +35,42 @@ type Barrier interface {
 }
 
 type processingBarrier struct {
-	cursor            *Sequence
-	dependencies      []*Sequence
-	dependentSequence SequenceReader
-	waitStrategy      WaitStrategy
-	metrics           MetricsSink
+	cursor            *sequence.Sequence
+	dependencies      []*sequence.Sequence
+	dependentSequence sequence.Reader
+	waitStrategy      wait.Strategy
+	metrics           metrics.Sink
 	alerted           atomic.Bool
 }
 
 func newProcessingBarrier(
-	cursor *Sequence,
-	waitStrategy WaitStrategy,
-	metrics MetricsSink,
-	dependencies ...*Sequence,
+	cursor *sequence.Sequence,
+	waitStrategy wait.Strategy,
+	metrics metrics.Sink,
+	dependencies ...*sequence.Sequence,
 ) *processingBarrier {
-	copiedDependencies := append([]*Sequence(nil), dependencies...)
+	copiedDependencies := append([]*sequence.Sequence(nil), dependencies...)
 
 	return &processingBarrier{
 		cursor:            cursor,
 		dependencies:      copiedDependencies,
-		dependentSequence: newMinimumSequenceReader(copiedDependencies),
+		dependentSequence: sequence.NewMinimumReader(copiedDependencies...),
 		waitStrategy:      waitStrategy,
 		metrics:           metrics,
 	}
 }
 
-func (b *processingBarrier) WaitFor(ctx context.Context, sequence int64) (int64, error) {
+func (b *processingBarrier) WaitFor(ctx context.Context, sequenceValue int64) (int64, error) {
 	for {
 		if err := ctx.Err(); err != nil {
-			return InitialSequenceValue, err
+			return sequence.InitialValue, err
 		}
 		if err := b.CheckAlert(); err != nil {
-			return InitialSequenceValue, err
+			return sequence.InitialValue, err
 		}
 
 		available := b.availableSequence()
-		if available >= sequence {
+		if available >= sequenceValue {
 			return available, nil
 		}
 
@@ -74,16 +78,16 @@ func (b *processingBarrier) WaitFor(ctx context.Context, sequence int64) (int64,
 		if b.metrics != nil {
 			started = time.Now()
 		}
-		available, err := b.waitStrategy.WaitFor(WaitRequest{
+		available, err := b.waitStrategy.WaitFor(wait.Request{
 			Context:           ctx,
-			RequestedSequence: sequence,
+			RequestedSequence: sequenceValue,
 			CursorSequence:    b.cursor,
 			DependentSequence: b.dependentSequence,
 			Barrier:           b,
 		})
-		b.waitMetric(sequence, available, started, err)
+		b.waitMetric(sequenceValue, available, started, err)
 		if err != nil {
-			return InitialSequenceValue, err
+			return sequence.InitialValue, err
 		}
 	}
 }
@@ -139,7 +143,7 @@ func (b *processingBarrier) waitMetric(
 		return
 	}
 
-	b.metrics.OnWait(WaitMetric{
+	b.metrics.OnWait(metrics.WaitMetric{
 		RequestedSequence: requestedSequence,
 		AvailableSequence: availableSequence,
 		Duration:          time.Since(started),

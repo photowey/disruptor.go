@@ -47,11 +47,7 @@ func TestBenchmarkBaselineContainsStatisticalSamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open baseline: %v", err)
 	}
-	defer func() {
-		if closeErr := file.Close(); closeErr != nil {
-			t.Fatalf("close baseline: %v", closeErr)
-		}
-	}()
+	defer closeBenchmarkBaselineFile(t, file)
 
 	targets := map[string]map[string]bool{
 		"BenchmarkE2EDisruptor/blocking_1p_1c":                   {},
@@ -87,6 +83,13 @@ func TestBenchmarkBaselineContainsStatisticalSamples(t *testing.T) {
 				t.Fatalf("%s missing -cpu=%s sample", target, cpu)
 			}
 		}
+	}
+}
+
+func closeBenchmarkBaselineFile(t *testing.T, file *os.File) {
+	t.Helper()
+	if closeErr := file.Close(); closeErr != nil {
+		t.Fatalf("close baseline: %v", closeErr)
 	}
 }
 

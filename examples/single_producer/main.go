@@ -17,9 +17,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/photowey/disruptor.go/pkg/event"
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/ringbuffer"
 )
 
 type singleEvent struct {
@@ -45,7 +46,7 @@ type singleTranslator struct {
 	value int64
 }
 
-func (t singleTranslator) Translate(request disruptor.TranslateRequest[singleEvent]) {
+func (t singleTranslator) Translate(request event.TranslateRequest[singleEvent]) {
 	request.Event.Value = t.value
 }
 
@@ -56,7 +57,7 @@ func main() {
 	d, err := disruptor.New(
 		singleEventFactory{},
 		1024,
-		disruptor.WithProducerType(disruptor.ProducerTypeSingle),
+		ringbuffer.WithProducerType(ringbuffer.ProducerTypeSingle),
 	)
 	if err != nil {
 		panic(err)

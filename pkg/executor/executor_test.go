@@ -37,10 +37,12 @@ func TestPromiseCompletesExactlyOnce(t *testing.T) {
 	wg.Add(attempts)
 	for index := 0; index < attempts; index++ {
 		value := index
-		go func() {
-			defer wg.Done()
-			_ = promise.Complete(value)
-		}()
+		task := promiseCompleteTask{
+			wg:      &wg,
+			promise: promise,
+			value:   value,
+		}
+		go task.run()
 	}
 	wg.Wait()
 
@@ -59,6 +61,90 @@ func TestPromiseCompletesExactlyOnce(t *testing.T) {
 	}
 }
 
+type promiseCompleteTask struct {
+	wg      *sync.WaitGroup
+	promise executor.Promise[int]
+	value   int
+}
+
+func (task promiseCompleteTask) run() {
+	defer task.wg.Done()
+	_ = task.promise.Complete(task.value)
+}
+
+type valueObserver struct {
+	values chan<- int
+}
+
+func (observer valueObserver) OnFutureComplete(result executor.Result[int]) {
+	observer.values <- result.Value
+}
+
+type intValueTask struct {
+	value int
+}
+
+func (task intValueTask) Execute(context.Context) (int, error) {
+	return task.value, nil
+}
+
+type markRanTask struct {
+	ran *bool
+}
+
+func (task markRanTask) Run(context.Context) {
+	*task.ran = true
+}
+
+type blockingRunnableTask struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (task blockingRunnableTask) Run(context.Context) {
+	close(task.started)
+	<-task.release
+}
+
+type recoverCanceledTask struct {
+	value int
+}
+
+func (task recoverCanceledTask) Recover(_ context.Context, err error) (int, error) {
+	if !errors.Is(err, executor.ErrCanceled) {
+		return 0, err
+	}
+
+	return task.value, nil
+}
+
+type addValueTask struct {
+	delta int
+}
+
+func (task addValueTask) Apply(_ context.Context, value int) (int, error) {
+	return value + task.delta, nil
+}
+
+type stringFutureTask struct {
+	text string
+}
+
+func (task stringFutureTask) Compose(
+	context.Context,
+	int,
+) (executor.Future[string], error) {
+	return executor.CompletedFuture(task.text), nil
+}
+
+type recoverValueTask struct {
+	value int
+}
+
+func (task recoverValueTask) Recover(context.Context, error) (int, error) {
+	return task.value, nil
+}
+
 func TestPromiseAwaitRespectsContext(t *testing.T) {
 	promise := executor.NewPromise[int]()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -75,15 +161,11 @@ func TestFutureObserversRunForLateAndEarlySubscribers(t *testing.T) {
 	early := make(chan int, 1)
 	late := make(chan int, 1)
 
-	promise.Future().Observe(executor.FutureObserverFunc[int](func(result executor.Result[int]) {
-		early <- result.Value
-	}))
+	promise.Future().Observe(valueObserver{values: early})
 	if !promise.Complete(42) {
 		t.Fatal("complete returned false")
 	}
-	promise.Future().Observe(executor.FutureObserverFunc[int](func(result executor.Result[int]) {
-		late <- result.Value
-	}))
+	promise.Future().Observe(valueObserver{values: late})
 
 	wantObserverValue(t, early, 42)
 	wantObserverValue(t, late, 42)
@@ -92,9 +174,7 @@ func TestFutureObserversRunForLateAndEarlySubscribers(t *testing.T) {
 func TestSubmitCompletesTypedFuture(t *testing.T) {
 	ctx := context.Background()
 	inline := executor.NewInlineExecutor()
-	task := executor.TaskFunc[int](func(context.Context) (int, error) {
-		return 7, nil
-	})
+	task := intValueTask{value: 7}
 
 	future, err := executor.Submit(ctx, inline, task, executor.WithTaskName("seven"))
 	if err != nil {
@@ -111,9 +191,7 @@ func TestSubmitCompletesTypedFuture(t *testing.T) {
 
 func TestSubmitRejectsNilExecutorAndTask(t *testing.T) {
 	ctx := context.Background()
-	if _, err := executor.Submit[int](ctx, nil, executor.TaskFunc[int](func(context.Context) (int, error) {
-		return 0, nil
-	})); !errors.Is(err, executor.ErrInvalid) {
+	if _, err := executor.Submit[int](ctx, nil, intValueTask{}); !errors.Is(err, executor.ErrInvalid) {
 		t.Fatalf("nil executor error = %v, want ErrInvalid", err)
 	}
 
@@ -126,11 +204,10 @@ func TestSubmitRejectsNilExecutorAndTask(t *testing.T) {
 func TestInlineExecutorRunsTaskImmediately(t *testing.T) {
 	inline := executor.NewInlineExecutor()
 	ran := false
+	task := markRanTask{ran: &ran}
 	err := inline.Submit(executor.SubmitRequest{
 		Context: context.Background(),
-		Task: executor.RunnableTaskFunc(func(context.Context) {
-			ran = true
-		}),
+		Task:    task,
 	})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
@@ -153,10 +230,10 @@ func TestFixedWorkerExecutorRejectsWhenSaturated(t *testing.T) {
 
 	release := make(chan struct{})
 	started := make(chan struct{})
-	blocking := executor.RunnableTaskFunc(func(context.Context) {
-		close(started)
-		<-release
-	})
+	blocking := blockingRunnableTask{
+		started: started,
+		release: release,
+	}
 	if err := pool.Submit(executor.SubmitRequest{Context: context.Background(), Task: blocking}); err != nil {
 		t.Fatalf("submit blocking: %v", err)
 	}
@@ -184,12 +261,13 @@ func TestFixedWorkerExecutorBlockPolicyRespectsContext(t *testing.T) {
 
 	release := make(chan struct{})
 	started := make(chan struct{})
+	blocking := blockingRunnableTask{
+		started: started,
+		release: release,
+	}
 	if err := pool.Submit(executor.SubmitRequest{
 		Context: context.Background(),
-		Task: executor.RunnableTaskFunc(func(context.Context) {
-			close(started)
-			<-release
-		}),
+		Task:    blocking,
 	}); err != nil {
 		t.Fatalf("submit blocking: %v", err)
 	}
@@ -221,12 +299,13 @@ func TestSubmittedFutureCancelsWhenQueuedContextIsCanceled(t *testing.T) {
 
 	release := make(chan struct{})
 	started := make(chan struct{})
+	blocking := blockingRunnableTask{
+		started: started,
+		release: release,
+	}
 	if err := pool.Submit(executor.SubmitRequest{
 		Context: context.Background(),
-		Task: executor.RunnableTaskFunc(func(context.Context) {
-			close(started)
-			<-release
-		}),
+		Task:    blocking,
 	}); err != nil {
 		t.Fatalf("submit blocking: %v", err)
 	}
@@ -236,9 +315,7 @@ func TestSubmittedFutureCancelsWhenQueuedContextIsCanceled(t *testing.T) {
 	future, err := executor.Submit(
 		queuedCtx,
 		pool,
-		executor.TaskFunc[int](func(context.Context) (int, error) {
-			return 42, nil
-		}),
+		intValueTask{value: 42},
 	)
 	if err != nil {
 		close(release)
@@ -281,12 +358,13 @@ func TestFixedWorkerExecutorShutdownUnblocksPendingSubmit(t *testing.T) {
 
 	release := make(chan struct{})
 	started := make(chan struct{})
+	blocking := blockingRunnableTask{
+		started: started,
+		release: release,
+	}
 	if err := pool.Submit(executor.SubmitRequest{
 		Context: context.Background(),
-		Task: executor.RunnableTaskFunc(func(context.Context) {
-			close(started)
-			<-release
-		}),
+		Task:    blocking,
 	}); err != nil {
 		t.Fatalf("submit blocking: %v", err)
 	}
@@ -406,13 +484,7 @@ func TestCompositionNormalizesCustomCanceledResults(t *testing.T) {
 		ctx,
 		inline,
 		canceled,
-		executor.RecoverTaskFunc[int](func(_ context.Context, err error) (int, error) {
-			if !errors.Is(err, executor.ErrCanceled) {
-				return 0, err
-			}
-
-			return 9, nil
-		}),
+		recoverCanceledTask{value: 9},
 	)
 	if err != nil {
 		t.Fatalf("exceptionally canceled: %v", err)
@@ -435,9 +507,7 @@ func TestThenApplyThenComposeAndExceptionally(t *testing.T) {
 		ctx,
 		inline,
 		base,
-		executor.ApplyTaskFunc[int, int](func(_ context.Context, value int) (int, error) {
-			return value + 5, nil
-		}),
+		addValueTask{delta: 5},
 	)
 	if err != nil {
 		t.Fatalf("then apply: %v", err)
@@ -454,9 +524,7 @@ func TestThenApplyThenComposeAndExceptionally(t *testing.T) {
 		ctx,
 		inline,
 		applied,
-		executor.ComposeTaskFunc[int, string](func(_ context.Context, value int) (executor.Future[string], error) {
-			return executor.CompletedFuture("value"), nil
-		}),
+		stringFutureTask{text: "value"},
 	)
 	if err != nil {
 		t.Fatalf("then compose: %v", err)
@@ -474,9 +542,7 @@ func TestThenApplyThenComposeAndExceptionally(t *testing.T) {
 		ctx,
 		inline,
 		failed,
-		executor.RecoverTaskFunc[int](func(context.Context, error) (int, error) {
-			return 99, nil
-		}),
+		recoverValueTask{value: 99},
 	)
 	if err != nil {
 		t.Fatalf("exceptionally: %v", err)

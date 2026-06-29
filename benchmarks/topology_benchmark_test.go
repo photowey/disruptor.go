@@ -40,7 +40,7 @@ func benchmarkGraphTopology(b *testing.B, shape string) {
 	defer cancel()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
+		event.FactoryFunc[benchEvent](func() benchEvent { return benchEvent{} }),
 		65536,
 	)
 	if err != nil {

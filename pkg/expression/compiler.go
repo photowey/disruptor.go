@@ -21,9 +21,8 @@ import (
 	"github.com/photowey/disruptor.go/pkg/runtimevars"
 )
 
-type CompilerOption interface {
-	applyCompiler(config *compilerConfig) error
-}
+// CompilerOption configures expression compiler construction.
+type CompilerOption func(config *compilerConfig) error
 
 type compilerConfig struct {
 	converters           []ValueConverter
@@ -39,30 +38,17 @@ type numberAdapterRegistration struct {
 	index   int
 }
 
-type compilerOptionFunc struct {
-	applyFunc func(*compilerConfig) error
-}
-
-//nolint:unused // The method satisfies CompilerOption and is called through the interface.
-func (fn compilerOptionFunc) applyCompiler(
-	config *compilerConfig,
-) error {
-	return fn.applyFunc(config)
-}
-
 // WithValueConverter adds a custom expression value converter.
 func WithValueConverter(
 	converter ValueConverter,
 ) CompilerOption {
-	return compilerOptionFunc{
-		applyFunc: func(config *compilerConfig) error {
-			if converter == nil {
-				return fmt.Errorf("%w: expression value converter is nil", ErrInvalid)
-			}
+	return func(config *compilerConfig) error {
+		if converter == nil {
+			return fmt.Errorf("%w: expression value converter is nil", ErrInvalid)
+		}
 
-			config.converters = append(config.converters, converter)
-			return nil
-		},
+		config.converters = append(config.converters, converter)
+		return nil
 	}
 }
 
@@ -70,15 +56,13 @@ func WithValueConverter(
 func WithNumberAdapter(
 	adapter NumberAdapter,
 ) CompilerOption {
-	return compilerOptionFunc{
-		applyFunc: func(config *compilerConfig) error {
-			if adapter == nil {
-				return fmt.Errorf("%w: expression number adapter is nil", ErrInvalid)
-			}
+	return func(config *compilerConfig) error {
+		if adapter == nil {
+			return fmt.Errorf("%w: expression number adapter is nil", ErrInvalid)
+		}
 
-			config.addNumberAdapter(adapter)
-			return nil
-		},
+		config.addNumberAdapter(adapter)
+		return nil
 	}
 }
 
@@ -93,7 +77,7 @@ func NewCompiler(
 		if opt == nil {
 			continue
 		}
-		if err := opt.applyCompiler(&config); err != nil {
+		if err := opt(&config); err != nil {
 			panic(err)
 		}
 	}
@@ -254,15 +238,7 @@ func (config *compilerConfig) finalizeNumberAdapters() {
 		return
 	}
 
-	sort.SliceStable(config.numberAdapters, func(left int, right int) bool {
-		leftRegistration := config.numberAdapters[left]
-		rightRegistration := config.numberAdapters[right]
-		if leftRegistration.order == rightRegistration.order {
-			return leftRegistration.index < rightRegistration.index
-		}
-
-		return leftRegistration.order < rightRegistration.order
-	})
+	sort.Stable(numberAdapterRegistrationsByOrder(config.numberAdapters))
 
 	for _, registration := range config.numberAdapters {
 		config.converters = append(config.converters, registration.adapter)
@@ -284,4 +260,24 @@ func numberAdapterOrder(adapter NumberAdapter) int {
 	}
 
 	return ordered.Order()
+}
+
+type numberAdapterRegistrationsByOrder []numberAdapterRegistration
+
+func (registrations numberAdapterRegistrationsByOrder) Len() int {
+	return len(registrations)
+}
+
+func (registrations numberAdapterRegistrationsByOrder) Less(left int, right int) bool {
+	leftRegistration := registrations[left]
+	rightRegistration := registrations[right]
+	if leftRegistration.order == rightRegistration.order {
+		return leftRegistration.index < rightRegistration.index
+	}
+
+	return leftRegistration.order < rightRegistration.order
+}
+
+func (registrations numberAdapterRegistrationsByOrder) Swap(left int, right int) {
+	registrations[left], registrations[right] = registrations[right], registrations[left]
 }

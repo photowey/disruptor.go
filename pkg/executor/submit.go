@@ -41,7 +41,7 @@ func Submit[T any](
 		if opt == nil {
 			continue
 		}
-		if err := opt.applySubmit(&config); err != nil {
+		if err := opt(&config); err != nil {
 			return nil, fmt.Errorf("applying submit option: %w", err)
 		}
 	}
@@ -72,11 +72,7 @@ func (t typedRunnableTask[T]) cancelQueued(cause error) {
 }
 
 func (t typedRunnableTask[T]) Run(ctx context.Context) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			t.promise.Fail(fmt.Errorf("executor: task panic: %v", recovered))
-		}
-	}()
+	defer t.recoverPanic()
 
 	value, err := t.task.Execute(ctx)
 	if err != nil {
@@ -85,4 +81,10 @@ func (t typedRunnableTask[T]) Run(ctx context.Context) {
 	}
 
 	t.promise.Complete(value)
+}
+
+func (t typedRunnableTask[T]) recoverPanic() {
+	if recovered := recover(); recovered != nil {
+		t.promise.Fail(fmt.Errorf("executor: task panic: %v", recovered))
+	}
 }

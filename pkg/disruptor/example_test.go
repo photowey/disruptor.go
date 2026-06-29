@@ -48,7 +48,7 @@ type exampleEventTranslator struct {
 }
 
 func (t exampleEventTranslator) Translate(
-	request disruptor.TranslateRequest[exampleEvent],
+	request event.TranslateRequest[exampleEvent],
 ) {
 	request.Event.Value = t.value
 }

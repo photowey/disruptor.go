@@ -3,7 +3,13 @@
 This guide documents the public V1 through V1.4 surface. The API is split by
 responsibility:
 
-- `pkg/disruptor`: ring buffer, facade, processors, wait strategies, metrics
+- `pkg/disruptor`: high-level facade orchestration for fan-out, static graph,
+  and runtime graph
+- `pkg/ringbuffer`: preallocated event storage, producer options, and barriers
+- `pkg/processor`: event processor lifecycle and processor options
+- `pkg/wait`: wait strategy interface and built-in strategies
+- `pkg/metrics`: backend-neutral metrics sink and payloads
+- `pkg/sequence`: public sequence type and readers
 - `pkg/executor`: bounded task execution, typed futures, and promises
 - `pkg/event`: handler requests, lifecycle hooks, exception handlers
 - `pkg/graph`: static dependency graph builder, validation, snapshots, export
@@ -13,9 +19,9 @@ responsibility:
 
 ## Event Storage
 
-`RingBuffer[T]` preallocates value slots in `[]T` and returns pointers to those
-slots. Producers and consumers mutate or read the ring slot directly instead of
-copying generic values.
+`ringbuffer.RingBuffer[T]` preallocates value slots in `[]T` and returns
+pointers to those slots. Producers and consumers mutate or read the ring slot
+directly instead of copying generic values.
 
 ```go
 type LongEvent struct {
@@ -28,7 +34,7 @@ func (LongEventFactory) NewEvent() LongEvent {
     return LongEvent{}
 }
 
-rb, err := disruptor.NewRingBuffer(LongEventFactory{}, 1024)
+rb, err := ringbuffer.New(LongEventFactory{}, 1024)
 if err != nil {
     return err
 }
@@ -37,15 +43,14 @@ event := rb.Get(0)
 event.Value = 42
 ```
 
-For quick adapters, `pkg/disruptor` exposes `EventFactoryFunc[T]` and
-`EventTranslatorFunc[T]`; `pkg/event` exposes `HandlerFunc[T]`. Public examples
-use named types so production code can keep dependencies explicit and
-replaceable.
+For quick adapters, `pkg/event` exposes `FactoryFunc[T]`, `TranslatorFunc[T]`,
+and `HandlerFunc[T]`. Public examples use named types so production code can
+keep dependencies explicit and replaceable.
 
 ## Low-Level Ring Buffer
 
-Use `RingBuffer[T]` when you want direct control over claim, mutate, and publish
-steps.
+Use `ringbuffer.RingBuffer[T]` when you want direct control over claim, mutate,
+and publish steps.
 
 ```go
 sequence, err := rb.Next(ctx)
@@ -78,7 +83,7 @@ be overrun:
 
 ```go
 sequence, err := rb.TryNext()
-if errors.Is(err, disruptor.ErrInsufficientCapacity) {
+if errors.Is(err, ringbuffer.ErrInsufficientCapacity) {
     return nil
 }
 if err != nil {
@@ -100,7 +105,7 @@ type LongEventTranslator struct {
 }
 
 func (t LongEventTranslator) Translate(
-    request disruptor.TranslateRequest[LongEvent],
+    request event.TranslateRequest[LongEvent],
 ) {
     request.Event.Value = t.Value
 }
@@ -111,18 +116,19 @@ err := rb.PublishEvent(ctx, LongEventTranslator{Value: 42})
 Backpressure is controlled by gating sequences:
 
 ```go
-consumerSequence := disruptor.NewSequence(disruptor.InitialSequenceValue)
+consumerSequence := sequence.New(sequence.InitialValue)
 rb.AddGatingSequences(consumerSequence)
 defer rb.RemoveGatingSequence(consumerSequence)
 ```
 
-The high-level `Disruptor[T]` and `BatchEventProcessor[T]` manage their own
-gating sequences.
+The high-level `disruptor.Disruptor[T]` and
+`processor.BatchEventProcessor[T]` manage their own gating sequences.
 
 ## High-Level Disruptor
 
-Use `Disruptor[T]` for one ring buffer with managed processors. The V1 fan-out
-mode wires parallel consumers where every handler receives every event.
+Use `disruptor.Disruptor[T]` for one ring buffer with managed processors. The
+V1 fan-out mode wires parallel consumers where every handler receives every
+event.
 
 ```go
 type LongEventHandler struct {
@@ -157,7 +163,7 @@ exclusive on one `Disruptor[T]` instance. Create a new disruptor when an
 application needs separate fan-out, static graph, and runtime graph streams.
 
 `HandleEventsWithOptions` attaches processor-specific options, currently
-`WithExceptionHandler[T](handler)`.
+`processor.WithExceptionHandler[T](handler)`.
 
 ```go
 retryHandler, err := event.NewRetryExceptionHandler[LongEvent](
@@ -170,7 +176,7 @@ if err != nil {
 
 _, err = d.HandleEventsWithOptions(
     []event.Handler[LongEvent]{LongEventHandler{Done: done}},
-    disruptor.WithExceptionHandler[LongEvent](retryHandler),
+    processor.WithExceptionHandler[LongEvent](retryHandler),
 )
 ```
 
@@ -186,12 +192,12 @@ if err := d.Wait(); err != nil {
 
 ## Event Processors
 
-`NewBatchEventProcessor` is the lower-level processor API. It is useful when you
-need to wire barriers and dependencies yourself.
+`processor.NewBatchEventProcessor` is the lower-level processor API. It is
+useful when you need to wire barriers and dependencies yourself.
 
 ```go
 barrier := rb.NewBarrier()
-processor, err := disruptor.NewBatchEventProcessor(
+eventProcessor, err := processor.NewBatchEventProcessor(
     rb,
     barrier,
     LongEventHandler{Done: done},
@@ -199,6 +205,7 @@ processor, err := disruptor.NewBatchEventProcessor(
 if err != nil {
     return err
 }
+_ = eventProcessor
 ```
 
 The processor adds its sequence as a ring-buffer gating sequence and removes it
@@ -289,9 +296,9 @@ type Node struct {
 ```
 
 `event.Request`, `event.BatchStartRequest`, `event.Exception`,
-`event.LifecycleException`, `disruptor.BatchMetric`, `disruptor.EventMetric`,
-and `disruptor.ProcessorMetric` also carry `event.Node` when they originate
-from graph processors.
+`event.LifecycleException`, `metrics.BatchMetric`, `metrics.EventMetric`, and
+`metrics.ProcessorMetric` also carry `event.Node` when they originate from
+graph processors.
 
 Graph mode uses its own exception semantics:
 
@@ -550,38 +557,39 @@ successful result. `ThenApply` maps a successful parent result to a new value.
 
 Ring buffer options:
 
-- `WithProducerType(ProducerTypeSingle)` or `WithProducerType(ProducerTypeMulti)`
-- `WithWaitStrategy(strategy)`
-- `WithMetricsSink(sink)`
+- `ringbuffer.WithProducerType(ringbuffer.ProducerTypeSingle)` or
+  `ringbuffer.WithProducerType(ringbuffer.ProducerTypeMulti)`
+- `ringbuffer.WithWaitStrategy(strategy)`
+- `ringbuffer.WithMetricsSink(sink)`
 
 Processor options:
 
-- `WithExceptionHandler[T](handler)`
+- `processor.WithExceptionHandler[T](handler)`
 
 Graph options:
 
-- `WithGraphExceptionHandler[T](handler)`
+- `disruptor.WithGraphExceptionHandler[T](handler)`
 
-Runtime graph options:
+Runtime graph builder and compiler options:
 
 - `runtimegraph.WithExpressionCompiler(compiler)`
 - `expression.NewCompiler(expression.WithValueConverter(converter))`
 - `expression.NewCompiler(expression.WithNumberAdapter(adapter))`
 
-Runtime graph handle options:
+Disruptor runtime graph options:
 
-- `WithRuntimeGraphExceptionHandler[T](handler)`
-- `WithRuntimeGraphWorkers[T](workers)`
-- `WithRuntimeGraphExecutor[T](executor)`
-- `WithRuntimeGraphNoRouteAction[T](action)`
-- `WithRuntimeGraphVariablesProvider[T](provider)`
-- `WithRuntimeGraphEventValueResolver[T](resolver)`
-- `WithRuntimeGraphMetricsSink[T](sink)`
+- `disruptor.WithRuntimeGraphExceptionHandler[T](handler)`
+- `disruptor.WithRuntimeGraphWorkers[T](workers)`
+- `disruptor.WithRuntimeGraphExecutor[T](executor)`
+- `disruptor.WithRuntimeGraphNoRouteAction[T](action)`
+- `disruptor.WithRuntimeGraphVariablesProvider[T](provider)`
+- `disruptor.WithRuntimeGraphEventValueResolver[T](resolver)`
+- `disruptor.WithRuntimeGraphMetricsSink[T](sink)`
 
-`WithRuntimeGraphWorkers(1)` keeps deterministic inline execution.
-`WithRuntimeGraphWorkers(workers)` with `workers > 1` creates an internal fixed
-worker executor. `WithRuntimeGraphWorkers` and `WithRuntimeGraphExecutor` cannot
-be used together.
+`disruptor.WithRuntimeGraphWorkers(1)` keeps deterministic inline execution.
+`disruptor.WithRuntimeGraphWorkers(workers)` with `workers > 1` creates an
+internal fixed worker executor. `disruptor.WithRuntimeGraphWorkers` and
+`disruptor.WithRuntimeGraphExecutor` cannot be used together.
 
 Node options:
 
@@ -595,17 +603,17 @@ Node options:
 Options are separated by lifecycle stage so a processor option cannot be passed
 to ring-buffer construction.
 
-`ProducerTypeMulti` is the default. It tracks claimed and published sequences
-with per-slot availability metadata, so consumer visibility remains contiguous
-across published sequences.
+`ringbuffer.ProducerTypeMulti` is the default. It tracks claimed and published
+sequences with per-slot availability metadata, so consumer visibility remains
+contiguous across published sequences.
 
-`ProducerTypeSingle` is the lighter path for one producer goroutine. It assumes
-the single producer publishes claimed sequences in order, including batch ranges.
-Use `ProducerTypeMulti` when multiple producers publish concurrently or when
-publication can happen out of claim order.
+`ringbuffer.ProducerTypeSingle` is the lighter path for one producer goroutine.
+It assumes the single producer publishes claimed sequences in order, including
+batch ranges. Use `ringbuffer.ProducerTypeMulti` when multiple producers publish
+concurrently or when publication can happen out of claim order.
 
-`ProducerTypeUnknown` and out-of-range producer values are rejected. A nil wait
-strategy is rejected. A nil metrics sink disables metrics.
+`ringbuffer.ProducerTypeUnknown` and out-of-range producer values are rejected.
+A nil wait strategy is rejected. A nil metrics sink disables metrics.
 
 Graph node and graph names are trimmed before storage. They must not be empty or
 contain control characters.
@@ -614,21 +622,21 @@ contain control characters.
 
 Built-ins:
 
-- `NewBlockingWaitStrategy()`
-- `NewBusySpinWaitStrategy()`
+- `wait.NewBlockingStrategy()`
+- `wait.NewBusySpinStrategy()`
 
 Custom wait strategies implement:
 
 ```go
-type WaitStrategy interface {
-    WaitFor(request disruptor.WaitRequest) (int64, error)
-    WaitForCapacity(request disruptor.CapacityWaitRequest) error
+type Strategy interface {
+    WaitFor(request wait.Request) (int64, error)
+    WaitForCapacity(request wait.CapacityRequest) error
     SignalAll()
 }
 ```
 
-`WaitRequest` carries the request context, requested sequence, cursor sequence,
-dependent sequence, and barrier. `CapacityWaitRequest` is the public alias for
+`wait.Request` carries the request context, requested sequence, cursor sequence,
+dependent sequence, and barrier. `wait.CapacityRequest` is the public alias for
 the sequencer capacity-wait payload. The payload style keeps the interface
 stable when future fields are added.
 
@@ -637,7 +645,7 @@ stable when future fields are added.
 Required:
 
 ```go
-type EventHandler[T any] interface {
+type Handler[T any] interface {
     OnEvent(request event.Request[T]) error
 }
 ```
@@ -686,15 +694,15 @@ action must be either `event.ExceptionActionHalt` or
 
 ## Metrics
 
-`MetricsSink` is backend-neutral:
+`metrics.Sink` is backend-neutral:
 
 ```go
-type MetricsSink interface {
-    OnPublish(request disruptor.PublishMetric)
-    OnBatchStart(request disruptor.BatchMetric)
-    OnEventHandled(request disruptor.EventMetric)
-    OnWait(request disruptor.WaitMetric)
-    OnProcessorState(request disruptor.ProcessorMetric)
+type Sink interface {
+    OnPublish(request metrics.PublishMetric)
+    OnBatchStart(request metrics.BatchMetric)
+    OnEventHandled(request metrics.EventMetric)
+    OnWait(request metrics.WaitMetric)
+    OnProcessorState(request metrics.ProcessorMetric)
 }
 ```
 
@@ -703,17 +711,17 @@ Use a named sink when wiring production telemetry:
 ```go
 type CountingMetricsSink struct{}
 
-func (CountingMetricsSink) OnPublish(metric disruptor.PublishMetric) {}
-func (CountingMetricsSink) OnBatchStart(metric disruptor.BatchMetric) {}
-func (CountingMetricsSink) OnEventHandled(metric disruptor.EventMetric) {}
-func (CountingMetricsSink) OnWait(metric disruptor.WaitMetric) {}
-func (CountingMetricsSink) OnProcessorState(metric disruptor.ProcessorMetric) {}
+func (CountingMetricsSink) OnPublish(metric metrics.PublishMetric) {}
+func (CountingMetricsSink) OnBatchStart(metric metrics.BatchMetric) {}
+func (CountingMetricsSink) OnEventHandled(metric metrics.EventMetric) {}
+func (CountingMetricsSink) OnWait(metric metrics.WaitMetric) {}
+func (CountingMetricsSink) OnProcessorState(metric metrics.ProcessorMetric) {}
 ```
 
-`MetricsSinkFunc` and typed callback aliases (`PublishMetricFunc`,
-`BatchMetricFunc`, `EventMetricFunc`, `WaitMetricFunc`, and
-`ProcessorMetricFunc`) are available for lightweight adapters. Use
-`NoopMetricsSink` when a non-nil sink is useful in tests or integration
+`metrics.SinkFunc` and typed callback aliases (`metrics.PublishMetricFunc`,
+`metrics.BatchMetricFunc`, `metrics.EventMetricFunc`, `metrics.WaitMetricFunc`,
+and `metrics.ProcessorMetricFunc`) are available for lightweight adapters. Use
+`metrics.NoopSink` when a non-nil sink is useful in tests or integration
 adapters.
 
 ## Testing And Benchmarking

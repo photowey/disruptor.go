@@ -20,7 +20,8 @@ The design favors Go idioms over a direct Java class mirror. Public APIs are int
 
 ## Project Layout
 
-The module is a library. Public package code lives under `pkg/disruptor`; internal algorithm and optimization details live under `internal`.
+The module is a library. Public package code lives under focused `pkg/*`
+packages; internal algorithm and optimization details live under `internal`.
 
 ```text
 disruptor.go/
@@ -28,18 +29,28 @@ disruptor.go/
 
   pkg/
     disruptor/
-      barrier.go
-      benchmark_test.go
       disruptor.go
-      errors.go
-      event_handler.go
-      event_processor.go
-      metrics.go
-      options.go
-      ring_buffer.go
-      sequence.go
+      graph_processors.go
+      runtime_graph_processors.go
+    event/
+      handler.go
       translator.go
-      wait_strategy.go
+      exception_handler.go
+    sequence/
+      sequence.go
+    wait/
+      wait.go
+    metrics/
+      metrics.go
+    ringbuffer/
+      ring_buffer.go
+      barrier.go
+      options.go
+      errors.go
+    processor/
+      processor.go
+      options.go
+      errors.go
 
   internal/
     availability/
@@ -77,7 +88,11 @@ disruptor.go/
 Users import:
 
 ```go
-import "github.com/photowey/disruptor.go/pkg/disruptor"
+import (
+    "github.com/photowey/disruptor.go/pkg/disruptor"
+    "github.com/photowey/disruptor.go/pkg/event"
+    "github.com/photowey/disruptor.go/pkg/ringbuffer"
+)
 ```
 
 ## Design Principles
@@ -96,18 +111,18 @@ import "github.com/photowey/disruptor.go/pkg/disruptor"
 
 The V1 engineering specification defines the following decisions:
 
-- V1 uses value slots in `[]T` and exposes `*T` through `Get`, `TranslateRequest`, `EventRequest`, and `EventException`.
-- `internal/sequencer` never imports `pkg/disruptor`; public `Sequence` is re-exported from the internal primitive and barrier construction stays in the public package.
-- Options are split into `RingBufferOption` and `ProcessorOption[T]` so generic handlers cannot be attached to the wrong component.
+- V1 uses value slots in `[]T` and exposes `*T` through `Get`,
+  `event.TranslateRequest`, `event.Request`, and `event.Exception`.
+- `internal/sequencer` never imports `pkg/disruptor`; public `sequence.Sequence`
+  is exposed through `pkg/sequence`, and barrier construction lives in
+  `pkg/ringbuffer`.
+- Options are split into `ringbuffer.Option` and `processor.Option[T]` so
+  generic handlers cannot be attached to the wrong component.
 - Metrics are backend-neutral, opt-in, low-cardinality, and must use a nil fast path on hot code paths.
 - Benchmarking is a V1 release gate with channel comparison groups, baseline comparison, allocation checks, and tail-latency reporting.
 - SIMD or AVX scanning, timeout handlers, custom sequencer injection, and dependency graph DSL remain V2 extension points.
 
-## Reference Implementation Inputs
-
-The local `github.com/smarty/go-disruptor` implementation provides reference points for producer flow, sequencing, barriers, and benchmark coverage.
-
-Applied inputs:
+## Core Flow And Benchmark Scope
 
 - Producer flow: claim one or more slots, mutate the ring slots, then publish
   the claimed sequence range.
@@ -120,10 +135,12 @@ Applied inputs:
 - Composite barrier abstraction: dependency resolution uses a minimum sequence
   across many consumers. The internal shape supports handler groups and
   dependency graphs.
-- Benchmark sequence operations, single barrier reads, composite barrier reads, claim/publish, channel comparisons, single-producer flows, multi-producer flows, and batched publish flows separately.
+- Benchmark sequence operations, single barrier reads, composite barrier reads,
+  claim/publish, channel comparisons, single-producer flows, multi-producer
+  flows, and batched publish flows separately.
 - Explain clearly that channels are still the default Go tool for ordinary ownership transfer; this library exists for measured high-throughput, low-allocation, fan-out and controlled-backpressure cases.
 
-Excluded inputs:
+Excluded API shapes:
 
 - User-managed ring buffers in normal usage. V1 owns preallocated `[]T` slots
   and exposes `*T` through `RingBuffer[T]`.
@@ -165,9 +182,11 @@ type LongEvent struct {
     Value int64
 }
 
-factory := disruptor.EventFactoryFunc[LongEvent](func() LongEvent {
+type LongEventFactory struct{}
+
+func (LongEventFactory) NewEvent() LongEvent {
     return LongEvent{}
-})
+}
 ```
 
 `RingBuffer[LongEvent].Get(sequence)` returns `*LongEvent`, so producers and consumers mutate or read the preallocated slot directly.
@@ -181,13 +200,13 @@ benchmarks use value slot events by default.
 Public APIs use named interfaces and optional `XxxFunc` adapters.
 
 ```go
-type EventFactory[T any] interface {
+type Factory[T any] interface {
     NewEvent() T
 }
 
-type EventFactoryFunc[T any] func() T
+type FactoryFunc[T any] func() T
 
-func (fn EventFactoryFunc[T]) NewEvent() T {
+func (fn FactoryFunc[T]) NewEvent() T {
     return fn()
 }
 ```
@@ -203,10 +222,10 @@ type RingBuffer[T any] struct {
     // unexported fields
 }
 
-func NewRingBuffer[T any](
-    factory EventFactory[T],
+func New[T any](
+    factory event.Factory[T],
     size int,
-    opts ...RingBufferOption,
+    opts ...Option,
 ) (*RingBuffer[T], error)
 
 func (r *RingBuffer[T]) Next(ctx context.Context) (int64, error)
@@ -220,12 +239,12 @@ func (r *RingBuffer[T]) PublishRange(lo, hi int64)
 
 func (r *RingBuffer[T]) PublishEvent(
     ctx context.Context,
-    translator EventTranslator[T],
+    translator event.Translator[T],
 ) error
 
-func (r *RingBuffer[T]) AddGatingSequences(sequences ...*Sequence)
-func (r *RingBuffer[T]) RemoveGatingSequence(sequence *Sequence) bool
-func (r *RingBuffer[T]) NewBarrier(dependencies ...*Sequence) Barrier
+func (r *RingBuffer[T]) AddGatingSequences(sequences ...*sequence.Sequence)
+func (r *RingBuffer[T]) RemoveGatingSequence(sequence *sequence.Sequence) bool
+func (r *RingBuffer[T]) NewBarrier(dependencies ...*sequence.Sequence) Barrier
 ```
 
 `NextN(ctx, n)` and `TryNextN(n)` return the high sequence. Callers compute the low sequence as `lo := hi - n + 1` before calling `PublishRange(lo, hi)`.
@@ -237,13 +256,13 @@ func (r *RingBuffer[T]) NewBarrier(dependencies ...*Sequence) Barrier
 Translators use a request payload and have no error return.
 
 ```go
-type EventTranslator[T any] interface {
+type Translator[T any] interface {
     Translate(request TranslateRequest[T])
 }
 
-type EventTranslatorFunc[T any] func(request TranslateRequest[T])
+type TranslatorFunc[T any] func(request TranslateRequest[T])
 
-func (fn EventTranslatorFunc[T]) Translate(request TranslateRequest[T]) {
+func (fn TranslatorFunc[T]) Translate(request TranslateRequest[T]) {
     fn(request)
 }
 
@@ -261,9 +280,16 @@ value, err := parse(input)
 if err != nil {
     return err
 }
-err = rb.PublishEvent(ctx, disruptor.EventTranslatorFunc[LongEvent](func(request disruptor.TranslateRequest[LongEvent]) {
-    request.Event.Value = value
-}))
+
+type LongEventTranslator struct {
+    Value int64
+}
+
+func (t LongEventTranslator) Translate(request event.TranslateRequest[LongEvent]) {
+    request.Event.Value = t.Value
+}
+
+err = rb.PublishEvent(ctx, LongEventTranslator{Value: value})
 ```
 
 `PublishEvent` guarantees publication after a successful claim. Its
@@ -283,37 +309,33 @@ const (
     ProducerTypeSingle
     ProducerTypeMulti
 )
-
-type RingBufferOption interface {
-    applyRingBuffer(*ringBufferConfig) error
-}
-
-type ProcessorOption[T any] interface {
-    applyProcessor(*processorConfig[T]) error
-}
-
-func WithProducerType(producerType ProducerType) RingBufferOption
-func WithWaitStrategy(strategy WaitStrategy) RingBufferOption
-func WithMetricsSink(sink MetricsSink) RingBufferOption
-func WithExceptionHandler[T any](handler ExceptionHandler[T]) ProcessorOption[T]
 ```
 
-Options are created through `With*` constructors. Ring buffer and processor configuration are kept separate so a generic option can never be applied to the wrong lifecycle stage. The unexported `apply*` methods keep internal configuration details private and let the package validate option compatibility inside `NewRingBuffer`, `New`, or `HandleEventsWithOptions`.
+Ring buffer options are created with `ringbuffer.WithProducerType`,
+`ringbuffer.WithWaitStrategy`, and `ringbuffer.WithMetricsSink`. Processor
+options are created with `processor.WithExceptionHandler`. The option type
+names are package-local: `ringbuffer.Option` and `processor.Option[T]`.
 
-V1 does not expose `WithSequencer`.
+Options are created through `With*` constructors. Ring buffer and processor
+configuration are kept separate so a generic option can never be applied to the
+wrong lifecycle stage. Options use Go's function-style option pattern and are
+validated inside `ringbuffer.New`, `disruptor.New`, or
+`HandleEventsWithOptions`.
+
+Sequencer implementations remain internal.
 
 ## Sequence
 
 `Sequence` is public because low-level users need it for gating and custom processors.
 
 ```go
-const InitialSequenceValue int64 = -1
+const InitialValue int64 = -1
 
 type Sequence struct {
     // padded atomic.Int64
 }
 
-func NewSequence(initial int64) *Sequence
+func New(initial int64) *Sequence
 func (s *Sequence) Value() int64
 func (s *Sequence) Store(value int64)
 func (s *Sequence) Add(delta int64) int64
@@ -322,14 +344,16 @@ func (s *Sequence) CompareAndSwap(oldValue, newValue int64) bool
 
 `Store` is preferred over `Set` because it matches `sync/atomic` semantics.
 
-`pkg/disruptor/sequence.go` re-exports the internal primitive so public users can use `Sequence` without creating an import cycle:
+`pkg/sequence/sequence.go` exposes the internal primitive through the public
+sequence package so low-level users can gate producers without creating an
+import cycle:
 
 ```go
 type Sequence = sequencer.Sequence
 
-const InitialSequenceValue = sequencer.InitialSequenceValue
+const InitialValue = sequencer.InitialSequenceValue
 
-func NewSequence(initial int64) *Sequence
+func New(initial int64) *Sequence
 ```
 
 ## Internal Sequencer Boundary
@@ -361,9 +385,11 @@ type Sequencer interface {
 }
 ```
 
-The public API lets users select `ProducerTypeSingle` or `ProducerTypeMulti`, but not inject arbitrary sequencing algorithms.
+The public API lets applications select `ringbuffer.ProducerTypeSingle` or
+`ringbuffer.ProducerTypeMulti`.
 
-`internal/sequencer` must not import `pkg/disruptor`; the public package owns barrier construction and re-exports the sequence primitive instead of the reverse.
+`internal/sequencer` is independent from `pkg/disruptor`; `pkg/ringbuffer` owns
+barrier construction and `pkg/sequence` exposes the public sequence primitive.
 
 `internal/padding` owns cache-line padding constants. It must not hard-code a single universal cache-line size. The default is selected at compile time by `GOARCH`, following Go's own approximation: 32 bytes for arm/mips families, 64 bytes for most common targets, 128 bytes for arm64/ppc64, and 256 bytes for s390x. Explicit build tags `disruptor_cacheline_32`, `disruptor_cacheline_64`, `disruptor_cacheline_128`, and `disruptor_cacheline_256` are supported for benchmarking and unusual deployment targets.
 
@@ -400,7 +426,7 @@ type Checker interface {
 }
 ```
 
-V1 uses `scalar.Scanner`. Future SIMD or AVX scanners can be added behind this boundary by build tags and CPU feature detection without changing public APIs.
+V1 uses `availability.ScalarScanner` behind an internal scanner boundary.
 
 ## Barrier
 
@@ -421,7 +447,7 @@ type Barrier interface {
 
 ## Wait Strategy
 
-`WaitStrategy` uses a request payload for stable interface shape and extension
+`wait.Strategy` uses a request payload for stable interface shape and extension
 fields.
 
 ```go
@@ -429,13 +455,13 @@ type SequenceReader interface {
     Value() int64
 }
 
-type WaitStrategy interface {
-    WaitFor(request WaitRequest) (int64, error)
-    WaitForCapacity(request CapacityWaitRequest) error
+type Strategy interface {
+    WaitFor(request wait.Request) (int64, error)
+    WaitForCapacity(request wait.CapacityRequest) error
     SignalAll()
 }
 
-type WaitRequest struct {
+type Request struct {
     Context           context.Context
     RequestedSequence int64
     CursorSequence    SequenceReader
@@ -443,7 +469,7 @@ type WaitRequest struct {
     Barrier           Barrier
 }
 
-type CapacityWaitRequest struct {
+type CapacityRequest struct {
     Context            context.Context
     RequestedSequences int64
     CurrentSequence    int64
@@ -454,10 +480,12 @@ type CapacityWaitRequest struct {
 
 V1 built-ins:
 
-- `NewBlockingWaitStrategy()`
-- `NewBusySpinWaitStrategy()`
+- `wait.NewBlockingStrategy()`
+- `wait.NewBusySpinStrategy()`
 
-`BlockingWaitStrategy` listens to `Context.Done()` for both consumer waits and producer capacity waits. `BusySpinWaitStrategy` periodically checks `Context.Err()` and, for consumer waits, `Barrier.CheckAlert()`.
+`wait.BlockingStrategy` listens to `Context.Done()` for both consumer waits and
+producer capacity waits. `wait.BusySpinStrategy` periodically checks
+`Context.Err()` and, for consumer waits, `Barrier.CheckAlert()`.
 Producer capacity waits use `WaitForCapacity` so backpressure can be tuned without hiding an uninterruptible spin loop inside the sequencer.
 
 ## Event Handler
@@ -465,11 +493,11 @@ Producer capacity waits use `WaitForCapacity` so backpressure can be tuned witho
 Event handling uses one main interface plus optional small interfaces.
 
 ```go
-type EventHandler[T any] interface {
-    OnEvent(request EventRequest[T]) error
+type Handler[T any] interface {
+    OnEvent(request event.Request[T]) error
 }
 
-type EventRequest[T any] struct {
+type Request[T any] struct {
     Context    context.Context
     Event      *T
     Sequence   int64
@@ -514,21 +542,23 @@ const (
 )
 
 type ExceptionHandler[T any] interface {
-    HandleEventException(request EventException[T]) ExceptionAction
+    HandleEventException(request Exception[T]) ExceptionAction
     HandleStartException(request LifecycleException) ExceptionAction
     HandleShutdownException(request LifecycleException) ExceptionAction
 }
 
-type EventException[T any] struct {
+type Exception[T any] struct {
     Context  context.Context
     Event    *T
     Sequence int64
     Err      error
+    Node     Node
 }
 
 type LifecycleException struct {
     Context context.Context
     Err     error
+    Node    Node
 }
 ```
 
@@ -566,7 +596,7 @@ Rules:
 - `Start(ctx)` starts one goroutine and returns an error if already running.
 - `Stop()` is safe to call multiple times.
 - `Wait()` blocks until the processor exits and returns its terminal error.
-- `Stop()` cancels the processor context, alerts dependent barriers, and calls `WaitStrategy.SignalAll()` so blocked producers and consumers wake promptly.
+- `Stop()` cancels the processor context, alerts dependent barriers, and calls `wait.Strategy.SignalAll()` so blocked producers and consumers wake promptly.
 - The processor sequence always advances for successfully handled events.
 - On default fatal handler errors, the failed sequence is stored before shutdown so producers are not permanently gated by an already-read slot.
 
@@ -580,17 +610,17 @@ type Disruptor[T any] struct {
 }
 
 func New[T any](
-    factory EventFactory[T],
+    factory event.Factory[T],
     size int,
-    opts ...RingBufferOption,
+    opts ...ringbuffer.Option,
 ) (*Disruptor[T], error)
 
-func (d *Disruptor[T]) RingBuffer() *RingBuffer[T]
-func (d *Disruptor[T]) HandleEventsWith(handlers ...EventHandler[T]) ([]EventProcessor, error)
+func (d *Disruptor[T]) RingBuffer() *ringbuffer.RingBuffer[T]
+func (d *Disruptor[T]) HandleEventsWith(handlers ...event.Handler[T]) ([]processor.EventProcessor, error)
 func (d *Disruptor[T]) HandleEventsWithOptions(
-    handlers []EventHandler[T],
-    opts ...ProcessorOption[T],
-) ([]EventProcessor, error)
+    handlers []event.Handler[T],
+    opts ...processor.Option[T],
+) ([]processor.EventProcessor, error)
 func (d *Disruptor[T]) Start(ctx context.Context) error
 func (d *Disruptor[T]) Stop()
 func (d *Disruptor[T]) Wait() error
@@ -603,7 +633,7 @@ V1 supports parallel consumers only. Consumer dependency graph support is deferr
 Metrics are part of V1. The core package defines a backend-neutral hook interface. The default behavior is no metrics: the configured sink is nil and hot paths short-circuit before measuring or dispatching.
 
 ```go
-type MetricsSink interface {
+type Sink interface {
     OnPublish(request PublishMetric)
     OnBatchStart(request BatchMetric)
     OnEventHandled(request EventMetric)
@@ -617,7 +647,7 @@ type EventMetricFunc func(EventMetric)
 type WaitMetricFunc func(WaitMetric)
 type ProcessorMetricFunc func(ProcessorMetric)
 
-type MetricsSinkFunc struct {
+type SinkFunc struct {
     Publish        PublishMetricFunc
     BatchStart     BatchMetricFunc
     EventHandled   EventMetricFunc
@@ -625,14 +655,14 @@ type MetricsSinkFunc struct {
     ProcessorState ProcessorMetricFunc
 }
 
-type NoopMetricsSink struct{}
+type NoopSink struct{}
 ```
 
 Payloads are named types:
 
 ```go
 type PublishMetric struct {
-    ProducerType ProducerType
+    ProducerType string
     Sequence     int64
     BatchSize    int64
     Duration     time.Duration
@@ -673,7 +703,12 @@ pkg/observability/otel
 ```
 
 Metric labels in adapters must remain low-cardinality.
-The zero value of `NoopMetricsSink` does nothing, and `MetricsSinkFunc` lets users wire one or two callbacks without implementing the full interface. The adapter implements `MetricsSink` by checking whether each field is nil before invoking it. Hot-path metric emission must short-circuit before calling `time.Now`, building payloads, or dispatching to an interface when no sink is configured.
+The zero value of `metrics.NoopSink` does nothing, and `metrics.SinkFunc` lets
+users wire one or two callbacks without implementing the full interface. The
+adapter implements `metrics.Sink` by checking whether each field is nil before
+invoking it. Hot-path metric emission must short-circuit before calling
+`time.Now`, building payloads, or dispatching to an interface when no sink is
+configured.
 
 ## Errors
 
@@ -681,13 +716,11 @@ Expected control-flow errors are sentinels:
 
 ```go
 var (
-    ErrAlerted              = errors.New("disruptor: alerted")
     ErrClosed               = errors.New("disruptor: closed")
-    ErrInsufficientCapacity = errors.New("disruptor: insufficient capacity")
-    ErrInvalidBufferSize    = errors.New("disruptor: invalid buffer size")
-    ErrInvalidSequence      = errors.New("disruptor: invalid sequence")
 )
 ```
+
+Ring-buffer scoped control-flow errors live in `pkg/ringbuffer`.
 
 Rules:
 
@@ -815,7 +848,7 @@ Tests are executable specifications.
 
 ## Extension Backlog
 
-Deferred items are tracked as compatibility-aware extension points.
+Deferred items:
 
 - Consumer dependency graph DSL: `After`, `Then`, and dependency-aware barriers.
 - Pull-style `Poller[T]`.

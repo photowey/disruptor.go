@@ -12,33 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package event
 
 import "context"
 
-// EventFactory creates the initial value for each ring buffer slot.
-type EventFactory[T any] interface {
+// Factory creates the initial value for each ring buffer slot.
+type Factory[T any] interface {
 	NewEvent() T
 }
 
-// EventFactoryFunc adapts a function to the EventFactory interface.
-type EventFactoryFunc[T any] func() T
+// FactoryFunc adapts a function to the Factory interface.
+type FactoryFunc[T any] func() T
 
 // NewEvent returns the event produced by the wrapped function.
-func (fn EventFactoryFunc[T]) NewEvent() T {
+func (fn FactoryFunc[T]) NewEvent() T {
 	return fn()
 }
 
-// EventTranslator writes producer data into a claimed event slot.
-type EventTranslator[T any] interface {
+// Translator writes producer data into a claimed event slot.
+type Translator[T any] interface {
 	Translate(request TranslateRequest[T])
 }
 
-// EventTranslatorFunc adapts a function to the EventTranslator interface.
-type EventTranslatorFunc[T any] func(request TranslateRequest[T])
+// TranslatorFunc adapts a function to the Translator interface.
+type TranslatorFunc[T any] func(request TranslateRequest[T])
 
 // Translate calls the wrapped translator function.
-func (fn EventTranslatorFunc[T]) Translate(request TranslateRequest[T]) {
+func (fn TranslatorFunc[T]) Translate(request TranslateRequest[T]) {
 	fn(request)
 }
 

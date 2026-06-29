@@ -12,34 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor_test
+package sequence_test
 
 import (
 	"testing"
 
-	"github.com/photowey/disruptor.go/pkg/disruptor"
+	"github.com/photowey/disruptor.go/pkg/sequence"
 )
 
 func TestSequenceStoresAndComparesValues(t *testing.T) {
-	sequence := disruptor.NewSequence(disruptor.InitialSequenceValue)
+	seq := sequence.New(sequence.InitialValue)
 
-	if got := sequence.Value(); got != disruptor.InitialSequenceValue {
-		t.Fatalf("initial value = %d, want %d", got, disruptor.InitialSequenceValue)
+	if got := seq.Value(); got != sequence.InitialValue {
+		t.Fatalf("initial value = %d, want %d", got, sequence.InitialValue)
 	}
 
-	sequence.Store(41)
-	if got := sequence.Value(); got != 41 {
+	seq.Store(41)
+	if got := seq.Value(); got != 41 {
 		t.Fatalf("stored value = %d, want 41", got)
 	}
 
-	if got := sequence.Add(1); got != 42 {
+	if got := seq.Add(1); got != 42 {
 		t.Fatalf("add result = %d, want 42", got)
 	}
 
-	if swapped := sequence.CompareAndSwap(42, 100); !swapped {
+	if swapped := seq.CompareAndSwap(42, 100); !swapped {
 		t.Fatal("compare-and-swap should succeed")
 	}
-	if got := sequence.Value(); got != 100 {
+	if got := seq.Value(); got != 100 {
 		t.Fatalf("compare-and-swap value = %d, want 100", got)
 	}
 }

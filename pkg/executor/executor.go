@@ -74,24 +74,16 @@ func (fn TaskFunc[T]) Execute(ctx context.Context) (T, error) {
 }
 
 // SubmitOption configures typed submissions.
-type SubmitOption interface {
-	applySubmit(config *SubmitConfig) error
-}
+type SubmitOption func(config *SubmitConfig) error
 
 // SubmitConfig is the validated typed submission configuration.
 type SubmitConfig struct {
 	Name string
 }
 
-type submitOptionFunc func(config *SubmitConfig) error
-
-func (fn submitOptionFunc) applySubmit(config *SubmitConfig) error {
-	return fn(config)
-}
-
 // WithTaskName sets the submitted task name used by metrics and diagnostics.
 func WithTaskName(name string) SubmitOption {
-	return submitOptionFunc(func(config *SubmitConfig) error {
+	return func(config *SubmitConfig) error {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			return fmt.Errorf("%w: task name is empty", ErrInvalid)
@@ -99,5 +91,5 @@ func WithTaskName(name string) SubmitOption {
 
 		config.Name = name
 		return nil
-	})
+	}
 }

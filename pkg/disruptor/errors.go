@@ -16,21 +16,11 @@ package disruptor
 
 import (
 	"errors"
-
-	sequencer "github.com/photowey/disruptor.go/internal/sequencer"
 )
 
 var (
-	// ErrAlerted reports that a barrier or processor was alerted.
-	ErrAlerted = errors.New("disruptor: alerted")
 	// ErrClosed reports that a component has already been started or stopped.
 	ErrClosed = errors.New("disruptor: closed")
-	// ErrInsufficientCapacity reports that a non-blocking claim cannot proceed.
-	ErrInsufficientCapacity = sequencer.ErrInsufficientCapacity
-	// ErrInvalidBufferSize reports that a ring buffer size is not a positive power of two.
-	ErrInvalidBufferSize = errors.New("disruptor: invalid buffer size")
-	// ErrInvalidSequence reports that a sequence request is outside the valid range.
-	ErrInvalidSequence = sequencer.ErrInvalidSequence
 	// ErrConsumerModeConflict reports incompatible consumer registration APIs.
 	ErrConsumerModeConflict = errors.New("disruptor: consumer mode conflict")
 )

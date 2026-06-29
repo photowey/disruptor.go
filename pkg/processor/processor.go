@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package processor
 
 import (
 	"context"
@@ -23,7 +23,10 @@ import (
 	"time"
 
 	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/metrics"
+	"github.com/photowey/disruptor.go/pkg/ringbuffer"
 	"github.com/photowey/disruptor.go/pkg/runtimevars"
+	"github.com/photowey/disruptor.go/pkg/sequence"
 )
 
 // EventProcessor controls a processor lifecycle and exposes its sequence.
@@ -31,21 +34,35 @@ type EventProcessor interface {
 	Start(ctx context.Context) error
 	Stop()
 	Wait() error
-	Sequence() *Sequence
+	Sequence() *sequence.Sequence
+}
+
+// HaltNotifier receives graph-wide halt signals from a processor.
+type HaltNotifier interface {
+	NotifyHalt()
+}
+
+// BatchConfig configures internal batch processor behavior.
+type BatchConfig[T any] struct {
+	ExceptionHandler event.ExceptionHandler[T]
+	ProducerGating   bool
+	HaltAdvances     bool
+	Node             event.Node
+	HaltNotifier     HaltNotifier
 }
 
 // BatchEventProcessor waits for published events and dispatches batches.
 type BatchEventProcessor[T any] struct {
-	ringBuffer       *RingBuffer[T]
-	barrier          Barrier
+	ringBuffer       *ringbuffer.RingBuffer[T]
+	barrier          ringbuffer.Barrier
 	handler          event.Handler[T]
 	exceptionHandler event.ExceptionHandler[T]
 	node             event.Node
 	producerGating   bool
 	haltAdvances     bool
-	onHalt           func()
+	haltNotifier     HaltNotifier
 
-	sequence *Sequence
+	sequence *sequence.Sequence
 
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -55,78 +72,71 @@ type BatchEventProcessor[T any] struct {
 	terminalErr atomic.Value
 }
 
-type batchEventProcessorConfig[T any] struct {
-	exceptionHandler event.ExceptionHandler[T]
-	producerGating   bool
-	haltAdvances     bool
-	node             event.Node
-	onHalt           func()
-}
-
 // NewBatchEventProcessor creates a processor for one event handler.
 func NewBatchEventProcessor[T any](
-	ringBuffer *RingBuffer[T],
-	barrier Barrier,
+	ringBuffer *ringbuffer.RingBuffer[T],
+	barrier ringbuffer.Barrier,
 	handler event.Handler[T],
-	opts ...ProcessorOption[T],
+	opts ...Option[T],
 ) (*BatchEventProcessor[T], error) {
-	return newBatchEventProcessor(
+	return NewBatchEventProcessorWithConfig(
 		ringBuffer,
 		barrier,
 		handler,
-		batchEventProcessorConfig[T]{
-			exceptionHandler: defaultProcessorConfig[T]().exceptionHandler,
-			producerGating:   true,
-			haltAdvances:     true,
+		BatchConfig[T]{
+			ExceptionHandler: defaultOptions[T]().exceptionHandler,
+			ProducerGating:   true,
+			HaltAdvances:     true,
 		},
 		opts...,
 	)
 }
 
-func newBatchEventProcessor[T any](
-	ringBuffer *RingBuffer[T],
-	barrier Barrier,
+// NewBatchEventProcessorWithConfig creates a processor with explicit internal behavior.
+func NewBatchEventProcessorWithConfig[T any](
+	ringBuffer *ringbuffer.RingBuffer[T],
+	barrier ringbuffer.Barrier,
 	handler event.Handler[T],
-	config batchEventProcessorConfig[T],
-	opts ...ProcessorOption[T],
+	config BatchConfig[T],
+	opts ...Option[T],
 ) (*BatchEventProcessor[T], error) {
 	if ringBuffer == nil {
-		return nil, fmt.Errorf("disruptor: ring buffer is nil")
+		return nil, fmt.Errorf("processor: ring buffer is nil")
 	}
 	if barrier == nil {
-		return nil, fmt.Errorf("disruptor: barrier is nil")
+		return nil, fmt.Errorf("processor: barrier is nil")
 	}
 	if handler == nil {
-		return nil, fmt.Errorf("disruptor: event handler is nil")
+		return nil, fmt.Errorf("processor: event handler is nil")
 	}
 
-	if config.exceptionHandler == nil {
-		config.exceptionHandler = defaultProcessorConfig[T]().exceptionHandler
+	if config.ExceptionHandler == nil {
+		config.ExceptionHandler = defaultOptions[T]().exceptionHandler
 	}
 
-	processorOptions := processorConfig[T]{
-		exceptionHandler: config.exceptionHandler,
+	processorOptions := options[T]{
+		exceptionHandler: config.ExceptionHandler,
 	}
 	for _, opt := range opts {
 		if opt == nil {
 			continue
 		}
-		if err := opt.applyProcessor(&processorOptions); err != nil {
+		if err := opt(&processorOptions); err != nil {
 			return nil, fmt.Errorf("applying processor option: %w", err)
 		}
 	}
-	config.exceptionHandler = processorOptions.exceptionHandler
+	config.ExceptionHandler = processorOptions.exceptionHandler
 
 	processor := &BatchEventProcessor[T]{
 		ringBuffer:       ringBuffer,
 		barrier:          barrier,
 		handler:          handler,
-		exceptionHandler: config.exceptionHandler,
-		node:             config.node,
-		producerGating:   config.producerGating,
-		haltAdvances:     config.haltAdvances,
-		onHalt:           config.onHalt,
-		sequence:         NewSequence(InitialSequenceValue),
+		exceptionHandler: config.ExceptionHandler,
+		node:             config.Node,
+		producerGating:   config.ProducerGating,
+		haltAdvances:     config.HaltAdvances,
+		haltNotifier:     config.HaltNotifier,
+		sequence:         sequence.New(sequence.InitialValue),
 	}
 	if processor.producerGating {
 		ringBuffer.AddGatingSequences(processor.sequence)
@@ -143,7 +153,7 @@ func (p *BatchEventProcessor[T]) Start(ctx context.Context) error {
 
 	processorCtx, cancel := context.WithCancel(ctx)
 	p.cancel = cancel
-	p.sequence.Store(InitialSequenceValue)
+	p.sequence.Store(sequence.InitialValue)
 	p.wg.Add(1)
 	p.processorStateMetric("running", nil)
 	go p.run(processorCtx)
@@ -163,8 +173,8 @@ func (p *BatchEventProcessor[T]) Stop() {
 	if p.barrier != nil {
 		p.barrier.Alert()
 	}
-	if p.ringBuffer != nil && p.ringBuffer.waitStrategy != nil {
-		p.ringBuffer.waitStrategy.SignalAll()
+	if p.ringBuffer != nil {
+		p.ringBuffer.SignalAll()
 	}
 }
 
@@ -182,8 +192,13 @@ func (p *BatchEventProcessor[T]) Wait() error {
 }
 
 // Sequence returns the processor's current consumer sequence.
-func (p *BatchEventProcessor[T]) Sequence() *Sequence {
+func (p *BatchEventProcessor[T]) Sequence() *sequence.Sequence {
 	return p.sequence
+}
+
+// RemoveGatingSequence unregisters the processor sequence from producer backpressure.
+func (p *BatchEventProcessor[T]) RemoveGatingSequence() {
+	p.removeGatingSequence()
 }
 
 func (p *BatchEventProcessor[T]) run(ctx context.Context) {
@@ -200,7 +215,7 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 	for {
 		availableSequence, err := p.barrier.WaitFor(ctx, nextSequence)
 		if err != nil {
-			if p.stopped.Load() || errors.Is(err, context.Canceled) || errors.Is(err, ErrAlerted) {
+			if p.stopped.Load() || errors.Is(err, context.Canceled) || errors.Is(err, ringbuffer.ErrAlerted) {
 				p.storeTerminalErr(nil)
 				return
 			}
@@ -230,7 +245,7 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 			}
 
 			var started time.Time
-			if p.ringBuffer.metrics != nil {
+			if p.ringBuffer.Metrics() != nil {
 				started = time.Now()
 			}
 			err := p.invokeHandler(request)
@@ -269,11 +284,7 @@ func (p *BatchEventProcessor[T]) run(ctx context.Context) {
 }
 
 func (p *BatchEventProcessor[T]) invokeHandler(request event.Request[T]) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("disruptor: handler panic: %v", recovered)
-		}
-	}()
+	defer recoverHandlerPanic(&err)
 
 	return p.handler.OnEvent(request)
 }
@@ -282,11 +293,7 @@ func (p *BatchEventProcessor[T]) invokeBatchStart(
 	handler event.BatchStartHandler,
 	request event.BatchStartRequest,
 ) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("disruptor: batch start panic: %v", recovered)
-		}
-	}()
+	defer recoverBatchStartPanic(&err)
 
 	return handler.OnBatchStart(request)
 }
@@ -295,11 +302,7 @@ func (p *BatchEventProcessor[T]) invokeLifecycleStart(
 	ctx context.Context,
 	handler event.LifecycleHandler,
 ) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("disruptor: lifecycle start panic: %v", recovered)
-		}
-	}()
+	defer recoverLifecycleStartPanic(&err)
 
 	return handler.OnStart(ctx)
 }
@@ -308,13 +311,33 @@ func (p *BatchEventProcessor[T]) invokeLifecycleShutdown(
 	ctx context.Context,
 	handler event.LifecycleHandler,
 ) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("disruptor: lifecycle shutdown panic: %v", recovered)
-		}
-	}()
+	defer recoverLifecycleShutdownPanic(&err)
 
 	return handler.OnShutdown(ctx)
+}
+
+func recoverHandlerPanic(err *error) {
+	if recovered := recover(); recovered != nil {
+		*err = fmt.Errorf("processor: handler panic: %v", recovered)
+	}
+}
+
+func recoverBatchStartPanic(err *error) {
+	if recovered := recover(); recovered != nil {
+		*err = fmt.Errorf("processor: batch start panic: %v", recovered)
+	}
+}
+
+func recoverLifecycleStartPanic(err *error) {
+	if recovered := recover(); recovered != nil {
+		*err = fmt.Errorf("processor: lifecycle start panic: %v", recovered)
+	}
+}
+
+func recoverLifecycleShutdownPanic(err *error) {
+	if recovered := recover(); recovered != nil {
+		*err = fmt.Errorf("processor: lifecycle shutdown panic: %v", recovered)
+	}
 }
 
 func (p *BatchEventProcessor[T]) storeTerminalErr(err error) {
@@ -420,24 +443,26 @@ func (p *BatchEventProcessor[T]) notifyBatchStart(request event.BatchStartReques
 }
 
 func (p *BatchEventProcessor[T]) batchStartMetric(request event.BatchStartRequest) {
-	if p.ringBuffer.metrics == nil {
+	sink := p.ringBuffer.Metrics()
+	if sink == nil {
 		return
 	}
 
-	p.ringBuffer.metrics.OnBatchStart(BatchMetric{
+	sink.OnBatchStart(metrics.BatchMetric{
 		BatchSize:  request.BatchSize,
 		QueueDepth: request.QueueDepth,
 		Node:       p.node,
 	})
 }
 
-func (p *BatchEventProcessor[T]) eventHandledMetric(sequence int64, started time.Time, err error) {
-	if p.ringBuffer.metrics == nil {
+func (p *BatchEventProcessor[T]) eventHandledMetric(sequenceValue int64, started time.Time, err error) {
+	sink := p.ringBuffer.Metrics()
+	if sink == nil {
 		return
 	}
 
-	p.ringBuffer.metrics.OnEventHandled(EventMetric{
-		Sequence: sequence,
+	sink.OnEventHandled(metrics.EventMetric{
+		Sequence: sequenceValue,
 		Duration: time.Since(started),
 		Err:      err,
 		Node:     p.node,
@@ -445,11 +470,12 @@ func (p *BatchEventProcessor[T]) eventHandledMetric(sequence int64, started time
 }
 
 func (p *BatchEventProcessor[T]) processorStateMetric(state string, err error) {
-	if p.ringBuffer.metrics == nil {
+	sink := p.ringBuffer.Metrics()
+	if sink == nil {
 		return
 	}
 
-	p.ringBuffer.metrics.OnProcessorState(ProcessorMetric{
+	sink.OnProcessorState(metrics.ProcessorMetric{
 		State: state,
 		Err:   err,
 		Node:  p.node,
@@ -457,24 +483,24 @@ func (p *BatchEventProcessor[T]) processorStateMetric(state string, err error) {
 }
 
 func (p *BatchEventProcessor[T]) notifyHalt() {
-	if p.onHalt == nil {
+	if p.haltNotifier == nil {
 		return
 	}
 
-	p.onHalt()
+	p.haltNotifier.NotifyHalt()
 }
 
-func (p *BatchEventProcessor[T]) resetRetryState(sequence int64) {
+func (p *BatchEventProcessor[T]) resetRetryState(sequenceValue int64) {
 	resetter, ok := p.exceptionHandler.(interface{ ResetRetry(sequence int64) })
 	if !ok {
 		return
 	}
 
-	resetter.ResetRetry(sequence)
+	resetter.ResetRetry(sequenceValue)
 }
 
-func (p *BatchEventProcessor[T]) storeSequence(sequence int64) {
-	p.sequence.Store(sequence)
+func (p *BatchEventProcessor[T]) storeSequence(sequenceValue int64) {
+	p.sequence.Store(sequenceValue)
 	p.signalWaiters()
 }
 
@@ -488,9 +514,9 @@ func (p *BatchEventProcessor[T]) removeGatingSequence() {
 }
 
 func (p *BatchEventProcessor[T]) signalWaiters() {
-	if p.ringBuffer == nil || p.ringBuffer.waitStrategy == nil {
+	if p.ringBuffer == nil {
 		return
 	}
 
-	p.ringBuffer.waitStrategy.SignalAll()
+	p.ringBuffer.SignalAll()
 }

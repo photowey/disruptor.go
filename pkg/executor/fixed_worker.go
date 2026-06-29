@@ -34,9 +34,7 @@ const (
 )
 
 // FixedWorkerOption configures FixedWorkerExecutor.
-type FixedWorkerOption interface {
-	applyFixedWorker(config *FixedWorkerConfig) error
-}
+type FixedWorkerOption func(config *FixedWorkerConfig) error
 
 // FixedWorkerConfig is the validated fixed worker configuration.
 type FixedWorkerConfig struct {
@@ -48,49 +46,43 @@ type FixedWorkerConfig struct {
 	MetricsSink  MetricsSink
 }
 
-type fixedWorkerOptionFunc func(config *FixedWorkerConfig) error
-
-func (fn fixedWorkerOptionFunc) applyFixedWorker(config *FixedWorkerConfig) error {
-	return fn(config)
-}
-
 // WithWorkers sets the fixed worker count.
 func WithWorkers(workers int) FixedWorkerOption {
-	return fixedWorkerOptionFunc(func(config *FixedWorkerConfig) error {
+	return func(config *FixedWorkerConfig) error {
 		if workers < 1 {
 			return fmt.Errorf("%w: workers must be positive", ErrInvalid)
 		}
 		config.Workers = workers
 		return nil
-	})
+	}
 }
 
 // WithQueueSize sets the bounded queue size.
 func WithQueueSize(size int) FixedWorkerOption {
-	return fixedWorkerOptionFunc(func(config *FixedWorkerConfig) error {
+	return func(config *FixedWorkerConfig) error {
 		if size < 0 {
 			return fmt.Errorf("%w: queue size is negative", ErrInvalid)
 		}
 		config.QueueSize = size
 		return nil
-	})
+	}
 }
 
 // WithName sets the executor name.
 func WithName(name string) FixedWorkerOption {
-	return fixedWorkerOptionFunc(func(config *FixedWorkerConfig) error {
+	return func(config *FixedWorkerConfig) error {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			return fmt.Errorf("%w: executor name is empty", ErrInvalid)
 		}
 		config.Name = name
 		return nil
-	})
+	}
 }
 
 // WithRejectPolicy sets queue saturation behavior.
 func WithRejectPolicy(policy RejectPolicy) FixedWorkerOption {
-	return fixedWorkerOptionFunc(func(config *FixedWorkerConfig) error {
+	return func(config *FixedWorkerConfig) error {
 		switch policy {
 		case RejectPolicyBlock, RejectPolicyReject:
 			config.RejectPolicy = policy
@@ -98,23 +90,23 @@ func WithRejectPolicy(policy RejectPolicy) FixedWorkerOption {
 		default:
 			return fmt.Errorf("%w: invalid reject policy", ErrInvalid)
 		}
-	})
+	}
 }
 
 // WithPanicHandler sets a recovered panic observer.
 func WithPanicHandler(handler PanicHandler) FixedWorkerOption {
-	return fixedWorkerOptionFunc(func(config *FixedWorkerConfig) error {
+	return func(config *FixedWorkerConfig) error {
 		config.PanicHandler = handler
 		return nil
-	})
+	}
 }
 
 // WithMetricsSink sets an executor metrics sink.
 func WithMetricsSink(sink MetricsSink) FixedWorkerOption {
-	return fixedWorkerOptionFunc(func(config *FixedWorkerConfig) error {
+	return func(config *FixedWorkerConfig) error {
 		config.MetricsSink = sink
 		return nil
-	})
+	}
 }
 
 // FixedWorkerExecutor runs tasks on a bounded worker pool.
@@ -138,6 +130,16 @@ type cancelableRunnableTask interface {
 	cancelQueued(cause error)
 }
 
+type workerShutdownWaitTask struct {
+	wg   *sync.WaitGroup
+	done chan<- struct{}
+}
+
+func (task workerShutdownWaitTask) run() {
+	task.wg.Wait()
+	close(task.done)
+}
+
 // NewFixedWorkerExecutor creates and starts a fixed worker executor.
 func NewFixedWorkerExecutor(opts ...FixedWorkerOption) (*FixedWorkerExecutor, error) {
 	config := FixedWorkerConfig{
@@ -150,7 +152,7 @@ func NewFixedWorkerExecutor(opts ...FixedWorkerOption) (*FixedWorkerExecutor, er
 		if opt == nil {
 			continue
 		}
-		if err := opt.applyFixedWorker(&config); err != nil {
+		if err := opt(&config); err != nil {
 			return nil, fmt.Errorf("applying fixed worker option: %w", err)
 		}
 	}
@@ -235,10 +237,11 @@ func (e *FixedWorkerExecutor) Shutdown(ctx context.Context) error {
 	}
 
 	done := make(chan struct{})
-	go func() {
-		e.wg.Wait()
-		close(done)
-	}()
+	task := workerShutdownWaitTask{
+		wg:   &e.wg,
+		done: done,
+	}
+	go task.run()
 
 	select {
 	case <-done:
@@ -267,23 +270,27 @@ func (e *FixedWorkerExecutor) runTask(request SubmitRequest) {
 
 	started := time.Now()
 	e.emitMetric("task_started", request, nil, 0)
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err := fmt.Errorf("executor: task panic: %v", recovered)
-			if e.config.PanicHandler != nil {
-				e.config.PanicHandler.HandleExecutorPanic(PanicRequest{
-					Context:      request.Context,
-					ExecutorName: e.config.Name,
-					TaskName:     request.Name,
-					Recovered:    recovered,
-				})
-			}
-			e.emitMetric("task_panicked", request, err, time.Since(started))
-		}
-	}()
+	defer e.recoverTaskPanic(request, started)
 
 	request.Task.Run(request.Context)
 	e.emitMetric("task_completed", request, nil, time.Since(started))
+}
+
+func (e *FixedWorkerExecutor) recoverTaskPanic(request SubmitRequest, started time.Time) {
+	if recovered := recover(); recovered == nil {
+		return
+	} else {
+		err := fmt.Errorf("executor: task panic: %v", recovered)
+		if e.config.PanicHandler != nil {
+			e.config.PanicHandler.HandleExecutorPanic(PanicRequest{
+				Context:      request.Context,
+				ExecutorName: e.config.Name,
+				TaskName:     request.Name,
+				Recovered:    recovered,
+			})
+		}
+		e.emitMetric("task_panicked", request, err, time.Since(started))
+	}
 }
 
 func (e *FixedWorkerExecutor) emitMetric(

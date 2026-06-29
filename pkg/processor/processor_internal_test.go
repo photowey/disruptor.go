@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package processor
 
 import (
 	"context"
@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/photowey/disruptor.go/pkg/event"
+	"github.com/photowey/disruptor.go/pkg/ringbuffer"
+	"github.com/photowey/disruptor.go/pkg/sequence"
 )
 
 func TestBatchEventProcessorReportsNodeContext(t *testing.T) {
@@ -33,15 +35,15 @@ func TestBatchEventProcessorReportsNodeContext(t *testing.T) {
 		},
 	}
 
-	processor, err := newBatchEventProcessor(
+	processor, err := NewBatchEventProcessorWithConfig(
 		rb,
 		rb.NewBarrier(),
 		handler,
-		batchEventProcessorConfig[internalProcessorEvent]{
-			exceptionHandler: event.NewFatalExceptionHandler[internalProcessorEvent](),
-			producerGating:   true,
-			haltAdvances:     true,
-			node: event.Node{
+		BatchConfig[internalProcessorEvent]{
+			ExceptionHandler: event.NewFatalExceptionHandler[internalProcessorEvent](),
+			ProducerGating:   true,
+			HaltAdvances:     true,
+			Node: event.Node{
 				GraphName: "orders",
 				NodeName:  "persist",
 				NodeLabel: "Persist",
@@ -89,12 +91,12 @@ func TestBatchEventProcessorReportsNodeContextForBatchStartException(t *testing.
 		},
 	}
 
-	processor, err := newBatchEventProcessor(
+	processor, err := NewBatchEventProcessorWithConfig(
 		rb,
 		rb.NewBarrier(),
 		handler,
-		batchEventProcessorConfig[internalProcessorEvent]{
-			exceptionHandler: internalProcessorExceptionHandler{
+		BatchConfig[internalProcessorEvent]{
+			ExceptionHandler: internalProcessorExceptionHandler{
 				handleEvent: func(request event.Exception[internalProcessorEvent]) event.ExceptionAction {
 					return event.ExceptionActionHalt
 				},
@@ -106,9 +108,9 @@ func TestBatchEventProcessorReportsNodeContextForBatchStartException(t *testing.
 					return event.ExceptionActionHalt
 				},
 			},
-			producerGating: true,
-			haltAdvances:   true,
-			node: event.Node{
+			ProducerGating: true,
+			HaltAdvances:   true,
+			Node: event.Node{
 				GraphName: "orders",
 				NodeName:  "validate",
 				NodeLabel: "Validate",
@@ -149,14 +151,14 @@ func TestBatchEventProcessorReportsNodeContextForBatchStartException(t *testing.
 
 func TestBatchEventProcessorCanSkipProducerGating(t *testing.T) {
 	rb := newInternalProcessorRingBuffer(t, 1)
-	_, err := newBatchEventProcessor(
+	_, err := NewBatchEventProcessorWithConfig(
 		rb,
 		rb.NewBarrier(),
 		internalProcessorHandler{},
-		batchEventProcessorConfig[internalProcessorEvent]{
-			exceptionHandler: event.NewFatalExceptionHandler[internalProcessorEvent](),
-			producerGating:   false,
-			haltAdvances:     true,
+		BatchConfig[internalProcessorEvent]{
+			ExceptionHandler: event.NewFatalExceptionHandler[internalProcessorEvent](),
+			ProducerGating:   false,
+			HaltAdvances:     true,
 		},
 	)
 	if err != nil {
@@ -174,7 +176,7 @@ func TestBatchEventProcessorCanSkipProducerGating(t *testing.T) {
 func TestBatchEventProcessorGraphHaltDoesNotAdvanceFailedSequence(t *testing.T) {
 	rb := newInternalProcessorRingBuffer(t, 4)
 	handlerErr := errInternalProcessorHandler
-	processor, err := newBatchEventProcessor(
+	processor, err := NewBatchEventProcessorWithConfig(
 		rb,
 		rb.NewBarrier(),
 		internalProcessorHandler{
@@ -182,10 +184,10 @@ func TestBatchEventProcessorGraphHaltDoesNotAdvanceFailedSequence(t *testing.T) 
 				return handlerErr
 			},
 		},
-		batchEventProcessorConfig[internalProcessorEvent]{
-			exceptionHandler: event.NewFatalExceptionHandler[internalProcessorEvent](),
-			producerGating:   false,
-			haltAdvances:     false,
+		BatchConfig[internalProcessorEvent]{
+			ExceptionHandler: event.NewFatalExceptionHandler[internalProcessorEvent](),
+			ProducerGating:   false,
+			HaltAdvances:     false,
 		},
 	)
 	if err != nil {
@@ -200,7 +202,7 @@ func TestBatchEventProcessorGraphHaltDoesNotAdvanceFailedSequence(t *testing.T) 
 	if err := processor.Wait(); !errors.Is(err, handlerErr) {
 		t.Fatalf("wait error = %v, want handler error", err)
 	}
-	if got := processor.Sequence().Value(); got != InitialSequenceValue {
+	if got := processor.Sequence().Value(); got != sequence.InitialValue {
 		t.Fatalf("sequence = %d, want initial value", got)
 	}
 }
@@ -262,11 +264,11 @@ func (h internalProcessorBatchStartHandler) OnEvent(
 func newInternalProcessorRingBuffer(
 	t *testing.T,
 	size int,
-) *RingBuffer[internalProcessorEvent] {
+) *ringbuffer.RingBuffer[internalProcessorEvent] {
 	t.Helper()
 
-	rb, err := NewRingBuffer(
-		EventFactoryFunc[internalProcessorEvent](func() internalProcessorEvent {
+	rb, err := ringbuffer.New(
+		event.FactoryFunc[internalProcessorEvent](func() internalProcessorEvent {
 			return internalProcessorEvent{}
 		}),
 		size,
@@ -280,15 +282,15 @@ func newInternalProcessorRingBuffer(
 
 func publishInternalProcessorValue(
 	t *testing.T,
-	rb *RingBuffer[internalProcessorEvent],
+	rb *ringbuffer.RingBuffer[internalProcessorEvent],
 	value int64,
 ) {
 	t.Helper()
 
 	err := rb.PublishEvent(
 		context.Background(),
-		EventTranslatorFunc[internalProcessorEvent](func(
-			request TranslateRequest[internalProcessorEvent],
+		event.TranslatorFunc[internalProcessorEvent](func(
+			request event.TranslateRequest[internalProcessorEvent],
 		) {
 			request.Event.Value = value
 		}),

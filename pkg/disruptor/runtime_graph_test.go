@@ -597,7 +597,7 @@ func newRuntimeGraphTestDisruptor(t *testing.T, size int) *disruptor.Disruptor[l
 	t.Helper()
 
 	d, err := disruptor.New(
-		disruptor.EventFactoryFunc[longEvent](func() longEvent { return longEvent{} }),
+		event.FactoryFunc[longEvent](func() longEvent { return longEvent{} }),
 		size,
 	)
 	if err != nil {
@@ -656,16 +656,27 @@ func waitForBlockedWait(t *testing.T, d *disruptor.Disruptor[longEvent]) {
 	t.Helper()
 
 	done := make(chan struct{})
-	go func() {
-		_ = d.Wait()
-		close(done)
-	}()
+	task := runtimeGraphBlockedWaitTask{
+		disruptor: d,
+		done:      done,
+	}
+	go task.run()
 
 	select {
 	case <-done:
 		t.Fatal("wait returned before slow handler was released")
 	case <-time.After(50 * time.Millisecond):
 	}
+}
+
+type runtimeGraphBlockedWaitTask struct {
+	disruptor *disruptor.Disruptor[longEvent]
+	done      chan<- struct{}
+}
+
+func (task runtimeGraphBlockedWaitTask) run() {
+	_ = task.disruptor.Wait()
+	close(task.done)
 }
 
 func assertRuntimeWaitBlocked(t *testing.T, waitErr <-chan error) {

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package disruptor
+package wait
 
 import (
 	"context"
@@ -20,48 +20,51 @@ import (
 	"sync"
 
 	sequencer "github.com/photowey/disruptor.go/internal/sequencer"
+	"github.com/photowey/disruptor.go/pkg/sequence"
 )
 
-// SequenceReader exposes a readable sequence value.
-type SequenceReader = sequencer.SequenceReader
+// Barrier exposes alert state used while waiting for sequence availability.
+type Barrier interface {
+	CheckAlert() error
+}
 
-// WaitStrategy waits for sequence availability and producer capacity.
-type WaitStrategy interface {
-	WaitFor(request WaitRequest) (int64, error)
-	WaitForCapacity(request CapacityWaitRequest) error
+// Strategy waits for sequence availability and producer capacity.
+type Strategy interface {
+	WaitFor(request Request) (int64, error)
+	WaitForCapacity(request CapacityRequest) error
 	SignalAll()
 }
 
-// WaitRequest carries all state needed to wait for a consumer sequence.
-type WaitRequest struct {
+// Request carries all state needed to wait for a consumer sequence.
+type Request struct {
 	Context           context.Context
 	RequestedSequence int64
-	CursorSequence    SequenceReader
-	DependentSequence SequenceReader
+	CursorSequence    sequence.Reader
+	DependentSequence sequence.Reader
 	Barrier           Barrier
 }
 
-// CapacityWaitRequest carries all state needed to wait for producer capacity.
-type CapacityWaitRequest = sequencer.CapacityWaitRequest
+// CapacityRequest carries all state needed to wait for producer capacity.
+type CapacityRequest = sequencer.CapacityWaitRequest
 
-// BlockingWaitStrategy uses a condition variable to block waiters.
-type BlockingWaitStrategy struct {
+// BlockingStrategy uses a condition variable to block waiters.
+type BlockingStrategy struct {
 	once       sync.Once
 	mu         sync.Mutex
 	cond       *sync.Cond
 	generation uint64
 }
 
-// NewBlockingWaitStrategy constructs a blocking wait strategy.
-func NewBlockingWaitStrategy() WaitStrategy {
-	strategy := &BlockingWaitStrategy{}
+// NewBlockingStrategy constructs a blocking wait strategy.
+func NewBlockingStrategy() Strategy {
+	strategy := &BlockingStrategy{}
 	strategy.init()
 
 	return strategy
 }
 
 // WaitFor waits until the requested sequence is available.
-func (s *BlockingWaitStrategy) WaitFor(request WaitRequest) (int64, error) {
+func (s *BlockingStrategy) WaitFor(request Request) (int64, error) {
 	s.init()
 	if request.Context.Done() != nil {
 		stopContextSignal := context.AfterFunc(request.Context, s.SignalAll)
@@ -71,11 +74,11 @@ func (s *BlockingWaitStrategy) WaitFor(request WaitRequest) (int64, error) {
 	for {
 		generation := s.generationValue()
 		if err := request.Context.Err(); err != nil {
-			return InitialSequenceValue, err
+			return sequence.InitialValue, err
 		}
 		if request.Barrier != nil {
 			if err := request.Barrier.CheckAlert(); err != nil {
-				return InitialSequenceValue, err
+				return sequence.InitialValue, err
 			}
 		}
 
@@ -89,7 +92,7 @@ func (s *BlockingWaitStrategy) WaitFor(request WaitRequest) (int64, error) {
 }
 
 // WaitForCapacity waits until a producer can safely claim capacity.
-func (s *BlockingWaitStrategy) WaitForCapacity(request CapacityWaitRequest) error {
+func (s *BlockingStrategy) WaitForCapacity(request CapacityRequest) error {
 	s.init()
 	if request.Context.Done() != nil {
 		stopContextSignal := context.AfterFunc(request.Context, s.SignalAll)
@@ -110,7 +113,7 @@ func (s *BlockingWaitStrategy) WaitForCapacity(request CapacityWaitRequest) erro
 }
 
 // SignalAll wakes blocked waiters.
-func (s *BlockingWaitStrategy) SignalAll() {
+func (s *BlockingStrategy) SignalAll() {
 	s.init()
 
 	s.mu.Lock()
@@ -120,22 +123,22 @@ func (s *BlockingWaitStrategy) SignalAll() {
 	s.cond.Broadcast()
 }
 
-// BusySpinWaitStrategy polls for progress and yields the processor.
-type BusySpinWaitStrategy struct{}
+// BusySpinStrategy polls for progress and yields the processor.
+type BusySpinStrategy struct{}
 
-// NewBusySpinWaitStrategy constructs a busy-spin wait strategy.
-func NewBusySpinWaitStrategy() WaitStrategy {
-	return BusySpinWaitStrategy{}
+// NewBusySpinStrategy constructs a busy-spin wait strategy.
+func NewBusySpinStrategy() Strategy {
+	return BusySpinStrategy{}
 }
 
 // WaitFor polls once for sequence availability.
-func (s BusySpinWaitStrategy) WaitFor(request WaitRequest) (int64, error) {
+func (s BusySpinStrategy) WaitFor(request Request) (int64, error) {
 	if err := request.Context.Err(); err != nil {
-		return InitialSequenceValue, err
+		return sequence.InitialValue, err
 	}
 	if request.Barrier != nil {
 		if err := request.Barrier.CheckAlert(); err != nil {
-			return InitialSequenceValue, err
+			return sequence.InitialValue, err
 		}
 	}
 
@@ -144,7 +147,7 @@ func (s BusySpinWaitStrategy) WaitFor(request WaitRequest) (int64, error) {
 }
 
 // WaitForCapacity polls once for producer capacity.
-func (s BusySpinWaitStrategy) WaitForCapacity(request CapacityWaitRequest) error {
+func (s BusySpinStrategy) WaitForCapacity(request CapacityRequest) error {
 	if err := request.Context.Err(); err != nil {
 		return err
 	}
@@ -154,11 +157,11 @@ func (s BusySpinWaitStrategy) WaitForCapacity(request CapacityWaitRequest) error
 }
 
 // SignalAll is a no-op for busy-spin waiting.
-func (s BusySpinWaitStrategy) SignalAll() {}
+func (s BusySpinStrategy) SignalAll() {}
 
-func readAvailableSequence(request WaitRequest) int64 {
+func readAvailableSequence(request Request) int64 {
 	if request.CursorSequence == nil {
-		return InitialSequenceValue
+		return sequence.InitialValue
 	}
 
 	available := request.CursorSequence.Value()
@@ -174,20 +177,22 @@ func readAvailableSequence(request WaitRequest) int64 {
 	return available
 }
 
-func (s *BlockingWaitStrategy) init() {
-	s.once.Do(func() {
-		s.cond = sync.NewCond(&s.mu)
-	})
+func (s *BlockingStrategy) init() {
+	s.once.Do(s.initializeCond)
 }
 
-func (s *BlockingWaitStrategy) generationValue() uint64 {
+func (s *BlockingStrategy) initializeCond() {
+	s.cond = sync.NewCond(&s.mu)
+}
+
+func (s *BlockingStrategy) generationValue() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return s.generation
 }
 
-func (s *BlockingWaitStrategy) waitForSignal(
+func (s *BlockingStrategy) waitForSignal(
 	generation uint64,
 	ctx context.Context,
 ) {
@@ -199,7 +204,7 @@ func (s *BlockingWaitStrategy) waitForSignal(
 	}
 }
 
-func capacityAvailable(request CapacityWaitRequest) bool {
+func capacityAvailable(request CapacityRequest) bool {
 	if request.GatingSequence == nil {
 		return true
 	}

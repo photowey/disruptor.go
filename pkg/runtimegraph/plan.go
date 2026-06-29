@@ -131,13 +131,9 @@ func (g *RuntimeGraph[T]) BuildPlan() (*Plan[T], error) {
 			nodesByIndex[planEdge.ToIndex].Incoming++
 		}
 	}
-	sort.Slice(startEdges, func(i, j int) bool {
-		return startEdges[i].To < startEdges[j].To
-	})
+	sort.Sort(planEdgesByDestination[T](startEdges))
 	for from := range edgesByFrom {
-		sort.Slice(edgesByFrom[from], func(i, j int) bool {
-			return edgesByFrom[from][i].To < edgesByFrom[from][j].To
-		})
+		sort.Sort(planEdgesByDestination[T](edgesByFrom[from]))
 		fromIndex := indexByName[from]
 		nodesByIndex[fromIndex].Outgoing = append(nodesByIndex[fromIndex].Outgoing, edgesByFrom[from]...)
 	}
@@ -164,4 +160,18 @@ func planIndex(indexByName map[string]int, name string) int {
 	}
 
 	return VirtualNodeIndex
+}
+
+type planEdgesByDestination[T any] []PlanEdge[T]
+
+func (edges planEdgesByDestination[T]) Len() int {
+	return len(edges)
+}
+
+func (edges planEdgesByDestination[T]) Less(left int, right int) bool {
+	return edges[left].To < edges[right].To
+}
+
+func (edges planEdgesByDestination[T]) Swap(left int, right int) {
+	edges[left], edges[right] = edges[right], edges[left]
 }

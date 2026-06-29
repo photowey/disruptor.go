@@ -45,7 +45,7 @@ type valueTranslator struct {
 	value int64
 }
 
-func (t valueTranslator) Translate(request disruptor.TranslateRequest[longEvent]) {
+func (t valueTranslator) Translate(request event.TranslateRequest[longEvent]) {
 	request.Event.Value = t.value
 }
 
