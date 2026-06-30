@@ -24,10 +24,10 @@ import (
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
 	"github.com/photowey/disruptor.go/pkg/event"
-	"github.com/photowey/disruptor.go/pkg/executor"
 	"github.com/photowey/disruptor.go/pkg/expression"
 	topology "github.com/photowey/disruptor.go/pkg/graph"
 	"github.com/photowey/disruptor.go/pkg/runtimegraph"
+	"github.com/photowey/pool.go/pkg/pool"
 )
 
 func TestRuntimeGraphSnapshotAndValidationUseExplicitTerminals(t *testing.T) {
@@ -443,7 +443,7 @@ func TestRuntimeGraphRejectsWorkersAndExecutorTogether(t *testing.T) {
 	_, err := d.HandleRuntimeGraph(
 		graph,
 		disruptor.WithRuntimeGraphWorkers[longEvent](2),
-		disruptor.WithRuntimeGraphExecutor[longEvent](executor.NewInlineExecutor()),
+		disruptor.WithRuntimeGraphExecutor[longEvent](runtimeInlineExecutor{}),
 	)
 	if err == nil {
 		t.Fatal("handle runtime graph error is nil, want conflict")
@@ -454,8 +454,8 @@ func TestRuntimeGraphExternalExecutorIsCallerOwned(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	exec := &runtimeLifecycleExecutor{Executor: executor.NewInlineExecutor()}
-	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-external-executor").
+	exec := &runtimeLifecycleExecutor{Executor: runtimeInlineExecutor{}}
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-external-pool").
 		MustNode("A", runtimeRecordingHandler{}).
 		MustEdge(topology.StartNode, "A").
 		MustEdge("A", topology.EndNode)
@@ -478,14 +478,14 @@ func TestRuntimeGraphExternalExecutorIsCallerOwned(t *testing.T) {
 		t.Fatalf("wait: %v", err)
 	}
 	if exec.shutdowns.Load() != 0 {
-		t.Fatalf("external executor shutdowns = %d, want 0", exec.shutdowns.Load())
+		t.Fatalf("external pool shutdowns = %d, want 0", exec.shutdowns.Load())
 	}
 }
 
 func TestRuntimeGraphExecutorFailureUsesExceptionKindExecutor(t *testing.T) {
-	submitErr := errors.New("executor submit failed")
+	executeErr := errors.New("pool execute failed")
 	recorder := newRuntimeExceptionRecorder()
-	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-executor-failure").
+	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-pool-failure").
 		MustNode("A", runtimeRecordingHandler{}).
 		MustEdge(topology.StartNode, "A").
 		MustEdge("A", topology.EndNode)
@@ -493,7 +493,7 @@ func TestRuntimeGraphExecutorFailureUsesExceptionKindExecutor(t *testing.T) {
 	d := newRuntimeGraphTestDisruptor(t, 8)
 	if _, err := d.HandleRuntimeGraph(
 		graph,
-		disruptor.WithRuntimeGraphExecutor[longEvent](runtimeFailingExecutor{err: submitErr}),
+		disruptor.WithRuntimeGraphExecutor[longEvent](runtimeFailingExecutor{err: executeErr}),
 		disruptor.WithRuntimeGraphExceptionHandler[longEvent](recorder),
 	); err != nil {
 		t.Fatalf("handle runtime graph: %v", err)
@@ -503,12 +503,12 @@ func TestRuntimeGraphExecutorFailureUsesExceptionKindExecutor(t *testing.T) {
 	}
 
 	publishValues(t, d.RingBuffer(), 1)
-	if err := d.Wait(); !errors.Is(err, submitErr) {
-		t.Fatalf("wait error = %v, want submit error", err)
+	if err := d.Wait(); !errors.Is(err, executeErr) {
+		t.Fatalf("wait error = %v, want execute error", err)
 	}
 	got := recorder.wait(t)
 	if got.Kind != disruptor.RuntimeGraphExceptionKindExecutor {
-		t.Fatalf("exception kind = %v, want executor", got.Kind)
+		t.Fatalf("exception kind = %v, want pool", got.Kind)
 	}
 }
 
@@ -548,7 +548,7 @@ func TestRuntimeGraphParallelJoinWaitsForInFlightHandlersOnHalt(t *testing.T) {
 }
 
 func TestRuntimeGraphExternalExecutorWaitsForInFlightHandlersOnHalt(t *testing.T) {
-	handlerErr := errors.New("halt after external executor slow handler")
+	handlerErr := errors.New("halt after external pool slow handler")
 	finished := make(chan struct{})
 	release := make(chan struct{})
 	graph := runtimegraph.MustRuntimeGraph[longEvent]("runtime-external-halt-waits").
@@ -562,19 +562,19 @@ func TestRuntimeGraphExternalExecutorWaitsForInFlightHandlersOnHalt(t *testing.T
 		MustEdge("slow", topology.EndNode).
 		MustEdge("fail", topology.EndNode)
 
-	pool, err := executor.NewFixedWorkerExecutor(
-		executor.WithWorkers(2),
-		executor.WithQueueSize(2),
+	exec, err := pool.NewFixed(
+		2,
+		pool.WithQueueSize(2),
 	)
 	if err != nil {
-		t.Fatalf("new fixed worker executor: %v", err)
+		t.Fatalf("new fixed pool: %v", err)
 	}
-	defer shutdownRuntimeExecutor(t, pool)
+	defer shutdownRuntimeExecutor(t, exec)
 
 	d := newRuntimeGraphTestDisruptor(t, 8)
 	if _, err := d.HandleRuntimeGraph(
 		graph,
-		disruptor.WithRuntimeGraphExecutor[longEvent](pool),
+		disruptor.WithRuntimeGraphExecutor[longEvent](exec),
 	); err != nil {
 		t.Fatalf("handle runtime graph: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestRuntimeGraphExternalExecutorWaitsForInFlightHandlersOnHalt(t *testing.T
 	if err := <-waitErr; !errors.Is(err, handlerErr) {
 		t.Fatalf("wait error = %v, want handler error", err)
 	}
-	waitForRuntimeSignal(t, finished, "external executor slow handler finished")
+	waitForRuntimeSignal(t, finished, "external pool slow handler finished")
 }
 
 func newRuntimeGraphTestDisruptor(t *testing.T, size int) *disruptor.Disruptor[longEvent] {
@@ -693,11 +693,11 @@ func runtimeGraphWait(d *disruptor.Disruptor[longEvent], waitErr chan<- error) {
 	waitErr <- d.Wait()
 }
 
-func shutdownRuntimeExecutor(t *testing.T, exec executor.Executor) {
+func shutdownRuntimeExecutor(t *testing.T, exec pool.Executor) {
 	t.Helper()
 
 	if err := exec.Shutdown(context.Background()); err != nil {
-		t.Fatalf("shutdown runtime executor: %v", err)
+		t.Fatalf("shutdown runtime pool: %v", err)
 	}
 }
 
@@ -805,7 +805,7 @@ func (h runtimeReleaseHandler) OnEvent(request event.Request[longEvent]) error {
 }
 
 type runtimeLifecycleExecutor struct {
-	executor.Executor
+	pool.Executor
 	shutdowns atomic.Int64
 }
 
@@ -819,11 +819,32 @@ type runtimeFailingExecutor struct {
 	err error
 }
 
-func (e runtimeFailingExecutor) Submit(executor.SubmitRequest) error {
+func (e runtimeFailingExecutor) Execute(pool.ExecuteRequest) error {
 	return e.err
 }
 
 func (e runtimeFailingExecutor) Shutdown(context.Context) error {
+	return nil
+}
+
+type runtimeInlineExecutor struct{}
+
+func (runtimeInlineExecutor) Execute(request pool.ExecuteRequest) error {
+	if request.Context == nil {
+		request.Context = context.Background()
+	}
+	if err := request.Context.Err(); err != nil {
+		return err
+	}
+	if request.Task == nil {
+		return pool.ErrInvalid
+	}
+
+	request.Task.Run(request.Context)
+	return nil
+}
+
+func (runtimeInlineExecutor) Shutdown(context.Context) error {
 	return nil
 }
 

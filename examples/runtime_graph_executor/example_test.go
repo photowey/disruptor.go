@@ -21,5 +21,5 @@ func Example() {
 	// route:31
 	// branch:fraud:31
 	// branch:pricing:31
-	// executor-shutdown:caller
+	// pool-shutdown:caller
 }

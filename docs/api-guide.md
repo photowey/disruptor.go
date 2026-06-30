@@ -10,7 +10,6 @@ responsibility:
 - `pkg/wait`: wait strategy interface and built-in strategies
 - `pkg/metrics`: backend-neutral metrics sink and payloads
 - `pkg/sequence`: public sequence type and readers
-- `pkg/executor`: bounded task execution, typed futures, and promises
 - `pkg/event`: handler requests, lifecycle hooks, exception handlers
 - `pkg/graph`: static dependency graph builder, validation, snapshots, export
 - `pkg/runtimegraph`: conditional graph builder and edge conditions
@@ -426,7 +425,7 @@ also use `RuntimeGraphExceptionHandler[T]`. Panic recovery stays on the runtime
 graph exception handler path.
 
 Runtime graph execution is deterministic by default. `WithRuntimeGraphWorkers`
-activates an internal fixed worker executor when `workers > 1`, allowing
+activates an internal fixed pool executor when `workers > 1`, allowing
 independent ready nodes to run concurrently. The scheduler still owns edge
 evaluation, joins, `END`, no-route handling, exception policy, and sequence
 advancement. Worker goroutines only execute node handlers and return completion
@@ -435,7 +434,7 @@ messages to the scheduler.
 ```mermaid
 sequenceDiagram
     participant Scheduler
-    participant Exec as Executor
+    participant Exec as pool.Executor
     participant Worker
     participant Handler as event.Handler[T]
 
@@ -444,7 +443,7 @@ sequenceDiagram
         Scheduler->>Handler: run node inline
         Handler-->>Scheduler: result or error
     else workers > 1 or caller-owned executor
-        Scheduler->>Exec: submit selected node task
+        Scheduler->>Exec: Execute(selected node task)
         Exec->>Worker: dispatch task
         Worker->>Handler: OnEvent(request)
         Handler-->>Worker: result or error
@@ -471,22 +470,22 @@ are not deterministic. Handlers must be concurrency-safe. The runtime variable
 bag is concurrency-safe, but concurrent writes to the same path use
 last-write-wins semantics with nondeterministic write order.
 
-Advanced users can supply a caller-owned executor:
+Advanced users can supply a caller-owned pool executor:
 
 ```go
-pool, err := executor.NewFixedWorkerExecutor(
-    executor.WithWorkers(4),
-    executor.WithQueueSize(4),
-    executor.WithRejectPolicy(executor.RejectPolicyReject),
+exec, err := pool.NewFixed(
+    4,
+    pool.WithQueueSize(4),
+    pool.WithRejectPolicy(pool.RejectPolicyReject),
 )
 if err != nil {
     return err
 }
-defer pool.Shutdown(ctx)
+defer exec.Shutdown(ctx)
 
 _, err = d.HandleRuntimeGraph(
     runtimeGraph,
-    disruptor.WithRuntimeGraphExecutor[LongEvent](pool),
+    disruptor.WithRuntimeGraphExecutor[LongEvent](exec),
 )
 ```
 
@@ -494,64 +493,16 @@ Executors passed through `WithRuntimeGraphExecutor` are caller-owned. Disruptor
 does not shut them down. Executors created internally from
 `WithRuntimeGraphWorkers` are shut down by Disruptor.
 
-## Executor
+## External Pool
 
-`pkg/executor` provides a bounded execution API with typed read-only futures and
-producer-owned promises. `Future[T]` lets callers wait, inspect, and observe a
-result. Only `Promise[T]` can complete, fail, or cancel the result.
+`WithRuntimeGraphExecutor` accepts `pool.Executor` from
+`github.com/photowey/pool.go/pkg/pool`. Disruptor uses that executor only for
+selected RuntimeGraph node handler tasks. The RuntimeGraph scheduler still owns
+edge evaluation, joins, no-route handling, exception policy, and sequence
+advancement.
 
-The package is intentionally usable outside Disruptor:
-
-- Use `Executor` when a component needs bounded task execution without exposing
-  goroutines, channels, or wait groups to its callers.
-- Use `Future[T]` as the consumer-facing result handle.
-- Use `Promise[T]` when a producer completes a result from an external callback,
-  polling loop, scheduler, or integration boundary.
-- Use composition helpers when several futures are joined or transformed,
-  but keep continuation work on an explicit executor.
-
-Learning path:
-
-- `examples/executor` and `examples/runtime_graph_executor` are the complete
-  runnable examples.
-- `pkg/executor/example_test.go` contains pkg.go.dev examples.
-- `pkg/executor/executor_test.go` is the executable specification for exactly
-  once completion, observers, backpressure, shutdown, and composition.
-
-```go
-type DoubleTask struct {
-    Value int
-}
-
-func (t DoubleTask) Execute(context.Context) (int, error) {
-    return t.Value * 2, nil
-}
-
-inline := executor.NewInlineExecutor()
-future, err := executor.Submit(ctx, inline, DoubleTask{Value: 21})
-if err != nil {
-    return err
-}
-
-value, err := future.Await(ctx)
-if err != nil {
-    return err
-}
-_ = value
-```
-
-`NewFixedWorkerExecutor` starts a bounded worker pool. `RejectPolicyBlock`
-waits for queue capacity while observing the submit context.
-`RejectPolicyReject` returns `executor.ErrSaturated` when the queue is full.
-
-Composition helpers include `AllOf`, `All`, `AnyOf`, `Any`, `ThenApply`,
-`ThenCompose`, and `Exceptionally`. Continuation helpers require an explicit
-executor so future composition does not hide unbounded goroutine creation.
-
-`All` preserves input order in the output slice. `Any` completes with the first
-successful result. `ThenApply` maps a successful parent result to a new value.
-`ThenCompose` maps a successful parent result to another future and flattens it.
-`Exceptionally` maps a failed parent result to a replacement value.
+Use `examples/runtime_graph_executor` as the complete runnable example for
+caller-owned executor lifecycle.
 
 ## Options
 
@@ -588,7 +539,7 @@ Disruptor runtime graph options:
 
 `disruptor.WithRuntimeGraphWorkers(1)` keeps deterministic inline execution.
 `disruptor.WithRuntimeGraphWorkers(workers)` with `workers > 1` creates an
-internal fixed worker executor. `disruptor.WithRuntimeGraphWorkers` and
+internal fixed pool executor. `disruptor.WithRuntimeGraphWorkers` and
 `disruptor.WithRuntimeGraphExecutor` cannot be used together.
 
 Node options:

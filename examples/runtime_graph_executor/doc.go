@@ -13,6 +13,6 @@
 // limitations under the License.
 
 // Package main demonstrates RuntimeGraph running selected node handlers on a
-// caller-owned executor. The scheduler still owns route state, edge evaluation,
-// joins, and sequence advancement; the executor only runs handler tasks.
+// caller-owned pool. The scheduler still owns route state, edge evaluation,
+// joins, and sequence advancement; the pool only runs handler tasks.
 package main

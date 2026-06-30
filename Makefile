@@ -88,7 +88,7 @@ examples:
 
 .PHONY: bench-smoke
 bench-smoke:
-	$(GO) test -run '^$$' -bench='Benchmark(RingBufferMatrix|ExecutorSubmitInline|RuntimeGraphRoutingParallel)' -benchmem -benchtime=100ms -count=1 ./benchmarks
+	$(GO) test -run '^$$' -bench='Benchmark(RingBufferMatrix|RuntimeGraphRoutingParallel)' -benchmem -benchtime=100ms -count=1 ./benchmarks
 
 .PHONY: bench
 bench:

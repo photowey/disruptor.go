@@ -165,7 +165,7 @@ flowchart TB
     App["应用程序"] --> D["disruptor.Disruptor[T]"]
     App --> RB["ringbuffer.RingBuffer[T]"]
     App --> EventPkg["pkg/event 契约"]
-    App --> ExecutorAPI["pkg/executor"]
+    App --> PoolAPI["pool.Executor (pool.go/pkg/pool)"]
     App --> GraphPkg["pkg/graph"]
     App --> RuntimeGraphPkg["pkg/runtimegraph"]
     App --> WaitPkg["pkg/wait"]
@@ -195,25 +195,14 @@ flowchart TB
         P --> EventPkg
     end
 
-    subgraph ExecutorInternals["pkg/executor"]
-        Exec["Executor / Submit"]
-        Pool["FixedWorkerExecutor"]
-        Fut["Future[T] / Promise[T]"]
-        Exec --> Pool
-        Exec --> Fut
-        Pool --> Worker["worker goroutines"]
-    end
-
     GP --> B
     StaticGraph --> GraphPkg
     RuntimeGraphMode --> RuntimeGraphPkg
     RuntimeGraphPkg --> EC["edge conditions"]
     EC --> ExprPkg
     RSP --> VarsPkg
-    ExecutorAPI --> Exec
-    RSP --> Exec
-    Pool --> RH["被选中的 event.Handler[T] 任务"]
-    Worker --> RSP
+    RSP --> PoolAPI
+    PoolAPI --> RH["被选中的 event.Handler[T] 任务"]
     RSP --> RE["RuntimeGraphExceptionHandler[T]"]
     P --> M
     RSP --> M
@@ -230,7 +219,7 @@ sequenceDiagram
     participant RB as RingBuffer T
     participant Seq as Sequencer
     participant Proc as Processor
-    participant Exec as Executor
+    participant Exec as pool.Executor
     participant W as Worker
     participant H as event.Handler T
 
@@ -249,7 +238,7 @@ sequenceDiagram
             Proc->>H: 直接运行选中的节点 handler
             H-->>Proc: runtime variables, result, or error
         else workers > 1 or caller-owned executor
-            Proc->>Exec: Submit(selected node task)
+            Proc->>Exec: Execute(selected node task)
             Exec->>W: dispatch task
             W->>H: OnEvent(request)
             H-->>W: runtime variables, result, or error
@@ -333,55 +322,37 @@ _, err = d.HandleRuntimeGraph(
 
 当 `workers > 1` 时，独立节点完成顺序和 handler 副作用顺序不再保证确定。
 scheduler 仍然独占 route state、边计算、join 和 sequence 推进。高级用户也可以
-通过 `disruptor.WithRuntimeGraphExecutor` 传入调用方自主管理生命周期的
-`executor.Executor`；Disruptor 只向它提交节点任务，不负责 shutdown。
+通过 `disruptor.WithRuntimeGraphExecutor` 传入来自
+`github.com/photowey/pool.go/pkg/pool` 的 `pool.Executor`。该 executor
+由调用方自主管理生命周期；Disruptor 只向它分发节点任务，不负责 shutdown。
 
-## Executor
+## 外部 Pool
 
-`pkg/executor` 是通用的有界执行器包，提供 typed read-only future 和
-producer-owned promise，可以独立于 RuntimeGraph 使用。RuntimeGraph 的显式并发
-执行也基于同一个抽象。
+RuntimeGraph 可以把被选中的节点 handler 交给调用方自主管理生命周期的
+`pool.Executor` 执行。这样 disruptor 核心只负责路由、join、异常策略和
+sequence 推进，应用可以复用自己已有的有界执行策略。
 
-这套设计刻意把职责拆开：
-
-- `Executor` 负责 work 在哪里运行，以及队列满了以后如何背压。
-- `Future[T]` 只读，调用方只能等待、读取或观察完成结果。
-- `Promise[T]` 拥有完成权，生产者负责 complete/fail/cancel；消费者只通过
-  `Future[T]` 观察结果。
-
-学习入口：
-
-- `examples/executor`：完整可运行示例，包含 fixed worker、typed task submission、
-  `All`、`ThenApply` 和外部 producer 完成 `Promise`。
-- `examples/runtime_graph_executor`：调用方自持 executor、RuntimeGraph 节点分发、
-  以及显式 shutdown 归属。
-- `pkg/executor/example_test.go`：pkg.go.dev 会渲染的 godoc 示例。
-- `pkg/executor/executor_test.go`：最有价值的行为说明，覆盖完成语义、observer、
-  背压、shutdown 和组合。
+完整可运行示例见 `examples/runtime_graph_executor`。
 
 ```go
-type DoubleTask struct {
-    Value int
-}
-
-func (t DoubleTask) Execute(context.Context) (int, error) {
-    return t.Value * 2, nil
-}
-
-inline := executor.NewInlineExecutor()
-future, err := executor.Submit(ctx, inline, DoubleTask{Value: 21})
+exec, err := pool.NewFixed(
+    4,
+    pool.WithQueueSize(4),
+    pool.WithRejectPolicy(pool.RejectPolicyReject),
+)
 if err != nil {
     return err
 }
+defer exec.Shutdown(ctx)
 
-value, err := future.Await(ctx)
-if err != nil {
-    return err
-}
+_, err = d.HandleRuntimeGraph(
+    runtimeGraph,
+    disruptor.WithRuntimeGraphExecutor[LongEvent](exec),
+)
 ```
 
-`Future[T]` 只读：调用方可以等待、读取和观察结果。`Promise[T]` 拥有完成、失败和
-取消能力。Fixed worker executor 使用有界队列，并显式支持阻塞或拒绝两种背压策略。
+通过 `WithRuntimeGraphExecutor` 传入的 executor 由调用方持有。Disruptor 不会
+关闭它。通过 `WithRuntimeGraphWorkers` 创建的内部 executor 由 Disruptor 关闭。
 
 runtime 表达式支持 bool、字符串、数值比较、分组、逻辑运算，以及
 `${flags} & 1` 这类整数位运算。

@@ -23,9 +23,9 @@ import (
 
 	"github.com/photowey/disruptor.go/pkg/disruptor"
 	"github.com/photowey/disruptor.go/pkg/event"
-	"github.com/photowey/disruptor.go/pkg/executor"
 	topology "github.com/photowey/disruptor.go/pkg/graph"
 	"github.com/photowey/disruptor.go/pkg/runtimegraph"
+	"github.com/photowey/pool.go/pkg/pool"
 )
 
 type routedOrderEvent struct {
@@ -82,11 +82,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool, err := executor.NewFixedWorkerExecutor(
-		executor.WithWorkers(2),
-		executor.WithQueueSize(4),
-		executor.WithRejectPolicy(executor.RejectPolicyReject),
-		executor.WithName("runtime-graph-example"),
+	exec, err := pool.NewFixed(
+		2,
+		pool.WithQueueSize(4),
+		pool.WithRejectPolicy(pool.RejectPolicyReject),
+		pool.WithName("runtime-graph-example"),
 	)
 	if err != nil {
 		panic(err)
@@ -98,7 +98,7 @@ func main() {
 	}
 
 	events := make(chan string, 3)
-	graph := runtimegraph.MustRuntimeGraph[routedOrderEvent]("external-executor-route").
+	graph := runtimegraph.MustRuntimeGraph[routedOrderEvent]("external-pool-route").
 		MustNode("route", routeOrderHandler{log: events}).
 		MustNode("fraud", branchOrderHandler{name: "fraud", log: events}).
 		MustNode("pricing", branchOrderHandler{name: "pricing", log: events}).
@@ -118,7 +118,7 @@ func main() {
 
 	if _, err := d.HandleRuntimeGraph(
 		graph,
-		disruptor.WithRuntimeGraphExecutor[routedOrderEvent](pool),
+		disruptor.WithRuntimeGraphExecutor[routedOrderEvent](exec),
 	); err != nil {
 		panic(err)
 	}
@@ -154,14 +154,14 @@ func main() {
 		panic(err)
 	}
 
-	shutdownExecutor(pool)
-	fmt.Println("executor-shutdown:caller")
+	shutdownExecutor(exec)
+	fmt.Println("pool-shutdown:caller")
 }
 
-func shutdownExecutor(pool executor.Executor) {
+func shutdownExecutor(exec pool.Executor) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := pool.Shutdown(ctx); err != nil {
+	if err := exec.Shutdown(ctx); err != nil {
 		panic(err)
 	}
 }

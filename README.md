@@ -178,7 +178,7 @@ flowchart TB
     App["Application"] --> D["disruptor.Disruptor[T]"]
     App --> RB["ringbuffer.RingBuffer[T]"]
     App --> EventPkg["pkg/event contracts"]
-    App --> ExecutorAPI["pkg/executor"]
+    App --> PoolAPI["pool.Executor (pool.go/pkg/pool)"]
     App --> GraphPkg["pkg/graph"]
     App --> RuntimeGraphPkg["pkg/runtimegraph"]
     App --> WaitPkg["pkg/wait"]
@@ -208,25 +208,14 @@ flowchart TB
         P --> EventPkg
     end
 
-    subgraph ExecutorInternals["pkg/executor"]
-        Exec["Executor / Submit"]
-        Pool["FixedWorkerExecutor"]
-        Fut["Future[T] / Promise[T]"]
-        Exec --> Pool
-        Exec --> Fut
-        Pool --> Worker["worker goroutines"]
-    end
-
     GP --> B
     StaticGraph --> GraphPkg
     RuntimeGraphMode --> RuntimeGraphPkg
     RuntimeGraphPkg --> EC["edge conditions"]
     EC --> ExprPkg
     RSP --> VarsPkg
-    ExecutorAPI --> Exec
-    RSP --> Exec
-    Pool --> RH["selected event.Handler[T] tasks"]
-    Worker --> RSP
+    RSP --> PoolAPI
+    PoolAPI --> RH["selected event.Handler[T] tasks"]
     RSP --> RE["RuntimeGraphExceptionHandler[T]"]
     P --> M
     RSP --> M
@@ -244,7 +233,7 @@ sequenceDiagram
     participant RB as RingBuffer T
     participant Seq as Sequencer
     participant Proc as Processor
-    participant Exec as Executor
+    participant Exec as pool.Executor
     participant W as Worker
     participant H as event.Handler T
 
@@ -263,7 +252,7 @@ sequenceDiagram
             Proc->>H: run selected node handler inline
             H-->>Proc: runtime variables, result, or error
         else workers > 1 or caller-owned executor
-            Proc->>Exec: Submit(selected node task)
+            Proc->>Exec: Execute(selected node task)
             Exec->>W: dispatch task
             W->>H: OnEvent(request)
             H-->>W: runtime variables, result, or error
@@ -350,57 +339,39 @@ _, err = d.HandleRuntimeGraph(
 With `workers > 1`, handler side effects and independent node completion order
 are not deterministic. The scheduler still owns route state, edge evaluation,
 joins, and sequence advancement. Advanced users can supply a caller-owned
-`executor.Executor` through `disruptor.WithRuntimeGraphExecutor`; Disruptor
-submits node work to that executor but does not shut it down.
+`pool.Executor` from `github.com/photowey/pool.go/pkg/pool` through
+`disruptor.WithRuntimeGraphExecutor`; Disruptor dispatches node work to that
+executor but does not shut it down.
 
-## Executor
+## External Pool
 
-`pkg/executor` is a general-purpose bounded executor with typed read-only
-futures and producer-owned promises. It can be used independently of
-RuntimeGraph, and RuntimeGraph uses the same abstraction for explicit parallel
-node execution.
+RuntimeGraph can execute selected node handlers through a caller-owned
+`pool.Executor`. This keeps the disruptor core focused on routing, joins,
+exception policy, and sequence advancement while letting applications choose the
+bounded execution policy they already use elsewhere.
 
-The design separates three responsibilities:
-
-- `Executor` owns where work runs and how backpressure is applied.
-- `Future[T]` is read-only. Callers can wait, inspect, or observe completion.
-- `Promise[T]` owns completion. Producers complete, fail, or cancel; consumers
-  cannot accidentally complete someone else's result.
-
-For a complete runnable walkthrough, see:
-
-- `examples/executor`: fixed workers, typed task submission, `All`, `ThenApply`,
-  and an externally completed `Promise`.
-- `examples/runtime_graph_executor`: caller-owned executor, RuntimeGraph worker
-  dispatch, and explicit shutdown ownership.
-- `pkg/executor/example_test.go`: godoc examples rendered by pkg.go.dev.
-- `pkg/executor/executor_test.go`: behavior-level tests for completion,
-  observers, backpressure, shutdown, and composition.
+For a complete runnable walkthrough, see `examples/runtime_graph_executor`.
 
 ```go
-type DoubleTask struct {
-    Value int
-}
-
-func (t DoubleTask) Execute(context.Context) (int, error) {
-    return t.Value * 2, nil
-}
-
-inline := executor.NewInlineExecutor()
-future, err := executor.Submit(ctx, inline, DoubleTask{Value: 21})
+exec, err := pool.NewFixed(
+    4,
+    pool.WithQueueSize(4),
+    pool.WithRejectPolicy(pool.RejectPolicyReject),
+)
 if err != nil {
     return err
 }
+defer exec.Shutdown(ctx)
 
-value, err := future.Await(ctx)
-if err != nil {
-    return err
-}
+_, err = d.HandleRuntimeGraph(
+    runtimeGraph,
+    disruptor.WithRuntimeGraphExecutor[LongEvent](exec),
+)
 ```
 
-`Future[T]` is read-only: callers can wait, inspect, and observe results.
-`Promise[T]` owns completion, failure, and cancellation. Fixed worker executors
-use bounded queues with explicit block or reject backpressure policies.
+Executors passed through `WithRuntimeGraphExecutor` are caller-owned. Disruptor
+does not shut them down. Executors created internally from
+`WithRuntimeGraphWorkers` are shut down by Disruptor.
 
 Runtime expressions support bools, strings, numeric comparisons, grouping,
 logical operators, and integer bitwise operators such as `${flags} & 1`.

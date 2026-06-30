@@ -22,11 +22,11 @@ import (
 	"time"
 
 	"github.com/photowey/disruptor.go/pkg/event"
-	"github.com/photowey/disruptor.go/pkg/executor"
 	"github.com/photowey/disruptor.go/pkg/processor"
 	topology "github.com/photowey/disruptor.go/pkg/runtimegraph"
 	"github.com/photowey/disruptor.go/pkg/runtimevars"
 	"github.com/photowey/disruptor.go/pkg/sequence"
+	"github.com/photowey/pool.go/pkg/pool"
 )
 
 // RuntimeGraphExceptionKind classifies runtime graph failures.
@@ -43,7 +43,7 @@ const (
 	RuntimeGraphExceptionKindNoRoute
 	// RuntimeGraphExceptionKindPanic reports a recovered panic.
 	RuntimeGraphExceptionKindPanic
-	// RuntimeGraphExceptionKindExecutor reports an executor submission failure.
+	// RuntimeGraphExceptionKindExecutor reports an executor dispatch failure.
 	RuntimeGraphExceptionKindExecutor
 )
 
@@ -100,7 +100,7 @@ type runtimeGraphOptions[T any] struct {
 	noRouteAction    RuntimeNoRouteAction
 	workers          int
 	workersSet       bool
-	executor         executor.Executor
+	executor         pool.Executor
 	executorSet      bool
 	provider         runtimevars.Provider[T]
 	resolver         runtimevars.Resolver[T]
@@ -135,10 +135,10 @@ func WithRuntimeGraphWorkers[T any](workers int) RuntimeGraphOption[T] {
 }
 
 // WithRuntimeGraphExecutor sets the caller-owned executor used for runtime
-// graph handlers. Disruptor submits node handler work to this executor but does
+// graph handlers. Disruptor dispatches node handler work to this executor but does
 // not shut it down.
 func WithRuntimeGraphExecutor[T any](
-	executor executor.Executor,
+	executor pool.Executor,
 ) RuntimeGraphOption[T] {
 	return func(options *runtimeGraphOptions[T]) error {
 		if executor == nil {
@@ -364,7 +364,7 @@ type runtimeGraphEventHandler[T any] struct {
 	resolver         runtimevars.Resolver[T]
 	metricsSink      RuntimeGraphMetricsSink
 	workers          int
-	executor         executor.Executor
+	executor         pool.Executor
 	executorOwned    bool
 	runtimeContext   *runtimevars.Context[T]
 	runState         runtimeGraphRunState[T]
@@ -381,16 +381,16 @@ func (h *runtimeGraphEventHandler[T]) OnStart(ctx context.Context) error {
 		return nil
 	}
 
-	pool, err := executor.NewFixedWorkerExecutor(
-		executor.WithWorkers(h.workers),
-		executor.WithQueueSize(h.workers),
-		executor.WithRejectPolicy(executor.RejectPolicyReject),
-		executor.WithName(h.graphName),
+	exec, err := pool.NewFixed(
+		h.workers,
+		pool.WithQueueSize(h.workers),
+		pool.WithRejectPolicy(pool.RejectPolicyReject),
+		pool.WithName(h.graphName),
 	)
 	if err != nil {
 		return err
 	}
-	h.executor = pool
+	h.executor = exec
 	h.executorOwned = true
 
 	return nil
@@ -784,7 +784,7 @@ func (s *runtimeGraphRunState[T]) submitNode(
 		result := <-s.results
 		return s.completeNode(handler, result)
 	}
-	if err := handler.executor.Submit(executor.SubmitRequest{
+	if err := handler.executor.Execute(pool.ExecuteRequest{
 		Context: request.Context,
 		Task:    task,
 		Name:    planNode.Name,
@@ -923,6 +923,14 @@ func (t runtimeGraphNodeTask[T]) Run(ctx context.Context) {
 		duration: time.Since(started),
 		err:      err,
 		panicked: panicked,
+	}
+}
+
+func (t runtimeGraphNodeTask[T]) CancelQueued(cause error) {
+	t.results <- runtimeGraphNodeResult[T]{
+		index:   t.index,
+		request: t.request,
+		err:     cause,
 	}
 }
 

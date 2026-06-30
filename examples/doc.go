@@ -16,6 +16,6 @@
 //
 // Each child directory is a small main package focused on one usage path:
 // basic publication, multi-consumer fan-out, metrics, recovery, batch publish,
-// single-producer sequencing, graph quick starts, graph topologies, runtime
-// graph executor ownership, and explicit executor composition.
+// single-producer sequencing, graph quick starts, graph topologies, and runtime
+// graph external pool ownership.
 package examples

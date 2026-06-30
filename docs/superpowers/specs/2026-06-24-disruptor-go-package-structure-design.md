@@ -66,8 +66,8 @@ Owns high-level runtime orchestration:
 
 It may depend on `pkg/event`, `pkg/graph`, `pkg/runtimegraph`,
 `pkg/runtimevars`, `pkg/ringbuffer`, `pkg/processor`, `pkg/sequence`,
-`pkg/metrics`, and `pkg/executor`. It must not re-export those packages'
-primary types.
+`pkg/metrics`, and external `pool.Executor` implementations. It must not
+re-export those packages' primary types.
 
 ### `pkg/sequence`
 
@@ -236,7 +236,7 @@ pkg/disruptor
   -> pkg/processor
   -> pkg/sequence
   -> pkg/metrics
-  -> pkg/executor
+  -> github.com/photowey/pool.go/pkg/pool
 
 pkg/processor
   -> pkg/ringbuffer

@@ -36,12 +36,11 @@ func TestExamplesRun(t *testing.T) {
 		{name: "batch publish", dir: "batch_publish", expected: "batch=1,2,3,4 sum=10\n"},
 		{name: "single producer", dir: "single_producer", expected: "single=7\n"},
 		{name: "graph quickstart", dir: "graph_quickstart", expected: "validate:42,persist:42\n"},
-		{name: "executor", dir: "executor", expected: "order=1001 status=ready index=order-1001-indexed receipt=order-1001:ready:1797\n"},
 		{name: "pipeline", dir: "pipeline", expected: "validate:7,enrich:7,persist:7\n"},
 		{name: "diamond", dir: "diamond", expected: "diamond:D after B+C for 9\n"},
 		{name: "graph export", dir: "graph_export", expected: "graph=export source=validate entry=validate leaf=persist exit=persist nodes=4 edges=3\n"},
 		{name: "runtime graph", dir: "runtime_graph", expected: "route:11,fast:11\n"},
-		{name: "runtime graph executor", dir: "runtime_graph_executor", expected: "route:31\nbranch:fraud:31\nbranch:pricing:31\nexecutor-shutdown:caller\n"},
+		{name: "runtime graph executor", dir: "runtime_graph_executor", expected: "route:31\nbranch:fraud:31\nbranch:pricing:31\npool-shutdown:caller\n"},
 	}
 
 	for _, tt := range tests {

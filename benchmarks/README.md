@@ -17,7 +17,6 @@ go test -run '^$' -bench=BenchmarkChannelComparison -benchmem -count=10 ./benchm
 go test -run '^$' -bench=BenchmarkGraphTopology -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkRuntimeGraphRouting -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkRuntimeGraphRoutingParallel -benchmem -count=10 ./benchmarks
-go test -run '^$' -bench='Benchmark(Future|Promise|Executor)' -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkExpressionNumberAdapterComparison -benchmem -count=10 ./benchmarks
 go test -run '^$' -bench=BenchmarkE2ELatencyQuantiles -benchmem -count=10 ./benchmarks
 ```
@@ -58,15 +57,12 @@ Runtime graph allocation gates:
   compare it against its own baseline instead of the default inline allocation
   gate.
 
-Executor benchmark notes:
+External pool benchmark notes:
 
-- `BenchmarkFutureAwaitCompleted` is expected to remain allocation-free.
-- `BenchmarkPromiseComplete`, `BenchmarkExecutorSubmitInline`,
-  `BenchmarkExecutorSubmitFixedWorker`, and `BenchmarkFutureAllOf` establish the
-  v1.4 executor baseline.
-- `examples/runtime_graph_executor` mirrors the runtime-graph executor path that
-  the benchmarks measure, so example output and benchmark expectations stay
-  aligned.
+- `BenchmarkRuntimeGraphRoutingParallel` covers the RuntimeGraph path that
+  dispatches selected node handlers through a bounded pool.
+- `examples/runtime_graph_executor` mirrors that caller-owned pool path, so
+  example output and benchmark expectations stay aligned.
 - Use `benchstat`; a single benchmark run is only a smoke check.
 
 `BenchmarkE2ELatencyQuantiles` reports sampled publish-to-handle `p50_ns`,
